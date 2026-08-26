@@ -6,6 +6,7 @@ Local runners and Gradio apps for the pruned LTX 2.3 image-only Diffusers implem
 
 [![LTX 2.3 Image Base](https://img.shields.io/badge/Online%20Demo-LTX%202.3%20Image%20Base-ffcc4d?logo=huggingface&logoColor=black)](https://huggingface.co/spaces/elismasilva/ltx2.3-image)
 [![LTX 2.3 Image Distilled](https://img.shields.io/badge/Online%20Demo-LTX%202.3%20Image%20Distilled-ffcc4d?logo=huggingface&logoColor=black)](https://huggingface.co/spaces/elismasilva/ltx2.3-image-distilled)
+
 The command-line runners are intentionally thin: they load the requested model variant, encode the prompt, call the Diffusers pipeline, save the image, and write benchmark metrics. The Gradio apps expose the same T2I and optional I2I flow with the defaults selected during local testing.
 
 ## Installation
