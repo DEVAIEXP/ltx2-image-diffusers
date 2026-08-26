@@ -1,0 +1,44 @@
+[project]
+name = "LTX2.3-image-diffusers"
+version = "0.1.0"
+description = "Local LTX2.3 image environment with PyTorch CUDA wheels managed by uv."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch==2.12.1+cu132",
+    "torchvision==0.27.1+cu132",    
+    "transformers>=5.15.1",
+    "accelerate==1.14.0",
+    "safetensors==0.8.0",
+    "gguf>=0.19.0",
+    "setuptools==80.10.2",
+    "wheel",
+    "psutil",
+    "hf-xet",
+    "peft",
+    "sdnq==0.2.4",
+    "openvino",
+    "triton-windows<3.8 ; sys_platform == 'win32'",
+    "triton<3.8 ; sys_platform == 'linux'",
+    "diffusers",
+    "flash-attn @ https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.9.1%2Bcu132torch2.12.1cxx11abiTRUE-cp312-cp312-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.12'",
+]
+
+[project.optional-dependencies]
+audio = [
+    "torchaudio==2.11.0",
+]
+
+
+[tool.uv.sources]
+diffusers = { git = "https://github.com/DEVAIEXP/diffusers.git", branch = "ltx-image" }
+torch = { index = "pytorch-cu132" }
+torchvision = { index = "pytorch-cu132" }
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
