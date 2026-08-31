@@ -20,6 +20,7 @@ dependencies = [
     "triton-windows<3.8 ; sys_platform == 'win32'",
     "triton<3.8 ; sys_platform == 'linux'",
     "diffusers",
+    "gradio>=6.0.0",
     "flash-attn @ https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.9.1%2Bcu132torch2.12.1cxx11abiTRUE-cp312-cp312-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.12'",
 ]
 

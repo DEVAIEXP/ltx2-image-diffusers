@@ -22,7 +22,7 @@ from transformers import Gemma3ForConditionalGeneration
 
 from inference_utils import RunTracker, flush, get_sdnq_version
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
 warnings.filterwarnings("ignore", category=FutureWarning)
 logging.getLogger("diffusers").setLevel(logging.ERROR)
 
