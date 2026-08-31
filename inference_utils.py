@@ -7,13 +7,18 @@ import time
 import psutil
 import torch
 
-import sdnq
 
 
 def get_sdnq_version():
     try:
         return importlib.metadata.version("sdnq")
     except importlib.metadata.PackageNotFoundError:
+        return "not-installed"
+    except Exception:
+        try:
+            import sdnq
+        except Exception:
+            return "unavailable"
         return getattr(sdnq, "__version__", "unknown")
 
 
