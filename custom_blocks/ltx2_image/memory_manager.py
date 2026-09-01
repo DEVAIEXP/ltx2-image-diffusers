@@ -54,6 +54,9 @@ class LTX2DynamicBlockManager:
     hot_block_budget_gb: float = 0.0
     hot_block_stride: int = 3
     hot_block_offset: int = 0
+    hot_linear_weight_budget_gb: float = 0.0
+    hot_linear_weight_stride: int = 3
+    hot_linear_weight_offset: int = 1
     streamed_copy_mode: str = "direct"
     keep_streamed_small_tensors_resident: bool = False
     lazy_pin_cpu_memory: bool = False
@@ -71,6 +74,9 @@ class LTX2DynamicBlockManager:
         self.hot_block_budget_gb = max(0.0, float(self.hot_block_budget_gb))
         self.hot_block_stride = max(1, int(self.hot_block_stride))
         self.hot_block_offset = max(0, int(self.hot_block_offset))
+        self.hot_linear_weight_budget_gb = max(0.0, float(self.hot_linear_weight_budget_gb))
+        self.hot_linear_weight_stride = max(1, int(self.hot_linear_weight_stride))
+        self.hot_linear_weight_offset = max(0, int(self.hot_linear_weight_offset))
         self.streamed_copy_mode = self.streamed_copy_mode.lower()
         if self.streamed_copy_mode not in {"direct", "buffered", "host_buffered"}:
             raise ValueError("streamed_copy_mode must be 'direct', 'buffered', or 'host_buffered'")
@@ -90,6 +96,9 @@ class LTX2DynamicBlockManager:
         self._host_buffered_bytes = 0
         self._staged_modules: list[nn.Module] = []
         self._hot_block_indices: set[int] = set()
+        self._hot_linear_weight_module_ids: set[int] = set()
+        self._hot_linear_weight_bytes = 0
+        self._hot_linear_weight_count = 0
         self._selective_resident_bytes = 0
         self._streamed_small_resident_bytes = 0
         self._pinned_cpu_bytes = 0
@@ -192,6 +201,11 @@ class LTX2DynamicBlockManager:
             block.to(target_device)
         self._profile_add("setup_runtime", "blocks_to_target_devices", time.perf_counter() - setup_start)
 
+        if self.manual_hot_blocks_enabled and self.hot_linear_weight_budget_gb > 0:
+            setup_start = time.perf_counter()
+            self._move_hot_linear_weights_to_device(blocks, pinned_count=pinned_count)
+            self._profile_add("setup_runtime", "hot_linear_weights_to_device", time.perf_counter() - setup_start, self._hot_linear_weight_bytes)
+
         if self.keep_streamed_small_tensors_resident:
             setup_start = time.perf_counter()
             self._move_streamed_small_tensors_to_device(blocks, pinned_count=pinned_count)
@@ -223,11 +237,13 @@ class LTX2DynamicBlockManager:
             cache_gb = self._weight_cache_limit_bytes / 1024**3
             selective_gb = self._selective_resident_bytes / 1024**3
             streamed_small_gb = self._streamed_small_resident_bytes / 1024**3
+            hot_linear_weight_gb = self._hot_linear_weight_bytes / 1024**3
             pinned_cpu_gb = self._pinned_cpu_bytes / 1024**3
             print(
                 f"  [manager] mode={self.mode} pinned_blocks={pinned_count} "
                 f"hot_blocks={sorted(self._hot_block_indices)} hot_block_budget_gb={self.hot_block_budget_gb:g} "
                 f"hot_block_stride={self.hot_block_stride} hot_block_offset={self.hot_block_offset} "
+                f"hot_linear_weight_count={self._hot_linear_weight_count} hot_linear_weight_gb={hot_linear_weight_gb:.3f} "
                 f"streamed_blocks={streamed} streamed_copy_mode={self.streamed_copy_mode} weight_cache_gb={cache_gb:g} "
                 f"selective_resident_gb={selective_gb:.3f} streamed_small_resident_gb={streamed_small_gb:.3f} "
                 f"pinned_cpu_gb={pinned_cpu_gb:.3f}",
@@ -303,6 +319,11 @@ class LTX2DynamicBlockManager:
             "hot_block_budget_gb": self.hot_block_budget_gb,
             "hot_block_stride": self.hot_block_stride,
             "hot_block_offset": self.hot_block_offset,
+            "hot_linear_weight_budget_gb": self.hot_linear_weight_budget_gb,
+            "hot_linear_weight_stride": self.hot_linear_weight_stride,
+            "hot_linear_weight_offset": self.hot_linear_weight_offset,
+            "hot_linear_weight_count": self._hot_linear_weight_count,
+            "hot_linear_weight_gb": round(self._hot_linear_weight_bytes / 1024**3, 4),
             "streamed_copy_mode": self.streamed_copy_mode,
             "keep_streamed_small_tensors_resident": self.keep_streamed_small_tensors_resident,
             "streamed_small_resident_gb": round(self._streamed_small_resident_bytes / 1024**3, 4),
@@ -460,6 +481,37 @@ class LTX2DynamicBlockManager:
                         if buffer.device != self.device:
                             self._streamed_small_resident_bytes += self._tensor_size_bytes(buffer.data)
                             buffer.data = buffer.data.to(self.device)
+
+    def _move_hot_linear_weights_to_device(self, blocks: nn.ModuleList, pinned_count: int) -> None:
+        self._hot_linear_weight_module_ids.clear()
+        self._hot_linear_weight_bytes = 0
+        self._hot_linear_weight_count = 0
+        budget_bytes = int(self.hot_linear_weight_budget_gb * 1024**3)
+        if budget_bytes <= 0:
+            return
+
+        used_bytes = 0
+        for block_index in range(pinned_count + self.hot_linear_weight_offset, len(blocks), self.hot_linear_weight_stride):
+            if block_index in self._hot_block_indices:
+                continue
+
+            block = blocks[block_index]
+            for module in block.modules():
+                if not isinstance(module, nn.Linear) or module.weight.device == self.device:
+                    continue
+
+                weight_bytes = self._tensor_size_bytes(module.weight.data)
+                if used_bytes > 0 and used_bytes + weight_bytes > budget_bytes:
+                    self._hot_linear_weight_bytes = used_bytes
+                    return
+                if weight_bytes > budget_bytes:
+                    continue
+
+                used_bytes += self._move_parameter_to_device(module.weight)
+                self._hot_linear_weight_module_ids.add(id(module))
+                self._hot_linear_weight_count += 1
+
+        self._hot_linear_weight_bytes = used_bytes
 
     def _pin_selective_tensors(self, blocks: nn.ModuleList, pinned_count: int) -> None:
         self._selective_resident_bytes = 0
