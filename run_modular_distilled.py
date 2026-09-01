@@ -376,7 +376,6 @@ def main():
             hot_blocks=TRANSFORMER_MANAGER_HOT_BLOCKS,
             hot_block_budget_gb=TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB,
             hot_block_stride=TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE,
-            selected_hot_blocks=transformer_manager.selected_hot_blocks,
             synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
             empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
             verbose=TRANSFORMER_MANAGER_VERBOSE,
