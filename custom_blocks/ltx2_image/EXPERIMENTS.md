@@ -160,6 +160,14 @@ Result:
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `manual_hot_blocks` auto budget | `6 GB` | `97.9940s` | `70.1449s` | `185.3s` | `6.31 GiB` | `6.71 GB` | `27.67 GB` | `148.1813 GB` | New best observed Diffusers-side result. |
 
+Offset tests with the same `6 GB` budget showed that changing the hot-block phase can move the denoise number slightly, but did not beat the total pass time enough to replace offset `0` as the practical default:
+
+| Offset | Setup | Denoise | Pass 1 total | Torch alloc | Peak VRAM | Peak RAM | Copied GB | Notes |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `0` | `97.9940s` | `70.1449s` | `185.3s` | `6.31 GiB` | `6.71 GB` | `27.67 GB` | `148.1813 GB` | Best total pass time. |
+| `1` | `97.7758s` | `69.1332s` | `188.7s` | `6.31 GiB` | `6.88 GB` | `27.67 GB` | `148.1813 GB` | Best denoise time, but total pass was slower. |
+| `2` | `94.6457s` | `70.6406s` | `186.8s` | `6.31 GiB` | `6.85 GB` | `27.67 GB` | `148.1813 GB` | Similar to offset `0`, slightly slower. |
+
 Insight: the `6 GB` budget beat the explicit `12` hot-block run even though it copied slightly more data (`148.1813 GB` vs `144.1764 GB`). The lower resident allocation appears to keep the run in a better memory-pressure range, so the best point is not strictly the lowest copy volume. The budget selector is a better default interface than hard-coding a block list because it lets each machine/resolution find a similar pressure window.
 
 Pinned CPU memory changed the result significantly:
@@ -214,6 +222,43 @@ ComfyUI is faster because it stages model weights and executes layer-level dynam
 - Possibly NVIDIA shared-memory fallback behavior used more effectively
 
 The next improvement should avoid moving whole `nn.Module` objects or thousands of individual tensors with repeated `.to()` calls during the hot path.
+
+## Streamed Small Tensors Resident
+
+The `manual_hot_blocks` path was updated so streamed blocks keep tiny tensors resident on the execution device while only large linear weights are copied on demand. This keeps `Linear.bias`, `RMSNorm.weight`, and `LayerNorm` weight/bias/buffers out of the repeated copy path.
+
+Test configuration:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCKS=""
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_STRIDE="3"
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_OFFSET="0"
+$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="direct"
+$env:LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:LTX_IMAGE_ATTENTION_BACKEND="native"
+```
+
+Result:
+
+| Mode | Budget | Setup | Denoise | Pass 1 total | Torch alloc | Torch reserved | Peak VRAM | Peak RAM | Copied GB | Copy time | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `manual_hot_blocks` + small tensors resident | `6 GB` | `94.2435s` | `69.5991s` | `185.4s` | `6.32 GiB` | `6.63 GiB` | `6.78 GB` | `27.66 GB` | `148.1443 GB` | `0.6358s` | Keeps only `linear_weight` in repeated copies. |
+
+Compared with the previous `6 GB` budget baseline:
+
+| Metric | Baseline | Small tensors resident | Change |
+| --- | ---: | ---: | ---: |
+| Setup | `97.9940s` | `94.2435s` | `-3.7505s` |
+| Denoise | `70.1449s` | `69.5991s` | `-0.5458s` |
+| Pass 1 total | `185.3s` | `185.4s` | `+0.1s` |
+| Copy time | `1.2608s` | `0.6358s` | `-0.6250s` |
+| Copied GB | `148.1813 GB` | `148.1443 GB` | `-0.0370 GB` |
+
+Insight: this is a small but correct improvement. It removes unnecessary repeated tiny-tensor movement without meaningfully increasing VRAM/RAM pressure. The main remaining cost is now setup time, especially CPU pin/staging, rather than denoise transfer volume.
 
 ## Next Experiments
 
