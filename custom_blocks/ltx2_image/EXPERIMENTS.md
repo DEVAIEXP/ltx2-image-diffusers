@@ -335,6 +335,27 @@ Result:
 
 Insight: host-buffered staging moved the expensive CPU copy/pinning work into denoise and duplicated about `18.5 GB` of linear weights in RAM. It is worse than eager pinning for this process-per-run benchmark. This is still not equivalent to ComfyUI's VBAR/host-buffer behavior, which prepares dynamic metadata quickly without duplicating the whole streamed weight set during the hot path.
 
+## Hot Linear Weight Budget
+
+A `hot_linear_weight_budget_gb` experiment tried to keep selected `Linear.weight` tensors resident on the execution device without promoting entire transformer blocks.
+
+Configuration difference from the best `manual_hot_blocks` baseline:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_HOT_LINEAR_WEIGHT_BUDGET_GB="1"
+$env:LTX_IMAGE_TRANSFORMER_HOT_LINEAR_WEIGHT_STRIDE="3"
+$env:LTX_IMAGE_TRANSFORMER_HOT_LINEAR_WEIGHT_OFFSET="1"
+```
+
+Result:
+
+| Mode | Setup | Denoise | Pass 1 total | Torch alloc | Torch reserved | Peak VRAM | Peak RAM | Copied GB | Copy time | Key setup runtime | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Eager pin baseline | `95.3611s` | `68.4448s` | `185.5s` | `6.32 GiB` | `6.63 GiB` | `6.78 GB` | `27.66 GB` | `148.1443 GB` | `0.1080s` | `pin_cpu_blocks=82.5627s` | Best stable path so far. |
+| Hot linear weights `1 GB` | `87.3497s` | `203.9284s` | `314.6s` | `7.19 GiB` | `7.50 GiB` | `6.97 GB` | `28.18 GB` | `141.1365 GB` | `0.1382s` | `hot_linear_weights_to_device=2.4773s`, `pin_cpu_blocks=78.0482s` | Regressed despite fewer repeated copies. |
+
+Insight: keeping isolated `Linear.weight` tensors resident reduced repeated copy volume by about `7 GB`, but made block runtime much worse. The likely issue is not copy bandwidth alone; partial per-weight residency may create worse execution locality or memory-pressure behavior than keeping whole blocks resident. This result reinforces that the next useful step should model ComfyUI-style staged layer execution more directly, instead of mixing resident and streamed weights inside otherwise streamed blocks.
+
 ## Next Experiments
 
 1. Keep `manual_linear + pinned CPU` as the current baseline.
