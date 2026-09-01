@@ -55,6 +55,7 @@ class LTX2DynamicBlockManager:
     hot_block_stride: int = 3
     hot_block_offset: int = 0
     streamed_copy_mode: str = "direct"
+    keep_streamed_small_tensors_resident: bool = False
 
     def __post_init__(self):
         self.device = torch.device(self.device)
@@ -87,6 +88,7 @@ class LTX2DynamicBlockManager:
         self._staged_modules: list[nn.Module] = []
         self._hot_block_indices: set[int] = set()
         self._selective_resident_bytes = 0
+        self._streamed_small_resident_bytes = 0
         self._pinned_cpu_bytes = 0
         self._profile_current_block: int | None = None
         self._profile_stats = {
@@ -172,6 +174,9 @@ class LTX2DynamicBlockManager:
             target_device = self.device if keep_resident else self.offload_device
             block.to(target_device)
 
+        if self.keep_streamed_small_tensors_resident:
+            self._move_streamed_small_tensors_to_device(blocks, pinned_count=pinned_count)
+
         if self.pin_cpu_memory and self.offload_device.type == "cpu":
             self._pin_cpu_blocks(blocks, pinned_count=pinned_count)
 
@@ -189,13 +194,15 @@ class LTX2DynamicBlockManager:
             streamed = max(0, self._block_count - pinned_count - len(self._hot_block_indices))
             cache_gb = self._weight_cache_limit_bytes / 1024**3
             selective_gb = self._selective_resident_bytes / 1024**3
+            streamed_small_gb = self._streamed_small_resident_bytes / 1024**3
             pinned_cpu_gb = self._pinned_cpu_bytes / 1024**3
             print(
                 f"  [manager] mode={self.mode} pinned_blocks={pinned_count} "
                 f"hot_blocks={sorted(self._hot_block_indices)} hot_block_budget_gb={self.hot_block_budget_gb:g} "
                 f"hot_block_stride={self.hot_block_stride} hot_block_offset={self.hot_block_offset} "
                 f"streamed_blocks={streamed} streamed_copy_mode={self.streamed_copy_mode} weight_cache_gb={cache_gb:g} "
-                f"selective_resident_gb={selective_gb:.3f} pinned_cpu_gb={pinned_cpu_gb:.3f}",
+                f"selective_resident_gb={selective_gb:.3f} streamed_small_resident_gb={streamed_small_gb:.3f} "
+                f"pinned_cpu_gb={pinned_cpu_gb:.3f}",
                 flush=True,
             )
 
@@ -269,6 +276,8 @@ class LTX2DynamicBlockManager:
             "hot_block_stride": self.hot_block_stride,
             "hot_block_offset": self.hot_block_offset,
             "streamed_copy_mode": self.streamed_copy_mode,
+            "keep_streamed_small_tensors_resident": self.keep_streamed_small_tensors_resident,
+            "streamed_small_resident_gb": round(self._streamed_small_resident_bytes / 1024**3, 4),
             "block_runtime": self._profile_summary_bucket("block_runtime"),
             "copy_runtime": self._profile_summary_bucket("copy_runtime"),
         }
@@ -373,6 +382,25 @@ class LTX2DynamicBlockManager:
         if parameter._grad is not None:
             parameter._grad.data = parameter._grad.data.to(self.device)
         return original_bytes
+
+    def _move_streamed_small_tensors_to_device(self, blocks: nn.ModuleList, pinned_count: int) -> None:
+        self._streamed_small_resident_bytes = 0
+        for block_index, block in enumerate(blocks):
+            if block_index < pinned_count or block_index in self._hot_block_indices:
+                continue
+
+            for module in block.modules():
+                if isinstance(module, nn.Linear):
+                    if module.bias is not None and module.bias.device != self.device:
+                        self._streamed_small_resident_bytes += self._move_parameter_to_device(module.bias)
+                elif isinstance(module, (nn.RMSNorm, nn.LayerNorm)):
+                    for _, parameter in module.named_parameters(recurse=False):
+                        if parameter.device != self.device:
+                            self._streamed_small_resident_bytes += self._move_parameter_to_device(parameter)
+                    for _, buffer in module.named_buffers(recurse=False):
+                        if buffer.device != self.device:
+                            self._streamed_small_resident_bytes += self._tensor_size_bytes(buffer.data)
+                            buffer.data = buffer.data.to(self.device)
 
     def _pin_selective_tensors(self, blocks: nn.ModuleList, pinned_count: int) -> None:
         self._selective_resident_bytes = 0
