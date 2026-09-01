@@ -47,6 +47,7 @@ TRANSFORMER_MANAGER_WEIGHT_CACHE_GB = float(os.environ.get("LTX_IMAGE_TRANSFORME
 TRANSFORMER_MANAGER_PIN_CPU_MEMORY = os.environ.get("LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES", "0") == "1"
+TRANSFORMER_MANAGER_PROFILE_FULL = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL", "0") == "1"
 ATTENTION_BACKEND = os.environ.get("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
 FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
 DROP_TRIVIAL_ATTENTION_MASK = (
@@ -220,6 +221,7 @@ def main():
         "transformer_manager_pin_cpu_memory": TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
         "transformer_manager_profile_enabled": TRANSFORMER_MANAGER_PROFILE,
         "transformer_manager_profile_sync_copies": TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
+        "transformer_manager_profile_full": TRANSFORMER_MANAGER_PROFILE_FULL,
         "attention_backend": ATTENTION_BACKEND,
         "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,
         "events": [],
@@ -448,7 +450,7 @@ def main():
     record_event("denoise_modular_pipe_call", time.time() - event_t0, attention_backend=ATTENTION_BACKEND)
     if transformer_manager is not None and TRANSFORMER_MANAGER_PROFILE:
         run_metrics["transformer_manager_profile_summary"] = transformer_manager.profile_summary()
-        transformer_manager.print_profile_summary()
+        transformer_manager.print_profile_summary(full=TRANSFORMER_MANAGER_PROFILE_FULL)
 
 
     image_latent = denoise_state.to(OFFLOAD_DEVICE)

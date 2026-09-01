@@ -208,23 +208,82 @@ class LTX2DynamicBlockManager:
             "copy_runtime": self._profile_summary_bucket("copy_runtime"),
         }
 
-    def print_profile_summary(self) -> None:
+    def _split_profile_copy_key(self, key: str) -> tuple[str | None, str]:
+        if key.startswith("block:") and "/" in key:
+            block, tensor_name = key.split("/", 1)
+            return block.removeprefix("block:"), tensor_name
+        return None, key
+
+    def _profile_totals_by_copy_type(self, copy_runtime: dict) -> dict[str, dict[str, float]]:
+        totals: dict[str, dict[str, float]] = {}
+        for key, value in copy_runtime.items():
+            _, tensor_name = self._split_profile_copy_key(key)
+            stats = totals.setdefault(tensor_name, {"calls": 0, "seconds": 0.0, "gb": 0.0})
+            stats["calls"] += value["calls"]
+            stats["seconds"] += value["seconds"]
+            stats["gb"] += value["gb"]
+        return dict(sorted(totals.items(), key=lambda item: item[1]["seconds"], reverse=True))
+
+    def print_profile_summary(self, *, full: bool = False, top_n: int = 8) -> None:
         if not self.profile:
             return
         summary = self.profile_summary()
-        print("  [manager-profile] block_runtime:", flush=True)
-        for key, value in summary["block_runtime"].items():
-            print(
-                f"    block {key}: calls={value['calls']} seconds={value['seconds']:.4f}",
-                flush=True,
-            )
-        print("  [manager-profile] copy_runtime:", flush=True)
-        for key, value in summary["copy_runtime"].items():
+        block_runtime = summary["block_runtime"]
+        copy_runtime = summary["copy_runtime"]
+        block_total = sum(value["seconds"] for value in block_runtime.values())
+        copy_total = sum(value["seconds"] for value in copy_runtime.values())
+        copy_gb = sum(value["gb"] for value in copy_runtime.values())
+
+        print(
+            f"  [manager-profile] summary: mode={summary['mode']} "
+            f"blocks={len(block_runtime)} block_seconds={block_total:.4f} "
+            f"copy_seconds={copy_total:.4f} copy_gb={copy_gb:.4f}",
+            flush=True,
+        )
+
+        print("  [manager-profile] copy_runtime_by_type:", flush=True)
+        for key, value in self._profile_totals_by_copy_type(copy_runtime).items():
             print(
                 f"    {key}: calls={value['calls']} seconds={value['seconds']:.4f} gb={value['gb']:.4f}",
                 flush=True,
             )
 
+        print(f"  [manager-profile] slowest_blocks_top_{top_n}:", flush=True)
+        slowest_blocks = sorted(block_runtime.items(), key=lambda item: item[1]["seconds"], reverse=True)[:top_n]
+        for key, value in slowest_blocks:
+            print(
+                f"    block {key}: calls={value['calls']} seconds={value['seconds']:.4f}",
+                flush=True,
+            )
+
+        print(f"  [manager-profile] slowest_copies_top_{top_n}:", flush=True)
+        slowest_copies = sorted(copy_runtime.items(), key=lambda item: item[1]["seconds"], reverse=True)[:top_n]
+        for key, value in slowest_copies:
+            print(
+                f"    {key}: calls={value['calls']} seconds={value['seconds']:.4f} gb={value['gb']:.4f}",
+                flush=True,
+            )
+
+        if not full:
+            print(
+                "  [manager-profile] full profile saved in metrics JSON; set "
+                "LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL=1 to print it.",
+                flush=True,
+            )
+            return
+
+        print("  [manager-profile] block_runtime_full:", flush=True)
+        for key, value in block_runtime.items():
+            print(
+                f"    block {key}: calls={value['calls']} seconds={value['seconds']:.4f}",
+                flush=True,
+            )
+        print("  [manager-profile] copy_runtime_full:", flush=True)
+        for key, value in copy_runtime.items():
+            print(
+                f"    {key}: calls={value['calls']} seconds={value['seconds']:.4f} gb={value['gb']:.4f}",
+                flush=True,
+            )
     def _tensor_size_bytes(self, tensor: torch.Tensor) -> int:
         return tensor.numel() * tensor.element_size()
 
