@@ -354,6 +354,20 @@ class LTX2DynamicBlockManager:
             stats["gb"] += value["gb"]
         return dict(sorted(totals.items(), key=lambda item: item[1]["seconds"], reverse=True))
 
+    def _profile_totals_by_block_residency(self, block_runtime: dict) -> dict[str, dict[str, float]]:
+        totals: dict[str, dict[str, float]] = {
+            "resident": {"blocks": 0, "calls": 0, "seconds": 0.0},
+            "streamed": {"blocks": 0, "calls": 0, "seconds": 0.0},
+        }
+        for key, value in block_runtime.items():
+            block_index = int(key)
+            residency = "resident" if self._is_pinned(block_index) else "streamed"
+            stats = totals[residency]
+            stats["blocks"] += 1
+            stats["calls"] += value["calls"]
+            stats["seconds"] += value["seconds"]
+        return totals
+
     def print_profile_summary(self, *, full: bool = False, top_n: int = 8) -> None:
         if not self.profile:
             return
@@ -383,6 +397,13 @@ class LTX2DynamicBlockManager:
         for key, value in self._profile_totals_by_copy_type(copy_runtime).items():
             print(
                 f"    {key}: calls={value['calls']} seconds={value['seconds']:.4f} gb={value['gb']:.4f}",
+                flush=True,
+            )
+
+        print("  [manager-profile] block_runtime_by_residency:", flush=True)
+        for key, value in self._profile_totals_by_block_residency(block_runtime).items():
+            print(
+                f"    {key}: blocks={value['blocks']} calls={value['calls']} seconds={value['seconds']:.4f}",
                 flush=True,
             )
 
