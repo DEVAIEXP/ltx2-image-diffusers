@@ -53,6 +53,7 @@ class LTX2DynamicBlockManager:
     hot_blocks: tuple[int, ...] | list[int] | None = None
     hot_block_budget_gb: float = 0.0
     hot_block_stride: int = 3
+    hot_block_offset: int = 0
 
     def __post_init__(self):
         self.device = torch.device(self.device)
@@ -66,6 +67,7 @@ class LTX2DynamicBlockManager:
         self.hot_blocks = tuple(sorted({int(block) for block in (self.hot_blocks or []) if int(block) >= 0}))
         self.hot_block_budget_gb = max(0.0, float(self.hot_block_budget_gb))
         self.hot_block_stride = max(1, int(self.hot_block_stride))
+        self.hot_block_offset = max(0, int(self.hot_block_offset))
         self._active_block: int | None = None
         self._block_count = 0
         self._blocks: nn.ModuleList | None = None
@@ -182,7 +184,9 @@ class LTX2DynamicBlockManager:
             pinned_cpu_gb = self._pinned_cpu_bytes / 1024**3
             print(
                 f"  [manager] mode={self.mode} pinned_blocks={pinned_count} "
-                f"hot_blocks={sorted(self._hot_block_indices)} hot_block_budget_gb={self.hot_block_budget_gb:g} streamed_blocks={streamed} weight_cache_gb={cache_gb:g} "
+                f"hot_blocks={sorted(self._hot_block_indices)} hot_block_budget_gb={self.hot_block_budget_gb:g} "
+                f"hot_block_stride={self.hot_block_stride} hot_block_offset={self.hot_block_offset} "
+                f"streamed_blocks={streamed} weight_cache_gb={cache_gb:g} "
                 f"selective_resident_gb={selective_gb:.3f} pinned_cpu_gb={pinned_cpu_gb:.3f}",
                 flush=True,
             )
@@ -201,7 +205,11 @@ class LTX2DynamicBlockManager:
         if budget_bytes <= 0:
             return set()
 
-        candidates = list(range(pinned_count, len(blocks), self.hot_block_stride))
+        start_index = pinned_count + self.hot_block_offset
+        if start_index >= len(blocks):
+            return set()
+
+        candidates = list(range(start_index, len(blocks), self.hot_block_stride))
         selected: list[int] = []
         used_bytes = 0
         for block_index in candidates:
@@ -251,6 +259,7 @@ class LTX2DynamicBlockManager:
             "hot_blocks": list(self.selected_hot_blocks),
             "hot_block_budget_gb": self.hot_block_budget_gb,
             "hot_block_stride": self.hot_block_stride,
+            "hot_block_offset": self.hot_block_offset,
             "block_runtime": self._profile_summary_bucket("block_runtime"),
             "copy_runtime": self._profile_summary_bucket("copy_runtime"),
         }
