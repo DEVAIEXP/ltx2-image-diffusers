@@ -92,6 +92,7 @@ class LTX2DynamicBlockManager:
         self._pinned_cpu_bytes = 0
         self._profile_current_block: int | None = None
         self._profile_stats = {
+            "setup_runtime": {},
             "block_runtime": {},
             "copy_runtime": {},
         }
@@ -149,13 +150,16 @@ class LTX2DynamicBlockManager:
             return
 
         # Keep non-block modules resident. The large repeated body is transformer_blocks.
+        setup_start = time.perf_counter()
         resident_names = ["proj_in", "time_embed", "prompt_adaln", "rope", "norm_out", "proj_out"]
         for name in resident_names:
             module = getattr(transformer, name, None)
             if module is not None:
                 module.to(self.device)
+        self._profile_add("setup_runtime", "resident_modules_to_device", time.perf_counter() - setup_start)
 
         # Root-level parameters are not covered by moving child modules.
+        setup_start = time.perf_counter()
         for _, parameter in transformer.named_parameters(recurse=False):
             parameter.data = parameter.data.to(self.device)
             if parameter._grad is not None:
@@ -163,32 +167,47 @@ class LTX2DynamicBlockManager:
 
         for _, buffer in transformer.named_buffers(recurse=False):
             buffer.data = buffer.data.to(self.device)
+        self._profile_add("setup_runtime", "root_tensors_to_device", time.perf_counter() - setup_start)
 
         blocks = transformer.transformer_blocks
         self._blocks = blocks
         self._block_count = len(blocks)
         pinned_count = min(self.pinned_blocks, self._block_count)
+        setup_start = time.perf_counter()
         self._hot_block_indices = self._select_hot_blocks_by_budget(blocks, pinned_count)
+        self._profile_add("setup_runtime", "select_hot_blocks", time.perf_counter() - setup_start)
+        setup_start = time.perf_counter()
         for block_index, block in enumerate(blocks):
             keep_resident = block_index < pinned_count or (self.manual_hot_blocks_enabled and block_index in self._hot_block_indices)
             target_device = self.device if keep_resident else self.offload_device
             block.to(target_device)
+        self._profile_add("setup_runtime", "blocks_to_target_devices", time.perf_counter() - setup_start)
 
         if self.keep_streamed_small_tensors_resident:
+            setup_start = time.perf_counter()
             self._move_streamed_small_tensors_to_device(blocks, pinned_count=pinned_count)
+            self._profile_add("setup_runtime", "streamed_small_tensors_to_device", time.perf_counter() - setup_start)
 
         if self.pin_cpu_memory and self.offload_device.type == "cpu":
+            setup_start = time.perf_counter()
             self._pin_cpu_blocks(blocks, pinned_count=pinned_count)
+            self._profile_add("setup_runtime", "pin_cpu_blocks", time.perf_counter() - setup_start, self._pinned_cpu_bytes)
 
         if self.manual_selective_enabled:
+            setup_start = time.perf_counter()
             self._pin_selective_tensors(blocks, pinned_count=pinned_count)
+            self._profile_add("setup_runtime", "selective_tensors_to_device", time.perf_counter() - setup_start)
 
         if self.manual_patch_enabled:
+            setup_start = time.perf_counter()
             self._patch_manual_modules(blocks)
+            self._profile_add("setup_runtime", "patch_manual_modules", time.perf_counter() - setup_start)
 
         if self.device.type == "cuda":
+            setup_start = time.perf_counter()
             torch.cuda.synchronize(self.device)
             torch.cuda.empty_cache()
+            self._profile_add("setup_runtime", "cuda_sync_empty_cache", time.perf_counter() - setup_start)
 
         if self.verbose:
             streamed = max(0, self._block_count - pinned_count - len(self._hot_block_indices))
@@ -278,6 +297,7 @@ class LTX2DynamicBlockManager:
             "streamed_copy_mode": self.streamed_copy_mode,
             "keep_streamed_small_tensors_resident": self.keep_streamed_small_tensors_resident,
             "streamed_small_resident_gb": round(self._streamed_small_resident_bytes / 1024**3, 4),
+            "setup_runtime": self._profile_summary_bucket("setup_runtime"),
             "block_runtime": self._profile_summary_bucket("block_runtime"),
             "copy_runtime": self._profile_summary_bucket("copy_runtime"),
         }
@@ -304,6 +324,7 @@ class LTX2DynamicBlockManager:
         summary = self.profile_summary()
         block_runtime = summary["block_runtime"]
         copy_runtime = summary["copy_runtime"]
+        setup_runtime = summary["setup_runtime"]
         block_total = sum(value["seconds"] for value in block_runtime.values())
         copy_total = sum(value["seconds"] for value in copy_runtime.values())
         copy_gb = sum(value["gb"] for value in copy_runtime.values())
@@ -314,6 +335,13 @@ class LTX2DynamicBlockManager:
             f"copy_seconds={copy_total:.4f} copy_gb={copy_gb:.4f}",
             flush=True,
         )
+
+        print("  [manager-profile] setup_runtime:", flush=True)
+        for key, value in sorted(setup_runtime.items(), key=lambda item: item[1]["seconds"], reverse=True):
+            print(
+                f"    {key}: calls={value['calls']} seconds={value['seconds']:.4f} gb={value['gb']:.4f}",
+                flush=True,
+            )
 
         print("  [manager-profile] copy_runtime_by_type:", flush=True)
         for key, value in self._profile_totals_by_copy_type(copy_runtime).items():
