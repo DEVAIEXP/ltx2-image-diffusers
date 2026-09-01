@@ -13,8 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import torch
 import torch.nn as nn
+from contextlib import nullcontext
 from typing import List, Optional, Tuple, Union
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -34,6 +36,68 @@ from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.utils import apply_lora_scale, logging
 
 logger = logging.get_logger(__name__)
+
+_LOG_ATTENTION_MASK = os.environ.get("LTX_IMAGE_LOG_ATTENTION_MASK", "0") == "1"
+_LOG_ATTENTION_MASK_LIMIT = int(os.environ.get("LTX_IMAGE_LOG_ATTENTION_MASK_LIMIT", "8"))
+_DROP_TRIVIAL_ATTENTION_MASK_DEFAULT = os.environ.get("LTX_IMAGE_DROP_TRIVIAL_ATTENTION_MASK", "0") == "1"
+_attention_mask_log_count = 0
+
+
+def _mask_stats(mask: Optional[torch.Tensor]) -> dict:
+    if mask is None:
+        return {"is_none": True, "trivial": True}
+
+    with torch.no_grad():
+        sample = mask.detach()
+        numel = sample.numel()
+        stats = {
+            "is_none": False,
+            "shape": list(sample.shape),
+            "dtype": str(sample.dtype),
+            "device": str(sample.device),
+            "numel": int(numel),
+        }
+        if numel == 0:
+            stats["trivial"] = True
+            return stats
+
+        if sample.dtype == torch.bool:
+            true_count = int(sample.sum().item())
+            stats.update({"true": true_count, "false": int(numel - true_count), "trivial": true_count == numel})
+            return stats
+
+        stat_sample = sample.float()
+        min_value = float(stat_sample.min().item())
+        max_value = float(stat_sample.max().item())
+        nonzero = int((stat_sample != 0).sum().item())
+        all_one = bool(torch.all(stat_sample == 1).item())
+        all_zero = bool(torch.all(stat_sample == 0).item())
+        finite = bool(torch.isfinite(stat_sample).all().item())
+        stats.update(
+            {
+                "min": min_value,
+                "max": max_value,
+                "nonzero": nonzero,
+                "all_one": all_one,
+                "all_zero": all_zero,
+                "finite": finite,
+                "trivial": all_one or all_zero,
+            }
+        )
+        return stats
+
+
+def _log_attention_mask(raw_mask: Optional[torch.Tensor], prepared_mask: Optional[torch.Tensor], *, block_idx: Optional[int] = None):
+    global _attention_mask_log_count
+    if not _LOG_ATTENTION_MASK or _attention_mask_log_count >= _LOG_ATTENTION_MASK_LIMIT:
+        return
+    print(
+        f"  [attention_mask] call={_attention_mask_log_count + 1} block={block_idx} "
+        f"raw={_mask_stats(raw_mask)} prepared={_mask_stats(prepared_mask)}",
+        flush=True,
+    )
+    _attention_mask_log_count += 1
+
 
 class LTX2ImageTransformerBlock(nn.Module):
     r"""
@@ -156,10 +220,27 @@ class LTX2ImageTransformerBlock(nn.Module):
 
         encoder_hidden_states = encoder_hidden_states * (1 + scale_text_kv) + shift_text_kv
 
+        if _LOG_ATTENTION_MASK:
+            prepared_attention_mask = None
+            if encoder_attention_mask is not None:
+                sequence_length = encoder_hidden_states.shape[1]
+                prepared_attention_mask = self.attn2.prepare_attention_mask(
+                    encoder_attention_mask, sequence_length, batch_size
+                )
+                prepared_attention_mask = prepared_attention_mask.view(
+                    batch_size, self.attn2.heads, -1, prepared_attention_mask.shape[-1]
+                )
+            _log_attention_mask(encoder_attention_mask, prepared_attention_mask, block_idx=getattr(self, "_ltx2_block_idx", None))
+
+        attention_mask_for_attn = encoder_attention_mask
+        if getattr(self, "drop_trivial_attention_mask", _DROP_TRIVIAL_ATTENTION_MASK_DEFAULT) and attention_mask_for_attn is not None:
+            if bool(torch.all(attention_mask_for_attn == 0).item()):
+                attention_mask_for_attn = None
+
         attn_hidden_states = self.attn2(
             norm_hidden_states,
             encoder_hidden_states=encoder_hidden_states,
-            attention_mask=encoder_attention_mask,
+            attention_mask=attention_mask_for_attn,
         )
         if self.video_cross_attn_adaln:
             attn_hidden_states = attn_hidden_states * gate_text_q
@@ -267,9 +348,17 @@ class LTX2ImageTransformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, FromO
             ]
         )
 
+        for block_idx, block in enumerate(self.transformer_blocks):
+            block._ltx2_block_idx = block_idx
+
         self.norm_out = nn.LayerNorm(inner_dim, eps=1e-6, elementwise_affine=False)
         self.proj_out = nn.Linear(inner_dim, out_channels)
         self.gradient_checkpointing = False
+        self.memory_manager = None
+        self.drop_trivial_attention_mask = _DROP_TRIVIAL_ATTENTION_MASK_DEFAULT
+
+    def set_memory_manager(self, memory_manager):
+        self.memory_manager = memory_manager
 
     @apply_lora_scale("attention_kwargs")
     def forward(
@@ -292,6 +381,11 @@ class LTX2ImageTransformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, FromO
         if encoder_attention_mask is not None and encoder_attention_mask.ndim == 2:
             encoder_attention_mask = (1 - encoder_attention_mask.to(hidden_states.dtype)) * -10000.0
             encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
+        if getattr(self, "drop_trivial_attention_mask", _DROP_TRIVIAL_ATTENTION_MASK_DEFAULT) and encoder_attention_mask is not None:
+            if bool(torch.all(encoder_attention_mask == 0).item()):
+                if _LOG_ATTENTION_MASK:
+                    print("  [attention_mask] dropping trivial all-zero attention mask", flush=True)
+                encoder_attention_mask = None
 
         if video_rotary_emb is None:
             if video_coords is None:
@@ -325,32 +419,41 @@ class LTX2ImageTransformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, FromO
         pag_blocks = set(pag_applied_layers)
 
         for block_idx, block in enumerate(self.transformer_blocks):
+            block.drop_trivial_attention_mask = getattr(
+                self, "drop_trivial_attention_mask", _DROP_TRIVIAL_ATTENTION_MASK_DEFAULT
+            )
             block_perturbation_mask = perturbation_mask if block_idx in pag_blocks else None
             block_all_perturbed = all_perturbed if block_idx in pag_blocks else False
 
-            if torch.is_grad_enabled() and self.gradient_checkpointing:
-                hidden_states = self._gradient_checkpointing_func(
-                    block,
-                    hidden_states,
-                    encoder_hidden_states,
-                    temb,
-                    temb_prompt,
-                    video_rotary_emb,
-                    encoder_attention_mask,
-                    block_perturbation_mask,
-                    block_all_perturbed,
-                )
-            else:
-                hidden_states = block(
-                    hidden_states=hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    temb=temb,
-                    temb_prompt=temb_prompt,
-                    video_rotary_emb=video_rotary_emb,
-                    encoder_attention_mask=encoder_attention_mask,
-                    perturbation_mask=block_perturbation_mask,
-                    all_perturbed=block_all_perturbed,
-                )
+            block_context = (
+                self.memory_manager.use_block(block_idx, block)
+                if self.memory_manager is not None
+                else nullcontext(block)
+            )
+            with block_context as active_block:
+                if torch.is_grad_enabled() and self.gradient_checkpointing:
+                    hidden_states = self._gradient_checkpointing_func(
+                        active_block,
+                        hidden_states,
+                        encoder_hidden_states,
+                        temb,
+                        temb_prompt,
+                        video_rotary_emb,
+                        encoder_attention_mask,
+                        block_perturbation_mask,
+                        block_all_perturbed,
+                    )
+                else:
+                    hidden_states = active_block(
+                        hidden_states=hidden_states,
+                        encoder_hidden_states=encoder_hidden_states,
+                        temb=temb,
+                        temb_prompt=temb_prompt,
+                        video_rotary_emb=video_rotary_emb,
+                        encoder_attention_mask=encoder_attention_mask,
+                        perturbation_mask=block_perturbation_mask,
+                        all_perturbed=block_all_perturbed,
+                    )
 
         scale_shift_values = self.scale_shift_table[None, None] + embedded_timestep[:, :, None]
         shift, scale = scale_shift_values[:, :, 0], scale_shift_values[:, :, 1]

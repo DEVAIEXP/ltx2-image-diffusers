@@ -1,0 +1,565 @@
+"""
+Experimental dynamic block manager for the local LTX2 image transformer.
+
+This is intentionally LTX-specific for now. It keeps the transformer shell,
+small resident modules, and an optional prefix of transformer blocks on the
+execution device. The remaining transformer blocks stay on CPU and are moved to
+the execution device only while their forward pass runs. In prefetch modes, the
+next streamed block is scheduled on a side CUDA stream while the current block
+runs on the default stream.
+"""
+
+from __future__ import annotations
+
+from collections import OrderedDict
+from contextlib import contextmanager
+from dataclasses import dataclass
+import time
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+@dataclass
+class LTX2DynamicBlockManager:
+    VALID_MODES = {
+        "sync",
+        "prefetch",
+        "block_prefetch_v2",
+        "block_swap",
+        "manual_linear",
+        "manual_buffered",
+        "manual_cached",
+        "manual_selective",
+        "manual_linear_static_plan",
+    }
+    RECOMMENDED_MODE = "manual_linear"
+
+    device: str | torch.device = "cuda:0"
+    offload_device: str | torch.device = "cpu"
+    enabled: bool = True
+    mode: str = "sync"
+    pinned_blocks: int = 0
+    synchronize: bool = True
+    empty_cache_after_offload: bool = False
+    verbose: bool = False
+    weight_cache_gb: float = 4.0
+    pin_cpu_memory: bool = False
+    profile: bool = False
+    profile_sync_copies: bool = False
+
+    def __post_init__(self):
+        self.device = torch.device(self.device)
+        self.offload_device = torch.device(self.offload_device)
+        self.mode = self.mode.lower()
+        if self.mode not in self.VALID_MODES:
+            valid_modes = ", ".join(sorted(self.VALID_MODES))
+            raise ValueError(f"Unsupported LTX2DynamicBlockManager mode {self.mode!r}. Valid modes: {valid_modes}")
+        self.pinned_blocks = max(0, int(self.pinned_blocks))
+        self.weight_cache_gb = max(0.0, float(self.weight_cache_gb))
+        self._active_block: int | None = None
+        self._block_count = 0
+        self._blocks: nn.ModuleList | None = None
+        self._prefetch_stream = torch.cuda.Stream(device=self.device) if self.device.type == "cuda" else None
+        self._offload_stream = torch.cuda.Stream(device=self.device) if self.device.type == "cuda" else None
+        self._prefetched_index: int | None = None
+        self._pending_offload: list[tuple[int, nn.Module]] = []
+        self._patched_modules: list[tuple[nn.Module, object]] = []
+        self._weight_cache: OrderedDict[tuple[int, str, torch.dtype], torch.Tensor] = OrderedDict()
+        self._weight_cache_bytes = 0
+        self._weight_cache_limit_bytes = int(self.weight_cache_gb * 1024**3)
+        self._buffered_tensors: dict[tuple[str, str, torch.dtype], torch.Tensor] = {}
+        self._selective_resident_bytes = 0
+        self._pinned_cpu_bytes = 0
+        self._profile_current_block: int | None = None
+        self._profile_stats = {
+            "block_runtime": {},
+            "copy_runtime": {},
+        }
+
+    @property
+    def prefetch_enabled(self) -> bool:
+        return self.mode in {"prefetch", "block_prefetch_v2"} and self._prefetch_stream is not None
+
+    @property
+    def block_prefetch_v2_enabled(self) -> bool:
+        return self.mode == "block_prefetch_v2" and self._prefetch_stream is not None
+
+    @property
+    def block_swap_enabled(self) -> bool:
+        return self.mode == "block_swap"
+
+    @property
+    def manual_patch_enabled(self) -> bool:
+        return self.mode in {"manual_linear", "manual_buffered", "manual_cached", "manual_selective", "manual_linear_static_plan"}
+
+    @property
+    def manual_cache_enabled(self) -> bool:
+        return self.mode == "manual_cached" and self._weight_cache_limit_bytes > 0
+
+    @property
+    def manual_buffered_enabled(self) -> bool:
+        return self.mode == "manual_buffered"
+
+    @property
+    def manual_selective_enabled(self) -> bool:
+        return self.mode == "manual_selective"
+
+    @property
+    def manual_static_plan_enabled(self) -> bool:
+        return self.mode == "manual_linear_static_plan"
+
+    def attach(self, transformer: nn.Module) -> None:
+        self.prepare_transformer(transformer)
+        transformer.set_memory_manager(self)
+
+    def prepare_transformer(self, transformer: nn.Module) -> None:
+        if not self.enabled:
+            return
+
+        # Keep non-block modules resident. The large repeated body is transformer_blocks.
+        resident_names = ["proj_in", "time_embed", "prompt_adaln", "rope", "norm_out", "proj_out"]
+        for name in resident_names:
+            module = getattr(transformer, name, None)
+            if module is not None:
+                module.to(self.device)
+
+        # Root-level parameters are not covered by moving child modules.
+        for _, parameter in transformer.named_parameters(recurse=False):
+            parameter.data = parameter.data.to(self.device)
+            if parameter._grad is not None:
+                parameter._grad.data = parameter._grad.data.to(self.device)
+
+        for _, buffer in transformer.named_buffers(recurse=False):
+            buffer.data = buffer.data.to(self.device)
+
+        blocks = transformer.transformer_blocks
+        self._blocks = blocks
+        self._block_count = len(blocks)
+        pinned_count = min(self.pinned_blocks, self._block_count)
+        for block_index, block in enumerate(blocks):
+            target_device = self.device if block_index < pinned_count else self.offload_device
+            block.to(target_device)
+
+        if self.pin_cpu_memory and self.offload_device.type == "cpu":
+            self._pin_cpu_blocks(blocks, pinned_count=pinned_count)
+
+        if self.manual_selective_enabled:
+            self._pin_selective_tensors(blocks, pinned_count=pinned_count)
+
+        if self.manual_patch_enabled:
+            self._patch_manual_modules(blocks)
+
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            torch.cuda.empty_cache()
+
+        if self.verbose:
+            streamed = self._block_count - pinned_count
+            cache_gb = self._weight_cache_limit_bytes / 1024**3
+            selective_gb = self._selective_resident_bytes / 1024**3
+            pinned_cpu_gb = self._pinned_cpu_bytes / 1024**3
+            print(
+                f"  [manager] mode={self.mode} pinned_blocks={pinned_count} "
+                f"streamed_blocks={streamed} weight_cache_gb={cache_gb:g} "
+                f"selective_resident_gb={selective_gb:.3f} pinned_cpu_gb={pinned_cpu_gb:.3f}",
+                flush=True,
+            )
+
+    def _profile_copy_key(self, tensor_name: str) -> str:
+        block = self._profile_current_block
+        if block is None:
+            return tensor_name
+        return f"block:{block}/{tensor_name}"
+
+    def _maybe_sync_profile_copy(self) -> None:
+        if self.profile_sync_copies and self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+
+    def _profile_add(self, bucket: str, key: str | int, elapsed: float, byte_count: int = 0) -> None:
+        if not self.profile:
+            return
+        stats = self._profile_stats[bucket].setdefault(str(key), {"calls": 0, "seconds": 0.0, "bytes": 0})
+        stats["calls"] += 1
+        stats["seconds"] += elapsed
+        stats["bytes"] += byte_count
+
+    def _profile_summary_bucket(self, bucket: str) -> dict:
+        return {
+            key: {
+                "calls": value["calls"],
+                "seconds": round(value["seconds"], 4),
+                "gb": round(value["bytes"] / 1024**3, 4),
+            }
+            for key, value in sorted(self._profile_stats[bucket].items(), key=lambda item: item[0])
+        }
+
+    def profile_summary(self) -> dict:
+        return {
+            "mode": self.mode,
+            "block_runtime": self._profile_summary_bucket("block_runtime"),
+            "copy_runtime": self._profile_summary_bucket("copy_runtime"),
+        }
+
+    def print_profile_summary(self) -> None:
+        if not self.profile:
+            return
+        summary = self.profile_summary()
+        print("  [manager-profile] block_runtime:", flush=True)
+        for key, value in summary["block_runtime"].items():
+            print(
+                f"    block {key}: calls={value['calls']} seconds={value['seconds']:.4f}",
+                flush=True,
+            )
+        print("  [manager-profile] copy_runtime:", flush=True)
+        for key, value in summary["copy_runtime"].items():
+            print(
+                f"    {key}: calls={value['calls']} seconds={value['seconds']:.4f} gb={value['gb']:.4f}",
+                flush=True,
+            )
+
+    def _tensor_size_bytes(self, tensor: torch.Tensor) -> int:
+        return tensor.numel() * tensor.element_size()
+
+    def _pin_cpu_blocks(self, blocks: nn.ModuleList, pinned_count: int) -> None:
+        self._pinned_cpu_bytes = 0
+        for block_index, block in enumerate(blocks):
+            if block_index < pinned_count:
+                continue
+            for parameter in block.parameters(recurse=True):
+                if parameter.device.type == "cpu" and not parameter.data.is_pinned():
+                    parameter.data = parameter.data.pin_memory()
+                    self._pinned_cpu_bytes += self._tensor_size_bytes(parameter.data)
+            for buffer in block.buffers(recurse=True):
+                if buffer.device.type == "cpu" and not buffer.is_pinned():
+                    pinned = buffer.pin_memory()
+                    buffer.data = pinned
+                    self._pinned_cpu_bytes += self._tensor_size_bytes(buffer.data)
+
+    def _move_parameter_to_device(self, parameter: nn.Parameter) -> int:
+        original_bytes = self._tensor_size_bytes(parameter.data)
+        parameter.data = parameter.data.to(self.device)
+        if parameter._grad is not None:
+            parameter._grad.data = parameter._grad.data.to(self.device)
+        return original_bytes
+
+    def _pin_selective_tensors(self, blocks: nn.ModuleList, pinned_count: int) -> None:
+        self._selective_resident_bytes = 0
+        for block_index, block in enumerate(blocks):
+            if block_index < pinned_count:
+                continue
+
+            for _, parameter in block.named_parameters(recurse=False):
+                self._selective_resident_bytes += self._move_parameter_to_device(parameter)
+            for _, buffer in block.named_buffers(recurse=False):
+                self._selective_resident_bytes += self._tensor_size_bytes(buffer.data)
+                buffer.data = buffer.data.to(self.device)
+
+            for module in block.modules():
+                if isinstance(module, nn.Linear):
+                    if module.bias is not None:
+                        self._selective_resident_bytes += self._move_parameter_to_device(module.bias)
+                elif isinstance(module, (nn.RMSNorm, nn.LayerNorm)):
+                    for _, parameter in module.named_parameters(recurse=False):
+                        self._selective_resident_bytes += self._move_parameter_to_device(parameter)
+                    for _, buffer in module.named_buffers(recurse=False):
+                        self._selective_resident_bytes += self._tensor_size_bytes(buffer.data)
+                        buffer.data = buffer.data.to(self.device)
+
+    def _clear_weight_cache(self) -> None:
+        self._weight_cache.clear()
+        self._weight_cache_bytes = 0
+
+    def _evict_weight_cache(self) -> None:
+        while self._weight_cache_bytes > self._weight_cache_limit_bytes and self._weight_cache:
+            _, cached_tensor = self._weight_cache.popitem(last=False)
+            self._weight_cache_bytes -= self._tensor_size_bytes(cached_tensor)
+            del cached_tensor
+
+    def _cached_to_input_device(self, tensor: torch.Tensor, input: torch.Tensor, tensor_name: str) -> torch.Tensor:
+        key = (id(tensor), str(input.device), input.dtype)
+        cached = self._weight_cache.get(key)
+        if cached is not None:
+            self._weight_cache.move_to_end(key)
+            return cached
+
+        start_time = time.perf_counter()
+        cached = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
+        self._profile_add("copy_runtime", "cached_tensor_to_input", time.perf_counter() - start_time, self._tensor_size_bytes(cached))
+        self._weight_cache[key] = cached
+        self._weight_cache_bytes += self._tensor_size_bytes(cached)
+        self._evict_weight_cache()
+        return self._weight_cache.get(key, cached)
+
+    def _buffered_to_input_device(
+        self, tensor: torch.Tensor | None, input: torch.Tensor, buffer_name: str
+    ) -> torch.Tensor | None:
+        if tensor is None:
+            return None
+        if tensor.device == input.device and tensor.dtype == input.dtype:
+            return tensor
+
+        key = (buffer_name, str(input.device), input.dtype)
+        numel = tensor.numel()
+        buffer = self._buffered_tensors.get(key)
+        if buffer is None or buffer.numel() < numel:
+            buffer = torch.empty(numel, device=input.device, dtype=input.dtype)
+            self._buffered_tensors[key] = buffer
+
+        view = buffer[:numel].view(tensor.shape)
+        start_time = time.perf_counter()
+        view.copy_(tensor, non_blocking=True)
+        self._profile_add("copy_runtime", buffer_name, time.perf_counter() - start_time, self._tensor_size_bytes(view))
+        return view
+
+    def _to_input_device(self, tensor: torch.Tensor | None, input: torch.Tensor, tensor_name: str = "tensor_to_input") -> torch.Tensor | None:
+        if tensor is None:
+            return None
+        if tensor.device == input.device and tensor.dtype == input.dtype:
+            return tensor
+        if self.manual_cache_enabled:
+            return self._cached_to_input_device(tensor, input, tensor_name)
+        start_time = time.perf_counter()
+        moved = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
+        self._profile_add("copy_runtime", "tensor_to_input", time.perf_counter() - start_time, self._tensor_size_bytes(moved))
+        return moved
+
+    def _patch_manual_modules(self, blocks: nn.ModuleList) -> None:
+        if self._patched_modules:
+            return
+
+        def dynamic_linear_forward(linear, input):
+            weight = self._to_input_device(linear.weight, input, "linear_weight")
+            bias = self._to_input_device(linear.bias, input, "linear_bias")
+            return F.linear(input, weight, bias)
+
+        def dynamic_rms_norm_forward(norm, input):
+            weight = self._to_input_device(norm.weight, input, "rms_norm_weight")
+            return F.rms_norm(input, norm.normalized_shape, weight, norm.eps)
+
+        def dynamic_layer_norm_forward(norm, input):
+            weight = self._to_input_device(norm.weight, input, "layer_norm_weight")
+            bias = self._to_input_device(norm.bias, input, "layer_norm_bias")
+            return F.layer_norm(input, norm.normalized_shape, weight, bias, norm.eps)
+
+        def buffered_linear_forward(linear, input):
+            weight = self._buffered_to_input_device(linear.weight, input, "linear_weight")
+            bias = self._buffered_to_input_device(linear.bias, input, "linear_bias")
+            return F.linear(input, weight, bias)
+
+        def buffered_rms_norm_forward(norm, input):
+            weight = self._buffered_to_input_device(norm.weight, input, "rms_norm_weight")
+            return F.rms_norm(input, norm.normalized_shape, weight, norm.eps)
+
+        def buffered_layer_norm_forward(norm, input):
+            weight = self._buffered_to_input_device(norm.weight, input, "layer_norm_weight")
+            bias = self._buffered_to_input_device(norm.bias, input, "layer_norm_bias")
+            return F.layer_norm(input, norm.normalized_shape, weight, bias, norm.eps)
+
+        def make_static_linear_forward(weight_ref, bias_ref):
+            def static_linear_forward(_linear, input):
+                weight = self._to_input_device(weight_ref, input, "linear_weight")
+                bias = self._to_input_device(bias_ref, input, "linear_bias")
+                return F.linear(input, weight, bias)
+
+            return static_linear_forward
+
+        def make_static_rms_norm_forward(weight_ref, normalized_shape, eps):
+            def static_rms_norm_forward(_norm, input):
+                weight = self._to_input_device(weight_ref, input, "rms_norm_weight")
+                return F.rms_norm(input, normalized_shape, weight, eps)
+
+            return static_rms_norm_forward
+
+        def make_static_layer_norm_forward(weight_ref, bias_ref, normalized_shape, eps):
+            def static_layer_norm_forward(_norm, input):
+                weight = self._to_input_device(weight_ref, input, "linear_weight")
+                bias = self._to_input_device(bias_ref, input, "linear_bias")
+                return F.layer_norm(input, normalized_shape, weight, bias, eps)
+
+            return static_layer_norm_forward
+
+        for module in blocks.modules():
+            if isinstance(module, nn.Linear):
+                self._patched_modules.append((module, module.forward))
+                if self.manual_buffered_enabled:
+                    module.forward = buffered_linear_forward.__get__(module, module.__class__)
+                elif self.manual_static_plan_enabled:
+                    module.forward = make_static_linear_forward(module.weight, module.bias).__get__(module, module.__class__)
+                else:
+                    module.forward = dynamic_linear_forward.__get__(module, module.__class__)
+            elif isinstance(module, nn.RMSNorm):
+                self._patched_modules.append((module, module.forward))
+                if self.manual_buffered_enabled:
+                    module.forward = buffered_rms_norm_forward.__get__(module, module.__class__)
+                elif self.manual_static_plan_enabled:
+                    module.forward = make_static_rms_norm_forward(
+                        module.weight, module.normalized_shape, module.eps
+                    ).__get__(module, module.__class__)
+                else:
+                    module.forward = dynamic_rms_norm_forward.__get__(module, module.__class__)
+            elif isinstance(module, nn.LayerNorm):
+                self._patched_modules.append((module, module.forward))
+                if self.manual_buffered_enabled:
+                    module.forward = buffered_layer_norm_forward.__get__(module, module.__class__)
+                elif self.manual_static_plan_enabled:
+                    module.forward = make_static_layer_norm_forward(
+                        module.weight, module.bias, module.normalized_shape, module.eps
+                    ).__get__(module, module.__class__)
+                else:
+                    module.forward = dynamic_layer_norm_forward.__get__(module, module.__class__)
+
+    def _restore_manual_modules(self) -> None:
+        for module, original_forward in self._patched_modules:
+            module.forward = original_forward
+        self._patched_modules.clear()
+        self._clear_weight_cache()
+
+    def _swap_block_to_device(self, block: nn.Module):
+        parameter_handles = []
+        buffer_handles = []
+        for parameter in block.parameters(recurse=True):
+            old_data = parameter.data
+            if old_data.device != self.device:
+                parameter_handles.append((parameter, old_data))
+                start_time = time.perf_counter()
+                parameter.data = old_data.to(self.device, non_blocking=True)
+                self._profile_add("copy_runtime", "block_swap_parameter_to_device", time.perf_counter() - start_time, self._tensor_size_bytes(parameter.data))
+        for module in block.modules():
+            for name, buffer in module.named_buffers(recurse=False):
+                if buffer.device != self.device:
+                    buffer_handles.append((module, name, buffer))
+                    start_time = time.perf_counter()
+                    new_buffer = buffer.to(self.device, non_blocking=True)
+                    self._profile_add("copy_runtime", "block_swap_buffer_to_device", time.perf_counter() - start_time, self._tensor_size_bytes(new_buffer))
+                    setattr(module, name, new_buffer)
+        return parameter_handles, buffer_handles
+
+    def _restore_block_from_swap(self, handles) -> None:
+        parameter_handles, buffer_handles = handles
+        for parameter, old_data in reversed(parameter_handles):
+            parameter.data = old_data
+        for module, name, old_buffer in reversed(buffer_handles):
+            setattr(module, name, old_buffer)
+
+    def _is_pinned(self, block_index: int) -> bool:
+        return block_index < min(self.pinned_blocks, self._block_count)
+
+    def _prefetch_next(self, block_index: int) -> None:
+        if not self.prefetch_enabled or self._blocks is None:
+            return
+        next_index = block_index + 1
+        if next_index >= self._block_count or self._is_pinned(next_index):
+            return
+        if self._prefetched_index == next_index:
+            return
+
+        next_block = self._blocks[next_index]
+        if self.verbose:
+            print(f"  [manager] prefetch block {next_index}", flush=True)
+        with torch.cuda.stream(self._prefetch_stream):
+            next_block.to(self.device, non_blocking=True)
+        self._prefetched_index = next_index
+
+    def _wait_for_prefetch(self, block_index: int) -> bool:
+        if not self.prefetch_enabled or self._prefetched_index != block_index:
+            return False
+        torch.cuda.current_stream(self.device).wait_stream(self._prefetch_stream)
+        self._prefetched_index = None
+        return True
+
+    def _schedule_deferred_offload(self, block_index: int, block: nn.Module) -> None:
+        if self._is_pinned(block_index):
+            return
+        if self.verbose:
+            print(f"  [manager] offload block {block_index}", flush=True)
+        block.to(self.offload_device, non_blocking=False)
+
+    def _flush_deferred_offloads(self) -> None:
+        while self._pending_offload:
+            block_index, block = self._pending_offload.pop(0)
+            if not self._is_pinned(block_index):
+                block.to(self.offload_device, non_blocking=False)
+        if self._offload_stream is not None:
+            torch.cuda.current_stream(self.device).wait_stream(self._offload_stream)
+
+    @contextmanager
+    def use_block(self, block_index: int, block: nn.Module):
+        if not self.enabled:
+            yield block
+            return
+
+        if self.manual_patch_enabled:
+            self._profile_current_block = block_index
+            start_time = time.perf_counter()
+            try:
+                yield block
+            finally:
+                self._profile_add("block_runtime", block_index, time.perf_counter() - start_time)
+                self._profile_current_block = None
+            return
+        if self.block_swap_enabled and not self._is_pinned(block_index):
+            if self.verbose:
+                print(f"  [manager] swap block {block_index}", flush=True)
+            handles = self._swap_block_to_device(block)
+            start_time = time.perf_counter()
+            try:
+                yield block
+                if self.synchronize and self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+            finally:
+                self._profile_add("block_runtime", block_index, time.perf_counter() - start_time)
+                self._restore_block_from_swap(handles)
+                if self.empty_cache_after_offload and self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+            return
+        if self._is_pinned(block_index):
+            self._prefetch_next(block_index)
+            start_time = time.perf_counter()
+            try:
+                yield block
+            finally:
+                self._profile_add("block_runtime", block_index, time.perf_counter() - start_time)
+            return
+        was_prefetched = self._wait_for_prefetch(block_index)
+        if not was_prefetched:
+            if self.verbose:
+                print(f"  [manager] onload streamed block {block_index}", flush=True)
+            block.to(self.device, non_blocking=self.block_prefetch_v2_enabled)
+            if self.synchronize and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+
+        self._prefetch_next(block_index)
+        self._active_block = block_index
+        start_time = time.perf_counter()
+        try:
+            yield block
+            if self.synchronize and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+        finally:
+            self._profile_add("block_runtime", block_index, time.perf_counter() - start_time)
+            if self.block_prefetch_v2_enabled:
+                self._schedule_deferred_offload(block_index, block)
+            else:
+                block.to(self.offload_device, non_blocking=False)
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                    if self.empty_cache_after_offload:
+                        torch.cuda.empty_cache()
+            self._active_block = None
+
+    def detach(self, transformer: nn.Module) -> None:
+        transformer.set_memory_manager(None)
+        self._restore_manual_modules()
+        self._flush_deferred_offloads()
+        if self._prefetch_stream is not None:
+            torch.cuda.current_stream(self.device).wait_stream(self._prefetch_stream)
+        if self._offload_stream is not None:
+            torch.cuda.current_stream(self.device).wait_stream(self._offload_stream)
+        self._prefetched_index = None
+        for block in transformer.transformer_blocks:
+            block.to(self.offload_device, non_blocking=False)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            torch.cuda.empty_cache()

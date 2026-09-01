@@ -2,6 +2,7 @@
 Local low-VRAM parity runner for the experimental LTX 2.3 distilled modular T2I blocks.
 """
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import time
 import torch
 from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler
 from diffusers.hooks import apply_group_offloading
+from diffusers.models.attention_dispatch import AttentionBackendName, _AttentionBackendRegistry, attention_backend
 from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
 
 from custom_blocks.ltx2_image import LTX2ImageDistilledBlocks, LTX2ImageTextEncoderStep
@@ -19,6 +21,7 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
     LTX2ImageDenoiseStep,
     LTX2ImagePrepareLatentsStep,
 )
+from custom_blocks.ltx2_image.memory_manager import LTX2DynamicBlockManager
 from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer2DModel
 from inference_utils import RunTracker, flush
 
@@ -34,7 +37,22 @@ MODEL_PATH = os.environ.get("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-dist
 LOW_CPU_MEM_USAGE = True
 AUTO_CPU_OFFLOAD = os.environ.get("LTX_IMAGE_AUTO_CPU_OFFLOAD", "0") == "1"
 TEXT_ENCODER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD", "1") == "1"
-TRANSFORMER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD", "1") == "1"
+TRANSFORMER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD", "0") == "1"
+TRANSFORMER_MEMORY_MANAGER = os.environ.get("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "manual_linear").lower()
+TRANSFORMER_MANAGER_PINNED_BLOCKS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PINNED_BLOCKS", "0"))
+TRANSFORMER_MANAGER_SYNCHRONIZE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_SYNCHRONIZE", "0") == "1"
+TRANSFORMER_MANAGER_EMPTY_CACHE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_EMPTY_CACHE", "0") == "1"
+TRANSFORMER_MANAGER_VERBOSE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_VERBOSE", "0") == "1"
+TRANSFORMER_MANAGER_WEIGHT_CACHE_GB = float(os.environ.get("LTX_IMAGE_TRANSFORMER_WEIGHT_CACHE_GB", "0.0"))
+TRANSFORMER_MANAGER_PIN_CPU_MEMORY = os.environ.get("LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY", "0") == "1"
+TRANSFORMER_MANAGER_PROFILE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE", "0") == "1"
+TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES", "0") == "1"
+ATTENTION_BACKEND = os.environ.get("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
+FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
+DROP_TRIVIAL_ATTENTION_MASK = (
+    os.environ.get("LTX_IMAGE_DROP_TRIVIAL_ATTENTION_MASK", "0") == "1"
+    or ATTENTION_BACKEND in FLASH_COMPATIBLE_ATTENTION_BACKENDS
+)
 GROUP_OFFLOAD_CONFIG = {
     "mode": "components_manager_auto_cpu_offload" if AUTO_CPU_OFFLOAD else "disabled",
     "device": DEVICE,
@@ -99,6 +117,65 @@ def apply_model_group_offload(model, *, prefix):
     apply_group_offloading(model, **kwargs)
 
 
+def get_attention_backend():
+    if ATTENTION_BACKEND in ("", "default", "none"):
+        return None
+    try:
+        return AttentionBackendName(ATTENTION_BACKEND)
+    except ValueError as exc:
+        valid = ", ".join(backend.value for backend in AttentionBackendName)
+        raise ValueError(f"Invalid LTX_IMAGE_ATTENTION_BACKEND={ATTENTION_BACKEND!r}. Valid values: {valid}") from exc
+
+
+def _is_trivial_zero_attention_mask(attn_mask):
+    if attn_mask is None:
+        return False
+    with torch.no_grad():
+        return bool(torch.all(attn_mask == 0).item())
+
+
+def install_trivial_mask_flash_wrapper():
+    if not DROP_TRIVIAL_ATTENTION_MASK:
+        return False
+
+    wrapped_any = False
+    for backend in (AttentionBackendName.FLASH, AttentionBackendName._NATIVE_FLASH):
+        backend_fn = _AttentionBackendRegistry._backends.get(backend)
+        if backend_fn is None or getattr(backend_fn, "_ltx2_trivial_mask_wrapper", False):
+            continue
+
+        def wrapped_backend_fn(*args, _backend_fn=backend_fn, _backend=backend, **kwargs):
+            attn_mask = kwargs.get("attn_mask")
+            if _is_trivial_zero_attention_mask(attn_mask):
+                if os.environ.get("LTX_IMAGE_LOG_ATTENTION_MASK", "0") == "1":
+                    print(f"  [attention_mask] dropping trivial mask inside backend {_backend.value}", flush=True)
+                kwargs["attn_mask"] = None
+            return _backend_fn(*args, **kwargs)
+
+        wrapped_backend_fn._ltx2_trivial_mask_wrapper = True
+        _AttentionBackendRegistry._backends[backend] = wrapped_backend_fn
+        wrapped_any = True
+    return wrapped_any
+
+def get_attention_backend_context():
+    backend = get_attention_backend()
+    if backend is None:
+        return contextlib.nullcontext()
+    return attention_backend(backend)
+
+
+def apply_transformer_attention_backend(transformer):
+    backend = get_attention_backend()
+    transformer.drop_trivial_attention_mask = DROP_TRIVIAL_ATTENTION_MASK
+    patched = 0
+    for module in transformer.modules():
+        processor = getattr(module, "processor", None)
+        if processor is not None and hasattr(processor, "_attention_backend"):
+            processor._attention_backend = backend
+            patched += 1
+    return patched, None if backend is None else backend.value, DROP_TRIVIAL_ATTENTION_MASK
+
+
 def denoise_progress_callback(components, step_index, timestep, callback_kwargs):
     used_gb = torch.cuda.memory_allocated(DEVICE) / 1024**3
     reserved_gb = torch.cuda.memory_reserved(DEVICE) / 1024**3
@@ -137,9 +214,20 @@ def main():
         "pag_applied_layers": PAG_APPLIED_LAYERS if PAG_ENABLED else None,
         "dtype": str(DTYPE),
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
+        "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
+        "transformer_manager_pinned_blocks": TRANSFORMER_MANAGER_PINNED_BLOCKS,
+        "transformer_manager_weight_cache_gb": TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
+        "transformer_manager_pin_cpu_memory": TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
+        "transformer_manager_profile_enabled": TRANSFORMER_MANAGER_PROFILE,
+        "transformer_manager_profile_sync_copies": TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
+        "attention_backend": ATTENTION_BACKEND,
+        "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,
         "events": [],
         "steps": [],
     }
+
+    flash_mask_wrapper_installed = install_trivial_mask_flash_wrapper()
+    run_metrics["flash_trivial_mask_wrapper_installed"] = flash_mask_wrapper_installed
 
     tracker = RunTracker(DEVICE, run_metrics, interval=0.1)
     record_event = tracker.record_event
@@ -253,7 +341,48 @@ def main():
     record_event("load_transformer", time.time() - event_t0, source=MODEL_PATH)
 
     event_t0 = time.time()
-    if TRANSFORMER_GROUP_OFFLOAD:
+    patched_attention_processors, resolved_attention_backend, drop_trivial_attention_mask = apply_transformer_attention_backend(transformer)
+    record_event(
+        "set_transformer_attention_backend",
+        time.time() - event_t0,
+        requested_backend=ATTENTION_BACKEND,
+        resolved_backend=resolved_attention_backend,
+        patched_processors=patched_attention_processors,
+        drop_trivial_attention_mask=drop_trivial_attention_mask,
+    )
+
+    event_t0 = time.time()
+    transformer_manager = None
+    if TRANSFORMER_MEMORY_MANAGER != "off":
+        if TRANSFORMER_GROUP_OFFLOAD:
+            print("  Disabling transformer group offload because transformer memory manager is enabled.", flush=True)
+        transformer_manager = LTX2DynamicBlockManager(
+            device=DEVICE,
+            offload_device=OFFLOAD_DEVICE,
+            enabled=True,
+            mode=TRANSFORMER_MEMORY_MANAGER,
+            pinned_blocks=TRANSFORMER_MANAGER_PINNED_BLOCKS,
+            synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
+            empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
+            verbose=TRANSFORMER_MANAGER_VERBOSE,
+            weight_cache_gb=TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
+            pin_cpu_memory=TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
+            profile=TRANSFORMER_MANAGER_PROFILE,
+            profile_sync_copies=TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
+        )
+        transformer_manager.attach(transformer)
+        record_event(
+            "setup_transformer_memory_manager",
+            time.time() - event_t0,
+            mode=TRANSFORMER_MEMORY_MANAGER,
+            pinned_blocks=TRANSFORMER_MANAGER_PINNED_BLOCKS,
+            synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
+            empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
+            weight_cache_gb=TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
+            pin_cpu_memory=TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
+            profile=TRANSFORMER_MANAGER_PROFILE,
+        )
+    elif TRANSFORMER_GROUP_OFFLOAD:
         apply_model_group_offload(transformer, prefix="transformer")
         record_event(
             "setup_transformer_group_offload",
@@ -293,29 +422,34 @@ def main():
     record_event("build_denoise_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
 
     denoise_progress_callback.timesteps = prepare_state["timesteps"]
-    print("  Starting denoise loop...", flush=True)
+    print(f"  Starting denoise loop with attention backend: {ATTENTION_BACKEND}", flush=True)
     event_t0 = time.time()
-    denoise_state = denoise_pipe(
-        latents=prepare_state["latents"],
-        timesteps=prepare_state["timesteps"],
-        connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
-        connector_attention_mask=connector_attention_mask.to(device=DEVICE),
-        latent_height=prepare_state["latent_height"],
-        latent_width=prepare_state["latent_width"],
-        video_rotary_emb=prepare_state["video_rotary_emb"],
-        batch_size=latent_batch_size,
-        transformer_batch_multiplier=transformer_batch_multiplier,
-        do_classifier_free_guidance=False,
-        do_perturbed_attention_guidance=do_perturbed_attention_guidance,
-        guidance_scale=GUIDANCE_SCALE,
-        guidance_rescale=GUIDANCE_RESCALE,
-        pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
-        pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
-        callback_on_step_end=denoise_progress_callback,
-        callback_on_step_end_tensor_inputs=["latents"],
-        output="latents",
-    )
-    record_event("denoise_modular_pipe_call", time.time() - event_t0)
+    with get_attention_backend_context():
+        denoise_state = denoise_pipe(
+            latents=prepare_state["latents"],
+            timesteps=prepare_state["timesteps"],
+            connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
+            connector_attention_mask=connector_attention_mask.to(device=DEVICE),
+            latent_height=prepare_state["latent_height"],
+            latent_width=prepare_state["latent_width"],
+            video_rotary_emb=prepare_state["video_rotary_emb"],
+            batch_size=latent_batch_size,
+            transformer_batch_multiplier=transformer_batch_multiplier,
+            do_classifier_free_guidance=False,
+            do_perturbed_attention_guidance=do_perturbed_attention_guidance,
+            guidance_scale=GUIDANCE_SCALE,
+            guidance_rescale=GUIDANCE_RESCALE,
+            pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
+            pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
+            callback_on_step_end=denoise_progress_callback,
+            callback_on_step_end_tensor_inputs=["latents"],
+            output="latents",
+        )
+    record_event("denoise_modular_pipe_call", time.time() - event_t0, attention_backend=ATTENTION_BACKEND)
+    if transformer_manager is not None and TRANSFORMER_MANAGER_PROFILE:
+        run_metrics["transformer_manager_profile_summary"] = transformer_manager.profile_summary()
+        transformer_manager.print_profile_summary()
+
 
     image_latent = denoise_state.to(OFFLOAD_DEVICE)
     latent_height = prepare_state["latent_height"]
@@ -324,6 +458,8 @@ def main():
     print(f"  Image latent: {image_latent.shape}")
 
     del connector_prompt_embeds, connector_attention_mask
+    if transformer_manager is not None:
+        transformer_manager.detach(transformer)
     del prepare_pipe, denoise_pipe, transformer, scheduler
     flush()
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
