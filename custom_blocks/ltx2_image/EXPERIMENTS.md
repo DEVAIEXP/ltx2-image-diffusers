@@ -31,7 +31,7 @@ Known setup from the current experiments:
 | Modular Diffusers, best group-offload outlier | `16.4s` | `~0.1s` | `263.4s` | `274.6s` | `0.39 GiB` | `28.8 GB` | Good run, but not stable. |
 | Transformer fully on CUDA/fallback, manager off | `95.9s` | `110.4s` | `129.4s` | `251.6s` | `24.84 GiB` | `33.2 GB` | Fast denoise, expensive full transformer move. |
 | Experimental `manual_linear`, no pinned CPU | `95.7s` | `~0.6s` | `277.6s` | `288.6s` | `0.80 GiB` | `28.2 GB` | Copy dominated; profile reported `192 GB` tensor movement. |
-| Experimental `manual_linear` + pinned CPU | `102.7s` | `103.4s` | `97.1s` | `210.9s` | `0.80 GiB` | `32.9 GB` | Best Diffusers-side denoise so far. Setup cost moved into pinning/staging. |
+| Experimental `manual_linear` + pinned CPU, confirmed | `102.7-103.8s` | `103.4-114.6s` | `97.1-97.9s` | `210.9-222.5s` | `0.80 GiB` | `32.9 GB` | Best confirmed Diffusers-side denoise so far. Setup cost moved into pinning/staging. |
 | ComfyUI BF16 | not directly isolated | staged dynamically | `~26.7s` | total prompt `63.0s` | not PyTorch-comparable | not logged | `8/8` at `3.34s/it`; no flash-attn or xformers installed. |
 | ComfyUI quantized | not directly isolated | staged dynamically | `~10.9s` | total prompt `45.0s` | not PyTorch-comparable | not logged | `8/8` at `1.36s/it`. |
 
@@ -49,12 +49,12 @@ $env:LTX_IMAGE_ATTENTION_BACKEND="native"
 python run_modular_distilled.py
 ```
 
-Expected behavior from the best observed run:
+Expected behavior from the confirmed runs:
 
-- `setup_transformer_memory_manager` around `103s`
-- `denoise_modular_pipe_call` around `97s`
+- `setup_transformer_memory_manager` around `103-115s`
+- `denoise_modular_pipe_call` around `97-98s`
 - `torch_alloc` during denoise around `0.80 GiB`
-- `Pass 1 total` around `211s`
+- `Pass 1 total` around `211-223s`
 - `Peak RAM` around `33 GB`
 
 ## Attention Backend Findings
@@ -87,6 +87,16 @@ tensor_to_input: calls=10752 seconds=273.4668 gb=192.2374
 ```
 
 With `PROFILE_SYNC_COPIES=0`, copy timings measure enqueue cost rather than synchronized copy duration. Even so, the volume is useful: one denoise pass can schedule about `192 GB` of CPU/GPU tensor movement.
+
+Pinned CPU memory is now confirmed by repeated runs as the current best Diffusers-side mode:
+
+| Run | Setup | Denoise | Pass 1 total | Torch alloc | Peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Run 1 | `103.3507s` | `97.1237s` | `210.9s` | `0.80 GiB` | `32.92 GB` |
+| Run 2 | `114.6131s` | `97.3091s` | `222.5s` | `0.80 GiB` | `32.92 GB` |
+| Run 3 | `113.6660s` | `97.9024s` | `222.2s` | `0.80 GiB` | `32.93 GB` |
+
+The denoise loop is stable. Most variance moved to setup/pinning.
 
 Pinned CPU memory changed the result significantly:
 
