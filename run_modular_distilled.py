@@ -50,6 +50,7 @@ TRANSFORMER_MANAGER_HOT_BLOCKS = parse_int_list_env("LTX_IMAGE_TRANSFORMER_HOT_B
 TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB = float(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB", "0.0"))
 TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE = int(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_STRIDE", "3"))
 TRANSFORMER_MANAGER_HOT_BLOCK_OFFSET = int(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_OFFSET", "0"))
+TRANSFORMER_MANAGER_STREAMED_COPY_MODE = os.environ.get("LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE", "direct").lower()
 TRANSFORMER_MANAGER_SYNCHRONIZE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_SYNCHRONIZE", "0") == "1"
 TRANSFORMER_MANAGER_EMPTY_CACHE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_EMPTY_CACHE", "0") == "1"
 TRANSFORMER_MANAGER_VERBOSE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_VERBOSE", "0") == "1"
@@ -228,6 +229,7 @@ def main():
         "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
         "transformer_manager_pinned_blocks": TRANSFORMER_MANAGER_PINNED_BLOCKS,
         "transformer_manager_weight_cache_gb": TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
+        "transformer_manager_streamed_copy_mode": TRANSFORMER_MANAGER_STREAMED_COPY_MODE,
         "transformer_manager_pin_cpu_memory": TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
         "transformer_manager_profile_enabled": TRANSFORMER_MANAGER_PROFILE,
         "transformer_manager_profile_sync_copies": TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
@@ -378,6 +380,7 @@ def main():
             hot_block_budget_gb=TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB,
             hot_block_stride=TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE,
             hot_block_offset=TRANSFORMER_MANAGER_HOT_BLOCK_OFFSET,
+            streamed_copy_mode=TRANSFORMER_MANAGER_STREAMED_COPY_MODE,
             synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
             empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
             verbose=TRANSFORMER_MANAGER_VERBOSE,
@@ -396,6 +399,7 @@ def main():
             hot_block_budget_gb=TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB,
             hot_block_stride=TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE,
             hot_block_offset=TRANSFORMER_MANAGER_HOT_BLOCK_OFFSET,
+            streamed_copy_mode=TRANSFORMER_MANAGER_STREAMED_COPY_MODE,
             selected_hot_blocks=transformer_manager.selected_hot_blocks,
             synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
             empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,

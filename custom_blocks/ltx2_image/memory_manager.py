@@ -54,6 +54,7 @@ class LTX2DynamicBlockManager:
     hot_block_budget_gb: float = 0.0
     hot_block_stride: int = 3
     hot_block_offset: int = 0
+    streamed_copy_mode: str = "direct"
 
     def __post_init__(self):
         self.device = torch.device(self.device)
@@ -68,6 +69,9 @@ class LTX2DynamicBlockManager:
         self.hot_block_budget_gb = max(0.0, float(self.hot_block_budget_gb))
         self.hot_block_stride = max(1, int(self.hot_block_stride))
         self.hot_block_offset = max(0, int(self.hot_block_offset))
+        self.streamed_copy_mode = self.streamed_copy_mode.lower()
+        if self.streamed_copy_mode not in {"direct", "buffered"}:
+            raise ValueError("streamed_copy_mode must be 'direct' or 'buffered'")
         self._active_block: int | None = None
         self._block_count = 0
         self._blocks: nn.ModuleList | None = None
@@ -113,6 +117,10 @@ class LTX2DynamicBlockManager:
     @property
     def manual_buffered_enabled(self) -> bool:
         return self.mode == "manual_buffered"
+
+    @property
+    def streamed_buffered_copy_enabled(self) -> bool:
+        return self.manual_hot_blocks_enabled and self.streamed_copy_mode == "buffered"
 
     @property
     def manual_selective_enabled(self) -> bool:
@@ -186,7 +194,7 @@ class LTX2DynamicBlockManager:
                 f"  [manager] mode={self.mode} pinned_blocks={pinned_count} "
                 f"hot_blocks={sorted(self._hot_block_indices)} hot_block_budget_gb={self.hot_block_budget_gb:g} "
                 f"hot_block_stride={self.hot_block_stride} hot_block_offset={self.hot_block_offset} "
-                f"streamed_blocks={streamed} weight_cache_gb={cache_gb:g} "
+                f"streamed_blocks={streamed} streamed_copy_mode={self.streamed_copy_mode} weight_cache_gb={cache_gb:g} "
                 f"selective_resident_gb={selective_gb:.3f} pinned_cpu_gb={pinned_cpu_gb:.3f}",
                 flush=True,
             )
@@ -260,6 +268,7 @@ class LTX2DynamicBlockManager:
             "hot_block_budget_gb": self.hot_block_budget_gb,
             "hot_block_stride": self.hot_block_stride,
             "hot_block_offset": self.hot_block_offset,
+            "streamed_copy_mode": self.streamed_copy_mode,
             "block_runtime": self._profile_summary_bucket("block_runtime"),
             "copy_runtime": self._profile_summary_bucket("copy_runtime"),
         }
@@ -447,6 +456,8 @@ class LTX2DynamicBlockManager:
             return tensor
         if self.manual_cache_enabled:
             return self._cached_to_input_device(tensor, input, tensor_name)
+        if self.streamed_buffered_copy_enabled:
+            return self._buffered_to_input_device(tensor, input, tensor_name)
         profile_key = self._profile_copy_key(tensor_name)
         self._maybe_sync_profile_copy()
         start_time = time.perf_counter()
