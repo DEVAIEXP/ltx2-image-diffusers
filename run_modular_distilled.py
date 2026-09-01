@@ -63,6 +63,7 @@ TRANSFORMER_MANAGER_VERBOSE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_VERB
 TRANSFORMER_MANAGER_WEIGHT_CACHE_GB = float(os.environ.get("LTX_IMAGE_TRANSFORMER_WEIGHT_CACHE_GB", "0.0"))
 TRANSFORMER_MANAGER_PIN_CPU_MEMORY = os.environ.get("LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY", "0") == "1"
 TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY = os.environ.get("LTX_IMAGE_TRANSFORMER_LAZY_PIN_CPU_MEMORY", "0") == "1"
+TRANSFORMER_MANAGER_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS", "1"))
 TRANSFORMER_MANAGER_PROFILE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE_FULL = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL", "0") == "1"
@@ -249,6 +250,7 @@ def main():
         "transformer_manager_streamed_copy_mode": TRANSFORMER_MANAGER_STREAMED_COPY_MODE,
         "transformer_manager_keep_streamed_small_tensors_resident": TRANSFORMER_MANAGER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT,
         "transformer_manager_pin_cpu_memory": TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
+        "transformer_manager_pin_cpu_workers": TRANSFORMER_MANAGER_PIN_CPU_WORKERS,
         "transformer_manager_profile_enabled": TRANSFORMER_MANAGER_PROFILE,
         "transformer_manager_profile_sync_copies": TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
         "transformer_manager_profile_full": TRANSFORMER_MANAGER_PROFILE_FULL,
@@ -409,6 +411,7 @@ def main():
             weight_cache_gb=TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
             pin_cpu_memory=TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
             lazy_pin_cpu_memory=TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY,
+            pin_cpu_workers=TRANSFORMER_MANAGER_PIN_CPU_WORKERS,
             profile=TRANSFORMER_MANAGER_PROFILE,
             profile_sync_copies=TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
         )
@@ -433,6 +436,7 @@ def main():
             weight_cache_gb=TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
             pin_cpu_memory=TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
             lazy_pin_cpu_memory=TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY,
+            pin_cpu_workers=TRANSFORMER_MANAGER_PIN_CPU_WORKERS,
             profile=TRANSFORMER_MANAGER_PROFILE,
         )
     elif TRANSFORMER_GROUP_OFFLOAD:

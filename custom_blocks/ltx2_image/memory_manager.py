@@ -12,6 +12,7 @@ runs on the default stream.
 from __future__ import annotations
 
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 import time
@@ -60,6 +61,7 @@ class LTX2DynamicBlockManager:
     streamed_copy_mode: str = "direct"
     keep_streamed_small_tensors_resident: bool = False
     lazy_pin_cpu_memory: bool = False
+    pin_cpu_workers: int = 1
 
     def __post_init__(self):
         self.device = torch.device(self.device)
@@ -80,6 +82,7 @@ class LTX2DynamicBlockManager:
         self.streamed_copy_mode = self.streamed_copy_mode.lower()
         if self.streamed_copy_mode not in {"direct", "buffered", "host_buffered"}:
             raise ValueError("streamed_copy_mode must be 'direct', 'buffered', or 'host_buffered'")
+        self.pin_cpu_workers = max(1, int(self.pin_cpu_workers))
         self._active_block: int | None = None
         self._block_count = 0
         self._blocks: nn.ModuleList | None = None
@@ -246,7 +249,7 @@ class LTX2DynamicBlockManager:
                 f"hot_linear_weight_count={self._hot_linear_weight_count} hot_linear_weight_gb={hot_linear_weight_gb:.3f} "
                 f"streamed_blocks={streamed} streamed_copy_mode={self.streamed_copy_mode} weight_cache_gb={cache_gb:g} "
                 f"selective_resident_gb={selective_gb:.3f} streamed_small_resident_gb={streamed_small_gb:.3f} "
-                f"pinned_cpu_gb={pinned_cpu_gb:.3f}",
+                f"pinned_cpu_gb={pinned_cpu_gb:.3f} pin_cpu_workers={self.pin_cpu_workers}",
                 flush=True,
             )
 
@@ -424,18 +427,37 @@ class LTX2DynamicBlockManager:
 
     def _pin_cpu_blocks(self, blocks: nn.ModuleList, pinned_count: int) -> None:
         self._pinned_cpu_bytes = 0
+        tensors_to_pin = []
         for block_index, block in enumerate(blocks):
             if block_index < pinned_count:
                 continue
             for parameter in block.parameters(recurse=True):
                 if parameter.device.type == "cpu" and not parameter.data.is_pinned():
-                    parameter.data = parameter.data.pin_memory()
-                    self._pinned_cpu_bytes += self._tensor_size_bytes(parameter.data)
+                    tensors_to_pin.append((parameter, None, parameter.data))
             for buffer in block.buffers(recurse=True):
                 if buffer.device.type == "cpu" and not buffer.is_pinned():
-                    pinned = buffer.pin_memory()
-                    buffer.data = pinned
-                    self._pinned_cpu_bytes += self._tensor_size_bytes(buffer.data)
+                    tensors_to_pin.append((None, buffer, buffer))
+
+        if not tensors_to_pin:
+            return
+
+        def pin_tensor(entry):
+            parameter, buffer, tensor = entry
+            return parameter, buffer, tensor.pin_memory()
+
+        if self.pin_cpu_workers == 1:
+            pinned_entries = [pin_tensor(entry) for entry in tensors_to_pin]
+        else:
+            with ThreadPoolExecutor(max_workers=self.pin_cpu_workers) as executor:
+                pinned_entries = list(executor.map(pin_tensor, tensors_to_pin))
+
+        for parameter, buffer, pinned in pinned_entries:
+            if parameter is not None:
+                parameter.data = pinned
+                self._pinned_cpu_bytes += self._tensor_size_bytes(parameter.data)
+            else:
+                buffer.data = pinned
+                self._pinned_cpu_bytes += self._tensor_size_bytes(buffer.data)
 
     def _maybe_lazy_pin_cpu_tensor(self, tensor: torch.Tensor, tensor_name: str) -> torch.Tensor:
         if not self.lazy_pin_cpu_memory or tensor.device.type != "cpu" or tensor.is_pinned():
