@@ -33,6 +33,7 @@ class LTX2DynamicBlockManager:
         "manual_cached",
         "manual_selective",
         "manual_linear_static_plan",
+        "manual_block_staged",
     }
     RECOMMENDED_MODE = "manual_linear"
 
@@ -70,6 +71,7 @@ class LTX2DynamicBlockManager:
         self._weight_cache_bytes = 0
         self._weight_cache_limit_bytes = int(self.weight_cache_gb * 1024**3)
         self._buffered_tensors: dict[tuple[str, str, torch.dtype], torch.Tensor] = {}
+        self._staged_modules: list[nn.Module] = []
         self._selective_resident_bytes = 0
         self._pinned_cpu_bytes = 0
         self._profile_current_block: int | None = None
@@ -92,7 +94,7 @@ class LTX2DynamicBlockManager:
 
     @property
     def manual_patch_enabled(self) -> bool:
-        return self.mode in {"manual_linear", "manual_buffered", "manual_cached", "manual_selective", "manual_linear_static_plan"}
+        return self.mode in {"manual_linear", "manual_buffered", "manual_cached", "manual_selective", "manual_linear_static_plan", "manual_block_staged"}
 
     @property
     def manual_cache_enabled(self) -> bool:
@@ -109,6 +111,10 @@ class LTX2DynamicBlockManager:
     @property
     def manual_static_plan_enabled(self) -> bool:
         return self.mode == "manual_linear_static_plan"
+
+    @property
+    def manual_block_staged_enabled(self) -> bool:
+        return self.mode == "manual_block_staged"
 
     def attach(self, transformer: nn.Module) -> None:
         self.prepare_transformer(transformer)
@@ -334,13 +340,64 @@ class LTX2DynamicBlockManager:
         self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(moved))
         return moved
 
+    def _stage_block_linear_weights(self, block: nn.Module) -> None:
+        self._clear_staged_block()
+        for module in block.modules():
+            if not isinstance(module, nn.Linear):
+                continue
+
+            if module.weight.device == self.device:
+                staged_weight = module.weight
+            else:
+                profile_key = self._profile_copy_key("linear_weight_stage")
+                self._maybe_sync_profile_copy()
+                start_time = time.perf_counter()
+                staged_weight = module.weight.to(device=self.device, dtype=module.weight.dtype, non_blocking=True)
+                self._maybe_sync_profile_copy()
+                self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(staged_weight))
+
+            staged_bias = None
+            if module.bias is not None:
+                if module.bias.device == self.device:
+                    staged_bias = module.bias
+                else:
+                    profile_key = self._profile_copy_key("linear_bias_stage")
+                    self._maybe_sync_profile_copy()
+                    start_time = time.perf_counter()
+                    staged_bias = module.bias.to(device=self.device, dtype=module.bias.dtype, non_blocking=True)
+                    self._maybe_sync_profile_copy()
+                    self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(staged_bias))
+
+            module._ltx2_staged_weight = staged_weight
+            module._ltx2_staged_bias = staged_bias
+            self._staged_modules.append(module)
+
+        if self.device.type == "cuda":
+            torch.cuda.current_stream(self.device).synchronize()
+
+    def _clear_staged_block(self) -> None:
+        while self._staged_modules:
+            module = self._staged_modules.pop()
+            if hasattr(module, "_ltx2_staged_weight"):
+                delattr(module, "_ltx2_staged_weight")
+            if hasattr(module, "_ltx2_staged_bias"):
+                delattr(module, "_ltx2_staged_bias")
+
     def _patch_manual_modules(self, blocks: nn.ModuleList) -> None:
         if self._patched_modules:
             return
 
         def dynamic_linear_forward(linear, input):
-            weight = self._to_input_device(linear.weight, input, "linear_weight")
-            bias = self._to_input_device(linear.bias, input, "linear_bias")
+            weight = getattr(linear, "_ltx2_staged_weight", None)
+            bias = getattr(linear, "_ltx2_staged_bias", None)
+            if weight is None:
+                weight = self._to_input_device(linear.weight, input, "linear_weight")
+            elif weight.device != input.device or weight.dtype != input.dtype:
+                weight = self._to_input_device(weight, input, "linear_weight")
+            if bias is None and linear.bias is not None:
+                bias = self._to_input_device(linear.bias, input, "linear_bias")
+            elif bias is not None and (bias.device != input.device or bias.dtype != input.dtype):
+                bias = self._to_input_device(bias, input, "linear_bias")
             return F.linear(input, weight, bias)
 
         def dynamic_rms_norm_forward(norm, input):
@@ -424,6 +481,7 @@ class LTX2DynamicBlockManager:
             module.forward = original_forward
         self._patched_modules.clear()
         self._clear_weight_cache()
+        self._clear_staged_block()
 
     def _swap_block_to_device(self, block: nn.Module):
         parameter_handles = []
@@ -503,8 +561,12 @@ class LTX2DynamicBlockManager:
             self._profile_current_block = block_index
             start_time = time.perf_counter()
             try:
+                if self.manual_block_staged_enabled:
+                    self._stage_block_linear_weights(block)
                 yield block
             finally:
+                if self.manual_block_staged_enabled:
+                    self._clear_staged_block()
                 self._profile_add("block_runtime", block_index, time.perf_counter() - start_time)
                 self._profile_current_block = None
             return
