@@ -376,6 +376,25 @@ Result:
 
 Insight: buffering is no longer catastrophic once tiny tensors stay resident, but it still does not beat direct pinned CPU to device copies. The current best path remains `streamed_copy_mode=direct` with small tensors resident and a `6 GB` hot block budget.
 
+## Parallel CPU Pinning
+
+The CPU pinning setup was parallelized with `LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS`. This targets the largest remaining setup cost in the best `manual_hot_blocks` path: pinning about `18.5 GB` of CPU transformer block tensors before denoise.
+
+Configuration difference from the best `manual_hot_blocks` baseline:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS="4"
+```
+
+Result:
+
+| Mode | Pin workers | Setup | Pin CPU blocks | Denoise | Step avg | Pass 1 total | Torch alloc | Torch reserved | Peak VRAM | Peak RAM | Copied GB | Copy time | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Eager pin baseline | `1` | `95.3611s` | `82.5627s` | `68.4448s` | n/a | `185.5s` | `6.32 GiB` | `6.63 GiB` | `6.78 GB` | `27.66 GB` | `148.1443 GB` | `0.1080s` | Best previous stable path. |
+| Parallel CPU pinning | `4` | `66.6127s` | `55.3440s` | `68.5952s` | `8.5691s/it` | `157.9s` | `6.32 GiB` | `6.63 GiB` | `6.74 GB` | `46.61 GB` | `148.1443 GB` | `1.7122s` | Best Pass 1 total so far, but with higher peak RAM. |
+
+Insight: parallel CPU pinning reduced setup by about `28.7s` and Pass 1 by about `27.6s` while keeping denoise essentially unchanged. The new per-step timing shows denoise is uniform at about `8.57s/it`; unlike ComfyUI, there is no hidden first-step initialization spike in this path. The tradeoff is higher reported peak RAM, so `4` workers is promising but should be compared against `2` and `8`.
+
 ## Next Experiments
 
 1. Keep `manual_linear + pinned CPU` as the current baseline.
