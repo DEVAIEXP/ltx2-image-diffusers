@@ -294,6 +294,26 @@ Compared with the previous `6 GB` budget baseline:
 
 Insight: this is a small but correct improvement. It removes unnecessary repeated tiny-tensor movement without meaningfully increasing VRAM/RAM pressure. The main remaining cost is now setup time, especially CPU pin/staging, rather than denoise transfer volume.
 
+## Lazy CPU Pinning
+
+A `lazy_pin_cpu_memory` experiment tried to avoid the eager `pin_cpu_blocks` setup cost by pinning each CPU tensor the first time it is copied.
+
+Configuration difference from the best `manual_hot_blocks` baseline:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="0"
+$env:LTX_IMAGE_TRANSFORMER_LAZY_PIN_CPU_MEMORY="1"
+```
+
+Result:
+
+| Mode | Setup | Denoise | Torch alloc | Torch reserved | Copied GB | Copy time | Key setup runtime | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Eager pin baseline | `95.3611s` | `68.4448s` | `6.32 GiB` | `6.63 GiB` | `148.1443 GB` | `0.1080s` | `pin_cpu_blocks=82.5627s` | Best stable path so far. |
+| Lazy pin | `11.0458s` | `243.7794s` | `6.32 GiB` | `6.63 GiB` | `148.1443 GB` | `125.0563s` | `lazy_pin_linear_weight=121.4471s` | Regressed heavily. |
+
+Insight: lazy pinning lowered setup by about `84s`, but moved `121s` of pinning into the denoise path. This confirms that the simple lazy approach is not enough. ComfyUI is not merely pinning later; it uses a different dynamic staging model with host/device buffers and cast-on-demand execution that avoids this kind of per-tensor hot-path penalty.
+
 ## Next Experiments
 
 1. Keep `manual_linear + pinned CPU` as the current baseline.
