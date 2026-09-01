@@ -209,6 +209,40 @@ Observed concepts:
 
 Important caveat: ComfyUI code is GPL. The experimental manager should remain clean-room and use only concepts, not copied implementation.
 
+### Instrumented ComfyUI Baseline
+
+A temporary local ComfyUI patch added `[bench]` timing logs around node execution, model loading, and `ModelPatcherDynamic.load`. A representative BF16 run produced:
+
+| Stage | Time | Notes |
+| --- | ---: | --- |
+| Checkpoint loader node | `0.9103s` | Loads model metadata/checkpoint wrapper. |
+| Text encoder loader node | `0.4107s` | Loads LTX AV text encoder wrapper. |
+| Text encoder dynamic prepare | `0.1115s` | `25440.5 MB` staged, `1745.2 KB` preloaded. |
+| Text encode node | `19.2612s` | Prompt encoding runtime. |
+| Transformer dynamic prepare | `0.1609s` | `28101.7 MB` staged, `1703.1 KB` preloaded. |
+| Sampler node | `49.6648s` | Includes model initialization plus denoise. |
+| VAE dynamic prepare | `0.0114s` | `1385.0 MB` staged. |
+| VAE decode node | `1.0294s` | Decode runtime. |
+| Preview image node | `0.0533s` | UI output. |
+| Prompt total | `72.11s` | End-to-end ComfyUI execution. |
+
+The sampler progress bar showed:
+
+```text
+Model Initializing ... -> Model Initialization complete!: about 24s
+8 denoise steps after initialization: about 22s total, about 2.80-3.13s/it
+```
+
+Key insight: ComfyUI does **not** spend tens of seconds in its dynamic prepare step. `ModelPatcherDynamic.load` only reserves/stages metadata/buffers and wires cast-on-demand behavior. The expensive model initialization is deferred into the sampler's first iteration, but even with that cost included, the sampler node finishes in `49.6648s`.
+
+This changes the optimization target for the Diffusers-side manager:
+
+- Our `setup_transformer_memory_manager` spends about `82.56s` just pinning CPU blocks.
+- ComfyUI's transformer dynamic prepare is about `0.16s`.
+- Our denoise is about `68-70s` after setup, while ComfyUI's sampler node is `49.66s` including about `24s` of initialization.
+
+The next clean-room experiments should therefore avoid eager CPU pinning/staging during setup and move toward lazy dynamic staging closer to ComfyUI's model: prepare metadata quickly, initialize buffers lazily, and keep hot execution state reusable across steps.
+
 ## Working Hypothesis
 
 Current Diffusers-side performance is limited by explicit Python/PyTorch tensor movement.
