@@ -135,8 +135,10 @@ This is effectively tied with `manual_linear + pinned CPU`. The profile still re
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `4` | `104.1339s` | `88.1385s` | `207.2s` | `2.81 GiB` | `30.86 GB` | `176.2156 GB` | Clear improvement over baseline. |
 | `8` | `99.1513s` | `76.8898s` | `195.2s` | `4.81 GiB` | `28.86 GB` | `160.1960 GB` | Better again; still no obvious memory pressure. |
+| `12` | `94.2222s` | `71.3681s` | `188.8s` | `6.81 GiB` | `27.75 GB` | `144.1764 GB` | Best observed hot-block result so far. |
+| `16` | `99.8078s` | `201.2456s` | `329.8s` | `8.81 GiB` | `29.85 GB` | `128.1568 GB` | Regression despite fewer copies; likely memory pressure/fallback contention. |
 
-This confirms that eliminating repeated transfers for resident blocks improves denoise time. The next test should increase hot blocks until the speed/VRAM curve bends.
+This confirms that eliminating repeated transfers for resident blocks improves denoise time until memory pressure starts to dominate. The curve bent hard at `16` hot blocks: copies dropped to `128.1568 GB`, but denoise regressed to `201.2456s`. The current sweet spot is `12` hot blocks for this machine/resolution.
 
 Pinned CPU memory changed the result significantly:
 
