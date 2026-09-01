@@ -98,6 +98,24 @@ Pinned CPU memory is now confirmed by repeated runs as the current best Diffuser
 
 The denoise loop is stable. Most variance moved to setup/pinning.
 
+A synchronized copy-profile run confirmed where the remaining cost lives:
+
+```text
+setup_transformer_memory_manager: 113.1982s
+denoise_modular_pipe_call: 125.0540s
+Pass 1 total: 248.7s
+```
+
+Copy profile totals from that run:
+
+| Tensor type | Calls | Seconds | GB copied |
+| --- | ---: | ---: | ---: |
+| `linear_weight` | `4608` | `63.4258s` | `192.1872 GB` |
+| `linear_bias` | `4608` | `3.5571s` | `0.0384 GB` |
+| `rms_norm_weight` | `1536` | `0.7538s` | `0.0096 GB` |
+
+The synchronized block runtime sum was `124.9315s`, matching the denoise event. This makes `linear_weight` transfer the clear optimization target.
+
 Pinned CPU memory changed the result significantly:
 
 ```text
