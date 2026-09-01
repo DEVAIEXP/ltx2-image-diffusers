@@ -47,6 +47,8 @@ TRANSFORMER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD"
 TRANSFORMER_MEMORY_MANAGER = os.environ.get("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "manual_linear").lower()
 TRANSFORMER_MANAGER_PINNED_BLOCKS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PINNED_BLOCKS", "0"))
 TRANSFORMER_MANAGER_HOT_BLOCKS = parse_int_list_env("LTX_IMAGE_TRANSFORMER_HOT_BLOCKS")
+TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB = float(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB", "0.0"))
+TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE = int(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_STRIDE", "3"))
 TRANSFORMER_MANAGER_SYNCHRONIZE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_SYNCHRONIZE", "0") == "1"
 TRANSFORMER_MANAGER_EMPTY_CACHE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_EMPTY_CACHE", "0") == "1"
 TRANSFORMER_MANAGER_VERBOSE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_VERBOSE", "0") == "1"
@@ -372,6 +374,9 @@ def main():
             mode=TRANSFORMER_MEMORY_MANAGER,
             pinned_blocks=TRANSFORMER_MANAGER_PINNED_BLOCKS,
             hot_blocks=TRANSFORMER_MANAGER_HOT_BLOCKS,
+            hot_block_budget_gb=TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB,
+            hot_block_stride=TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE,
+            selected_hot_blocks=transformer_manager.selected_hot_blocks,
             synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
             empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
             verbose=TRANSFORMER_MANAGER_VERBOSE,
@@ -387,6 +392,9 @@ def main():
             mode=TRANSFORMER_MEMORY_MANAGER,
             pinned_blocks=TRANSFORMER_MANAGER_PINNED_BLOCKS,
             hot_blocks=TRANSFORMER_MANAGER_HOT_BLOCKS,
+            hot_block_budget_gb=TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB,
+            hot_block_stride=TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE,
+            selected_hot_blocks=transformer_manager.selected_hot_blocks,
             synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
             empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
             weight_cache_gb=TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
