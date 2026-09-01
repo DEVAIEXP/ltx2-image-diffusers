@@ -34,6 +34,7 @@ class LTX2DynamicBlockManager:
         "manual_selective",
         "manual_linear_static_plan",
         "manual_block_staged",
+        "manual_hot_blocks",
     }
     RECOMMENDED_MODE = "manual_linear"
 
@@ -49,6 +50,7 @@ class LTX2DynamicBlockManager:
     pin_cpu_memory: bool = False
     profile: bool = False
     profile_sync_copies: bool = False
+    hot_blocks: tuple[int, ...] | list[int] | None = None
 
     def __post_init__(self):
         self.device = torch.device(self.device)
@@ -59,6 +61,7 @@ class LTX2DynamicBlockManager:
             raise ValueError(f"Unsupported LTX2DynamicBlockManager mode {self.mode!r}. Valid modes: {valid_modes}")
         self.pinned_blocks = max(0, int(self.pinned_blocks))
         self.weight_cache_gb = max(0.0, float(self.weight_cache_gb))
+        self.hot_blocks = tuple(sorted({int(block) for block in (self.hot_blocks or []) if int(block) >= 0}))
         self._active_block: int | None = None
         self._block_count = 0
         self._blocks: nn.ModuleList | None = None
@@ -72,6 +75,7 @@ class LTX2DynamicBlockManager:
         self._weight_cache_limit_bytes = int(self.weight_cache_gb * 1024**3)
         self._buffered_tensors: dict[tuple[str, str, torch.dtype], torch.Tensor] = {}
         self._staged_modules: list[nn.Module] = []
+        self._hot_block_indices: set[int] = set()
         self._selective_resident_bytes = 0
         self._pinned_cpu_bytes = 0
         self._profile_current_block: int | None = None
@@ -94,7 +98,7 @@ class LTX2DynamicBlockManager:
 
     @property
     def manual_patch_enabled(self) -> bool:
-        return self.mode in {"manual_linear", "manual_buffered", "manual_cached", "manual_selective", "manual_linear_static_plan", "manual_block_staged"}
+        return self.mode in {"manual_linear", "manual_buffered", "manual_cached", "manual_selective", "manual_linear_static_plan", "manual_block_staged", "manual_hot_blocks"}
 
     @property
     def manual_cache_enabled(self) -> bool:
@@ -115,6 +119,10 @@ class LTX2DynamicBlockManager:
     @property
     def manual_block_staged_enabled(self) -> bool:
         return self.mode == "manual_block_staged"
+
+    @property
+    def manual_hot_blocks_enabled(self) -> bool:
+        return self.mode == "manual_hot_blocks"
 
     def attach(self, transformer: nn.Module) -> None:
         self.prepare_transformer(transformer)
@@ -144,8 +152,10 @@ class LTX2DynamicBlockManager:
         self._blocks = blocks
         self._block_count = len(blocks)
         pinned_count = min(self.pinned_blocks, self._block_count)
+        self._hot_block_indices = {block for block in self.hot_blocks if block < self._block_count}
         for block_index, block in enumerate(blocks):
-            target_device = self.device if block_index < pinned_count else self.offload_device
+            keep_resident = block_index < pinned_count or (self.manual_hot_blocks_enabled and block_index in self._hot_block_indices)
+            target_device = self.device if keep_resident else self.offload_device
             block.to(target_device)
 
         if self.pin_cpu_memory and self.offload_device.type == "cpu":
@@ -162,13 +172,13 @@ class LTX2DynamicBlockManager:
             torch.cuda.empty_cache()
 
         if self.verbose:
-            streamed = self._block_count - pinned_count
+            streamed = self._block_count - pinned_count - len(self._hot_block_indices)
             cache_gb = self._weight_cache_limit_bytes / 1024**3
             selective_gb = self._selective_resident_bytes / 1024**3
             pinned_cpu_gb = self._pinned_cpu_bytes / 1024**3
             print(
                 f"  [manager] mode={self.mode} pinned_blocks={pinned_count} "
-                f"streamed_blocks={streamed} weight_cache_gb={cache_gb:g} "
+                f"hot_blocks={sorted(self._hot_block_indices)} streamed_blocks={streamed} weight_cache_gb={cache_gb:g} "
                 f"selective_resident_gb={selective_gb:.3f} pinned_cpu_gb={pinned_cpu_gb:.3f}",
                 flush=True,
             )
@@ -570,7 +580,7 @@ class LTX2DynamicBlockManager:
             setattr(module, name, old_buffer)
 
     def _is_pinned(self, block_index: int) -> bool:
-        return block_index < min(self.pinned_blocks, self._block_count)
+        return block_index < min(self.pinned_blocks, self._block_count) or block_index in self._hot_block_indices
 
     def _prefetch_next(self, block_index: int) -> None:
         if not self.prefetch_enabled or self._blocks is None:

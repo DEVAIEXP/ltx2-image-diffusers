@@ -28,6 +28,12 @@ from inference_utils import RunTracker, flush
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+def parse_int_list_env(name: str) -> tuple[int, ...]:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return ()
+    return tuple(int(item.strip()) for item in value.split(",") if item.strip())
+
 DEVICE = os.environ.get("LTX_IMAGE_DEVICE", "cuda:0")
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
@@ -40,6 +46,7 @@ TEXT_ENCODER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOA
 TRANSFORMER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD", "0") == "1"
 TRANSFORMER_MEMORY_MANAGER = os.environ.get("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "manual_linear").lower()
 TRANSFORMER_MANAGER_PINNED_BLOCKS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PINNED_BLOCKS", "0"))
+TRANSFORMER_MANAGER_HOT_BLOCKS = parse_int_list_env("LTX_IMAGE_TRANSFORMER_HOT_BLOCKS")
 TRANSFORMER_MANAGER_SYNCHRONIZE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_SYNCHRONIZE", "0") == "1"
 TRANSFORMER_MANAGER_EMPTY_CACHE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_EMPTY_CACHE", "0") == "1"
 TRANSFORMER_MANAGER_VERBOSE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_VERBOSE", "0") == "1"
@@ -364,6 +371,7 @@ def main():
             enabled=True,
             mode=TRANSFORMER_MEMORY_MANAGER,
             pinned_blocks=TRANSFORMER_MANAGER_PINNED_BLOCKS,
+            hot_blocks=TRANSFORMER_MANAGER_HOT_BLOCKS,
             synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
             empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
             verbose=TRANSFORMER_MANAGER_VERBOSE,
@@ -378,6 +386,7 @@ def main():
             time.time() - event_t0,
             mode=TRANSFORMER_MEMORY_MANAGER,
             pinned_blocks=TRANSFORMER_MANAGER_PINNED_BLOCKS,
+            hot_blocks=TRANSFORMER_MANAGER_HOT_BLOCKS,
             synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
             empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
             weight_cache_gb=TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
