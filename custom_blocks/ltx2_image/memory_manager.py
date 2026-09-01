@@ -56,6 +56,7 @@ class LTX2DynamicBlockManager:
     hot_block_offset: int = 0
     streamed_copy_mode: str = "direct"
     keep_streamed_small_tensors_resident: bool = False
+    lazy_pin_cpu_memory: bool = False
 
     def __post_init__(self):
         self.device = torch.device(self.device)
@@ -90,6 +91,8 @@ class LTX2DynamicBlockManager:
         self._selective_resident_bytes = 0
         self._streamed_small_resident_bytes = 0
         self._pinned_cpu_bytes = 0
+        self._lazy_pinned_cpu_bytes = 0
+        self._lazy_pinned_tensor_ids: set[int] = set()
         self._profile_current_block: int | None = None
         self._profile_stats = {
             "setup_runtime": {},
@@ -188,7 +191,7 @@ class LTX2DynamicBlockManager:
             self._move_streamed_small_tensors_to_device(blocks, pinned_count=pinned_count)
             self._profile_add("setup_runtime", "streamed_small_tensors_to_device", time.perf_counter() - setup_start)
 
-        if self.pin_cpu_memory and self.offload_device.type == "cpu":
+        if self.pin_cpu_memory and not self.lazy_pin_cpu_memory and self.offload_device.type == "cpu":
             setup_start = time.perf_counter()
             self._pin_cpu_blocks(blocks, pinned_count=pinned_count)
             self._profile_add("setup_runtime", "pin_cpu_blocks", time.perf_counter() - setup_start, self._pinned_cpu_bytes)
@@ -297,6 +300,8 @@ class LTX2DynamicBlockManager:
             "streamed_copy_mode": self.streamed_copy_mode,
             "keep_streamed_small_tensors_resident": self.keep_streamed_small_tensors_resident,
             "streamed_small_resident_gb": round(self._streamed_small_resident_bytes / 1024**3, 4),
+            "lazy_pin_cpu_memory": self.lazy_pin_cpu_memory,
+            "lazy_pinned_cpu_gb": round(self._lazy_pinned_cpu_bytes / 1024**3, 4),
             "setup_runtime": self._profile_summary_bucket("setup_runtime"),
             "block_runtime": self._profile_summary_bucket("block_runtime"),
             "copy_runtime": self._profile_summary_bucket("copy_runtime"),
@@ -403,6 +408,25 @@ class LTX2DynamicBlockManager:
                     pinned = buffer.pin_memory()
                     buffer.data = pinned
                     self._pinned_cpu_bytes += self._tensor_size_bytes(buffer.data)
+
+    def _maybe_lazy_pin_cpu_tensor(self, tensor: torch.Tensor, tensor_name: str) -> torch.Tensor:
+        if not self.lazy_pin_cpu_memory or tensor.device.type != "cpu" or tensor.is_pinned():
+            return tensor
+
+        tensor_id = id(tensor)
+        start_time = time.perf_counter()
+        pinned = tensor.pin_memory()
+        elapsed = time.perf_counter() - start_time
+        pinned_bytes = self._tensor_size_bytes(pinned)
+        if tensor_id not in self._lazy_pinned_tensor_ids:
+            self._lazy_pinned_tensor_ids.add(tensor_id)
+            self._lazy_pinned_cpu_bytes += pinned_bytes
+        self._profile_add("setup_runtime", f"lazy_pin_{tensor_name}", elapsed, pinned_bytes)
+
+        if isinstance(tensor, nn.Parameter):
+            tensor.data = pinned
+            return tensor
+        return pinned
 
     def _move_parameter_to_device(self, parameter: nn.Parameter) -> int:
         original_bytes = self._tensor_size_bytes(parameter.data)
@@ -517,6 +541,7 @@ class LTX2DynamicBlockManager:
         profile_key = self._profile_copy_key(tensor_name)
         self._maybe_sync_profile_copy()
         start_time = time.perf_counter()
+        tensor = self._maybe_lazy_pin_cpu_tensor(tensor, tensor_name)
         moved = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
         self._maybe_sync_profile_copy()
         self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(moved))
