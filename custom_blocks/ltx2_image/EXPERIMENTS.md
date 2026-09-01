@@ -129,6 +129,15 @@ Peak RAM: 32.93 GB
 
 This is effectively tied with `manual_linear + pinned CPU`. The profile still reports `96` linear weight staging calls per block over `8` steps, or `4608` total linear weight transfers. The staging location changed, but the number of weight transfers did not, so it does not address the real bottleneck.
 
+`manual_hot_blocks` keeps selected transformer blocks resident on the execution device while the remaining blocks use the manual linear CPU-pinned path.
+
+| Hot blocks | Setup | Denoise | Pass 1 total | Torch alloc | Peak RAM | Copied GB | Notes |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `4` | `104.1339s` | `88.1385s` | `207.2s` | `2.81 GiB` | `30.86 GB` | `176.2156 GB` | Clear improvement over baseline. |
+| `8` | `99.1513s` | `76.8898s` | `195.2s` | `4.81 GiB` | `28.86 GB` | `160.1960 GB` | Better again; still no obvious memory pressure. |
+
+This confirms that eliminating repeated transfers for resident blocks improves denoise time. The next test should increase hot blocks until the speed/VRAM curve bends.
+
 Pinned CPU memory changed the result significantly:
 
 ```text
