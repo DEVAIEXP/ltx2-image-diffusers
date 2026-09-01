@@ -196,11 +196,21 @@ def apply_transformer_attention_backend(transformer):
 
 
 def denoise_progress_callback(components, step_index, timestep, callback_kwargs):
+    now = time.perf_counter()
+    last_time = getattr(denoise_progress_callback, "last_time", now)
+    start_time = getattr(denoise_progress_callback, "start_time", last_time)
+    step_elapsed = now - last_time
+    total_elapsed = now - start_time
+    denoise_progress_callback.last_time = now
+    denoise_progress_callback.step_times.append(step_elapsed)
+
     used_gb = torch.cuda.memory_allocated(DEVICE) / 1024**3
     reserved_gb = torch.cuda.memory_reserved(DEVICE) / 1024**3
     total_steps = len(denoise_progress_callback.timesteps)
+    avg_elapsed = total_elapsed / (step_index + 1)
     print(
         f"  [denoise] step {step_index + 1}/{total_steps} timestep={float(timestep):.4f} "
+        f"elapsed={step_elapsed:.4f}s avg={avg_elapsed:.4f}s/it "
         f"torch_alloc={used_gb:.2f} GiB torch_reserved={reserved_gb:.2f} GiB",
         flush=True,
     )
@@ -465,6 +475,9 @@ def main():
     record_event("build_denoise_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
 
     denoise_progress_callback.timesteps = prepare_state["timesteps"]
+    denoise_progress_callback.start_time = time.perf_counter()
+    denoise_progress_callback.last_time = denoise_progress_callback.start_time
+    denoise_progress_callback.step_times = []
     print(f"  Starting denoise loop with attention backend: {ATTENTION_BACKEND}", flush=True)
     event_t0 = time.time()
     with get_attention_backend_context():
@@ -489,6 +502,7 @@ def main():
             output="latents",
         )
     record_event("denoise_modular_pipe_call", time.time() - event_t0, attention_backend=ATTENTION_BACKEND)
+    run_metrics["denoise_step_times"] = denoise_progress_callback.step_times
     if transformer_manager is not None and TRANSFORMER_MANAGER_PROFILE:
         run_metrics["transformer_manager_profile_summary"] = transformer_manager.profile_summary()
         transformer_manager.print_profile_summary(full=TRANSFORMER_MANAGER_PROFILE_FULL)
