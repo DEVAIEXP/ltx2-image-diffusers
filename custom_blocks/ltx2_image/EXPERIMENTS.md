@@ -356,6 +356,26 @@ Result:
 
 Insight: keeping isolated `Linear.weight` tensors resident reduced repeated copy volume by about `7 GB`, but made block runtime much worse. The likely issue is not copy bandwidth alone; partial per-weight residency may create worse execution locality or memory-pressure behavior than keeping whole blocks resident. This result reinforces that the next useful step should model ComfyUI-style staged layer execution more directly, instead of mixing resident and streamed weights inside otherwise streamed blocks.
 
+## Buffered Copy With Resident Small Tensors
+
+A `streamed_copy_mode=buffered` run was repeated after keeping streamed small tensors resident. This checks whether the reusable device-side copy buffer helps once `Linear.bias`, `RMSNorm.weight`, and similar tiny tensors are no longer copied repeatedly.
+
+Configuration difference from the best `manual_hot_blocks` baseline:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="buffered"
+$env:LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+```
+
+Result:
+
+| Mode | Setup | Denoise | Pass 1 total | Torch alloc | Torch reserved | Peak VRAM | Peak RAM | Copied GB | Copy time | Key setup runtime | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Eager pin baseline | `95.3611s` | `68.4448s` | `185.5s` | `6.32 GiB` | `6.63 GiB` | `6.78 GB` | `27.66 GB` | `148.1443 GB` | `0.1080s` | `pin_cpu_blocks=82.5627s` | Best stable path so far. |
+| Buffered + small tensors resident | `93.2441s` | `70.4581s` | `185.8s` | `6.44 GiB` | `6.63 GiB` | `6.76 GB` | `27.66 GB` | `148.1443 GB` | `1.6734s` | `pin_cpu_blocks=82.3629s`, `blocks_to_target_devices=9.9902s` | Neutral/slightly worse than direct copy. |
+
+Insight: buffering is no longer catastrophic once tiny tensors stay resident, but it still does not beat direct pinned CPU to device copies. The current best path remains `streamed_copy_mode=direct` with small tensors resident and a `6 GB` hot block budget.
+
 ## Next Experiments
 
 1. Keep `manual_linear + pinned CPU` as the current baseline.
