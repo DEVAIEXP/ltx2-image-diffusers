@@ -314,6 +314,27 @@ Result:
 
 Insight: lazy pinning lowered setup by about `84s`, but moved `121s` of pinning into the denoise path. This confirms that the simple lazy approach is not enough. ComfyUI is not merely pinning later; it uses a different dynamic staging model with host/device buffers and cast-on-demand execution that avoids this kind of per-tensor hot-path penalty.
 
+## Host Buffered Copy
+
+A `streamed_copy_mode=host_buffered` experiment tried to create persistent CPU pinned host-buffer copies on first tensor use, without pinning the original CPU tensors eagerly.
+
+Configuration difference from the best `manual_hot_blocks` baseline:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="0"
+$env:LTX_IMAGE_TRANSFORMER_LAZY_PIN_CPU_MEMORY="0"
+$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="host_buffered"
+```
+
+Result:
+
+| Mode | Setup | Denoise | Pass 1 total | Torch alloc | Torch reserved | Peak VRAM | Peak RAM | Copied GB | Copy time | Key setup runtime | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Eager pin baseline | `95.3611s` | `68.4448s` | `185.5s` | `6.32 GiB` | `6.63 GiB` | `6.78 GB` | `27.66 GB` | `148.1443 GB` | `0.1080s` | `pin_cpu_blocks=82.5627s` | Best stable path so far. |
+| Host buffered | `7.3320s` | `248.2392s` | `289.3s` | `6.32 GiB` | `6.63 GiB` | `6.82 GB` | `50.55 GB` | `148.1443 GB` | `3.5008s` | `host_buffer_linear_weight=124.3054s` | Regressed heavily and doubled host RAM pressure. |
+
+Insight: host-buffered staging moved the expensive CPU copy/pinning work into denoise and duplicated about `18.5 GB` of linear weights in RAM. It is worse than eager pinning for this process-per-run benchmark. This is still not equivalent to ComfyUI's VBAR/host-buffer behavior, which prepares dynamic metadata quickly without duplicating the whole streamed weight set during the hot path.
+
 ## Next Experiments
 
 1. Keep `manual_linear + pinned CPU` as the current baseline.
