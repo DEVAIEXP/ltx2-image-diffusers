@@ -140,6 +140,28 @@ This is effectively tied with `manual_linear + pinned CPU`. The profile still re
 
 This confirms that eliminating repeated transfers for resident blocks improves denoise time until memory pressure starts to dominate. The curve bent hard at `16` hot blocks: copies dropped to `128.1568 GB`, but denoise regressed to `201.2456s`. The current sweet spot is `12` hot blocks for this machine/resolution.
 
+An automatic hot-block budget selector was added after the explicit hot-block tests. Explicit `LTX_IMAGE_TRANSFORMER_HOT_BLOCKS` still wins; when it is unset, `LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB` selects every `LTX_IMAGE_TRANSFORMER_HOT_BLOCK_STRIDE` block until the memory budget is consumed.
+
+The first budget run used:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCKS=""
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_STRIDE="3"
+$env:LTX_IMAGE_ATTENTION_BACKEND="native"
+```
+
+Result:
+
+| Mode | Budget | Setup | Denoise | Pass 1 total | Torch alloc | Peak VRAM | Peak RAM | Copied GB | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `manual_hot_blocks` auto budget | `6 GB` | `97.9940s` | `70.1449s` | `185.3s` | `6.31 GiB` | `6.71 GB` | `27.67 GB` | `148.1813 GB` | New best observed Diffusers-side result. |
+
+Insight: the `6 GB` budget beat the explicit `12` hot-block run even though it copied slightly more data (`148.1813 GB` vs `144.1764 GB`). The lower resident allocation appears to keep the run in a better memory-pressure range, so the best point is not strictly the lowest copy volume. The budget selector is a better default interface than hard-coding a block list because it lets each machine/resolution find a similar pressure window.
+
 Pinned CPU memory changed the result significantly:
 
 ```text
