@@ -284,9 +284,12 @@ class LTX2DynamicBlockManager:
             self._weight_cache.move_to_end(key)
             return cached
 
+        profile_key = self._profile_copy_key(tensor_name)
+        self._maybe_sync_profile_copy()
         start_time = time.perf_counter()
         cached = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
-        self._profile_add("copy_runtime", "cached_tensor_to_input", time.perf_counter() - start_time, self._tensor_size_bytes(cached))
+        self._maybe_sync_profile_copy()
+        self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(cached))
         self._weight_cache[key] = cached
         self._weight_cache_bytes += self._tensor_size_bytes(cached)
         self._evict_weight_cache()
@@ -308,9 +311,12 @@ class LTX2DynamicBlockManager:
             self._buffered_tensors[key] = buffer
 
         view = buffer[:numel].view(tensor.shape)
+        profile_key = self._profile_copy_key(buffer_name)
+        self._maybe_sync_profile_copy()
         start_time = time.perf_counter()
         view.copy_(tensor, non_blocking=True)
-        self._profile_add("copy_runtime", buffer_name, time.perf_counter() - start_time, self._tensor_size_bytes(view))
+        self._maybe_sync_profile_copy()
+        self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(view))
         return view
 
     def _to_input_device(self, tensor: torch.Tensor | None, input: torch.Tensor, tensor_name: str = "tensor_to_input") -> torch.Tensor | None:
@@ -320,9 +326,12 @@ class LTX2DynamicBlockManager:
             return tensor
         if self.manual_cache_enabled:
             return self._cached_to_input_device(tensor, input, tensor_name)
+        profile_key = self._profile_copy_key(tensor_name)
+        self._maybe_sync_profile_copy()
         start_time = time.perf_counter()
         moved = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
-        self._profile_add("copy_runtime", "tensor_to_input", time.perf_counter() - start_time, self._tensor_size_bytes(moved))
+        self._maybe_sync_profile_copy()
+        self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(moved))
         return moved
 
     def _patch_manual_modules(self, blocks: nn.ModuleList) -> None:
