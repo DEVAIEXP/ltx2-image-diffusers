@@ -116,6 +116,19 @@ Copy profile totals from that run:
 
 The synchronized block runtime sum was `124.9315s`, matching the denoise event. This makes `linear_weight` transfer the clear optimization target.
 
+A `manual_block_staged` mode was tested after this. It stages all linear weights for the active block before yielding the block forward. Result:
+
+```text
+setup_transformer_memory_manager: 113.5052s
+denoise_modular_pipe_call: 97.3465s
+Pass 1 total: 222.1s
+torch_alloc: 0.80 GiB
+torch_reserved: 1.46 GiB
+Peak RAM: 32.93 GB
+```
+
+This is effectively tied with `manual_linear + pinned CPU`. The profile still reports `96` linear weight staging calls per block over `8` steps, or `4608` total linear weight transfers. The staging location changed, but the number of weight transfers did not, so it does not address the real bottleneck.
+
 Pinned CPU memory changed the result significantly:
 
 ```text
