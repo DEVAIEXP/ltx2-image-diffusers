@@ -72,8 +72,8 @@ class LTX2DynamicBlockManager:
         self.hot_block_stride = max(1, int(self.hot_block_stride))
         self.hot_block_offset = max(0, int(self.hot_block_offset))
         self.streamed_copy_mode = self.streamed_copy_mode.lower()
-        if self.streamed_copy_mode not in {"direct", "buffered"}:
-            raise ValueError("streamed_copy_mode must be 'direct' or 'buffered'")
+        if self.streamed_copy_mode not in {"direct", "buffered", "host_buffered"}:
+            raise ValueError("streamed_copy_mode must be 'direct', 'buffered', or 'host_buffered'")
         self._active_block: int | None = None
         self._block_count = 0
         self._blocks: nn.ModuleList | None = None
@@ -86,6 +86,8 @@ class LTX2DynamicBlockManager:
         self._weight_cache_bytes = 0
         self._weight_cache_limit_bytes = int(self.weight_cache_gb * 1024**3)
         self._buffered_tensors: dict[tuple[str, str, torch.dtype], torch.Tensor] = {}
+        self._host_buffered_tensors: dict[tuple[int, torch.dtype], torch.Tensor] = {}
+        self._host_buffered_bytes = 0
         self._staged_modules: list[nn.Module] = []
         self._hot_block_indices: set[int] = set()
         self._selective_resident_bytes = 0
@@ -127,6 +129,10 @@ class LTX2DynamicBlockManager:
     @property
     def streamed_buffered_copy_enabled(self) -> bool:
         return self.manual_hot_blocks_enabled and self.streamed_copy_mode == "buffered"
+
+    @property
+    def streamed_host_buffered_copy_enabled(self) -> bool:
+        return self.manual_hot_blocks_enabled and self.streamed_copy_mode == "host_buffered"
 
     @property
     def manual_selective_enabled(self) -> bool:
@@ -300,6 +306,7 @@ class LTX2DynamicBlockManager:
             "streamed_copy_mode": self.streamed_copy_mode,
             "keep_streamed_small_tensors_resident": self.keep_streamed_small_tensors_resident,
             "streamed_small_resident_gb": round(self._streamed_small_resident_bytes / 1024**3, 4),
+            "host_buffered_cpu_gb": round(self._host_buffered_bytes / 1024**3, 4),
             "lazy_pin_cpu_memory": self.lazy_pin_cpu_memory,
             "lazy_pinned_cpu_gb": round(self._lazy_pinned_cpu_bytes / 1024**3, 4),
             "setup_runtime": self._profile_summary_bucket("setup_runtime"),
@@ -481,6 +488,10 @@ class LTX2DynamicBlockManager:
         self._weight_cache.clear()
         self._weight_cache_bytes = 0
 
+    def _clear_host_buffers(self) -> None:
+        self._host_buffered_tensors.clear()
+        self._host_buffered_bytes = 0
+
     def _evict_weight_cache(self) -> None:
         while self._weight_cache_bytes > self._weight_cache_limit_bytes and self._weight_cache:
             _, cached_tensor = self._weight_cache.popitem(last=False)
@@ -529,6 +540,40 @@ class LTX2DynamicBlockManager:
         self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(view))
         return view
 
+    def _host_buffered_to_input_device(
+        self, tensor: torch.Tensor | None, input: torch.Tensor, tensor_name: str
+    ) -> torch.Tensor | None:
+        if tensor is None:
+            return None
+        if tensor.device == input.device and tensor.dtype == input.dtype:
+            return tensor
+        if tensor.device.type != "cpu":
+            return self._to_input_device_direct(tensor, input, tensor_name)
+
+        key = (id(tensor), tensor.dtype)
+        host_tensor = self._host_buffered_tensors.get(key)
+        if host_tensor is None:
+            start_time = time.perf_counter()
+            host_tensor = torch.empty_like(tensor, device="cpu", pin_memory=True)
+            host_tensor.copy_(tensor, non_blocking=False)
+            self._profile_add("setup_runtime", f"host_buffer_{tensor_name}", time.perf_counter() - start_time, self._tensor_size_bytes(host_tensor))
+            self._host_buffered_tensors[key] = host_tensor
+            self._host_buffered_bytes += self._tensor_size_bytes(host_tensor)
+
+        return self._to_input_device_direct(host_tensor, input, tensor_name)
+
+    def _to_input_device_direct(
+        self, tensor: torch.Tensor, input: torch.Tensor, tensor_name: str
+    ) -> torch.Tensor:
+        profile_key = self._profile_copy_key(tensor_name)
+        self._maybe_sync_profile_copy()
+        start_time = time.perf_counter()
+        tensor = self._maybe_lazy_pin_cpu_tensor(tensor, tensor_name)
+        moved = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
+        self._maybe_sync_profile_copy()
+        self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(moved))
+        return moved
+
     def _to_input_device(self, tensor: torch.Tensor | None, input: torch.Tensor, tensor_name: str = "tensor_to_input") -> torch.Tensor | None:
         if tensor is None:
             return None
@@ -538,14 +583,9 @@ class LTX2DynamicBlockManager:
             return self._cached_to_input_device(tensor, input, tensor_name)
         if self.streamed_buffered_copy_enabled:
             return self._buffered_to_input_device(tensor, input, tensor_name)
-        profile_key = self._profile_copy_key(tensor_name)
-        self._maybe_sync_profile_copy()
-        start_time = time.perf_counter()
-        tensor = self._maybe_lazy_pin_cpu_tensor(tensor, tensor_name)
-        moved = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
-        self._maybe_sync_profile_copy()
-        self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(moved))
-        return moved
+        if self.streamed_host_buffered_copy_enabled:
+            return self._host_buffered_to_input_device(tensor, input, tensor_name)
+        return self._to_input_device_direct(tensor, input, tensor_name)
 
     def _stage_block_linear_weights(self, block: nn.Module) -> None:
         self._clear_staged_block()
@@ -689,6 +729,7 @@ class LTX2DynamicBlockManager:
         self._patched_modules.clear()
         self._clear_weight_cache()
         self._clear_staged_block()
+        self._clear_host_buffers()
 
     def _swap_block_to_device(self, block: nn.Module):
         parameter_handles = []
