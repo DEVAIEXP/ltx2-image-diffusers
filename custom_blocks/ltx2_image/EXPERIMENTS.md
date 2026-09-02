@@ -708,3 +708,14 @@ With bounded pin assignment, increasing pin workers from `2` to `4` improved set
 | `4` | `32.3166s` | `23.5359s` | `34.8546s` | `4.3236s/it` | `83.8s` | `6.68 GB` | `27.65 GB` | `0.1083s` |
 
 Insight: pinning parallelism is now productive with the bounded queue. Next A/B should test `LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS="8"` under the same two-purge spread baseline.
+
+### Pin CPU Workers 8 Result
+
+With bounded pin assignment and `spread` hot block selection, `8` pin workers reduced setup further but made denoise slower than `4` workers:
+
+| Pin workers | Setup | Pin CPU blocks | Denoise | Step avg | Pass 1 total | Peak VRAM | Peak RAM | Copy time |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `4` | `32.3166s` | `23.5359s` | `34.8546s` | `4.3236s/it` | `83.8s` | `6.68 GB` | `27.65 GB` | `0.1083s` |
+| `8` | `29.2975s` | `20.5812s` | `37.2691s` | `4.6274s/it` | `83.3s` | `6.68 GB` | `27.66 GB` | `1.2723s` |
+
+Insight: `8` workers buys setup time but appears to disturb the denoise path enough that total Pass 1 is only marginally better. Treat `4` as the safer balanced baseline and `8` as the faster-setup variant. The next A/B should reduce hot block budget with `spread` to see whether fewer resident blocks lower setup enough without giving back too much denoise speed.
