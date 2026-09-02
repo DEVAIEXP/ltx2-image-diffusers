@@ -697,3 +697,14 @@ The redundant `.to()` guard was neutral in the stable spread baseline:
 | + skip redundant block moves | `38.8747s` | `30.1105s` | `8.0700s` | `35.6465s` | `4.4229s/it` | `90.5s` | `6.68 GB` | `27.65 GB` |
 
 Insight: `blocks_to_target_devices` did not materially change, so the remaining setup problem is still CPU pinning. The next controlled A/B should keep the same two-purge spread baseline and vary only `LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS`.
+
+### Pin CPU Workers Result
+
+With bounded pin assignment, increasing pin workers from `2` to `4` improved setup without hurting denoise:
+
+| Pin workers | Setup | Pin CPU blocks | Denoise | Step avg | Pass 1 total | Peak VRAM | Peak RAM | Copy time |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `2` | `38.8747s` | `30.1105s` | `35.6465s` | `4.4229s/it` | `90.5s` | `6.68 GB` | `27.65 GB` | `0.3428s` |
+| `4` | `32.3166s` | `23.5359s` | `34.8546s` | `4.3236s/it` | `83.8s` | `6.68 GB` | `27.65 GB` | `0.1083s` |
+
+Insight: pinning parallelism is now productive with the bounded queue. Next A/B should test `LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS="8"` under the same two-purge spread baseline.
