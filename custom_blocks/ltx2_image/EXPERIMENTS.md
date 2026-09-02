@@ -654,3 +654,20 @@ $env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_SELECTION="spread" # experimental
 ```
 
 `spread` keeps the same budget but distributes the resident blocks across the full transformer depth. The intent is to test whether broader coverage reduces streamed work in later blocks without increasing the memory budget. This is a controlled A/B against the current best baseline and should be run with the Windows standby purge controls enabled both before the run and before transformer setup.
+
+### Spread Selection Result
+
+With Windows standby purge enabled before the run and before transformer setup, `spread` produced the best denoise sample so far:
+
+| Policy | Setup | Pin CPU blocks | Denoise | Step avg | Pass 1 total | Peak VRAM | Peak RAM | Hot blocks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `stride` baseline | `44.4104s` | `35.9688s` | `39.3172s` | `4.9083s/it` | `97.9s` | `6.68 GB` | `46.60 GB` | `[0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]` |
+| `spread` | `53.6983s` | `45.1439s` | `36.1682s` | `4.5145s/it` | `106.5s` | `6.69 GB` | `46.60 GB` | `[0, 5, 9, 14, 19, 24, 28, 33, 38, 42, 47]` |
+
+Insight: distributed residency improved the denoise loop but setup regressed because CPU pinning dominated. Next step is to reduce pinning setup pressure while keeping the same resident block policy.
+
+### Streaming CPU Pin Assignment
+
+`_pin_cpu_blocks` now pins and assigns tensors through a bounded worker queue instead of collecting all source tensor references and pinned results before assignment. This keeps the same pinned tensor set, but should reduce temporary host-memory pressure during setup.
+
+Test with the same stable baseline and `LTX_IMAGE_TRANSFORMER_HOT_BLOCK_SELECTION="spread"`.
