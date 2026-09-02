@@ -715,6 +715,9 @@ def main():
     if transformer_manager is not None and TRANSFORMER_MANAGER_PROFILE:
         run_metrics["transformer_manager_profile_summary"] = transformer_manager.profile_summary()
         transformer_manager.print_profile_summary(full=TRANSFORMER_MANAGER_PROFILE_FULL)
+    if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
+        run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()
+        dynamic_weights_hook.print_profile_summary()
 
 
     image_latent = denoise_state.to(OFFLOAD_DEVICE)
@@ -727,7 +730,7 @@ def main():
     if transformer_manager is not None:
         transformer_manager.detach(transformer)
     if dynamic_weights_enabled:
-        if DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
+        if DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and "dynamic_weights_runtime_summary" not in run_metrics:
             run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()
         remove_dynamic_weights(transformer)
     del prepare_pipe, denoise_pipe, transformer, scheduler

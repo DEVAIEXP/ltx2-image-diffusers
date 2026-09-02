@@ -846,3 +846,11 @@ $env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
 ```
 
 Smoke test result: a CUDA sequential model with block-like submodules successfully ran with one resident block and remaining linears patched through regular CPU parameters.
+
+First full transformer result with `linear_runtime`, `6 GB` resident module budget, and `spread` selection:
+
+| Mode | Patched linears | Resident modules | Pin linear weights | Denoise | Step avg | Pass 1 total | Torch alloc/reserved | Peak VRAM | Peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `linear_runtime` + resident module budget | `444` | `5.5077 GB` | `31.7174s / 18.5181 GB` | `93.9007s` | `11.7310s/it` | `144.7s` | `6.32/6.63 GiB` | `6.77 GB` | `46.66 GB` |
+
+Insight: removing the `store/meta` indirection did not recover speed. The generic dynamic path is still far slower than `manual_hot_blocks`, so the next diagnostic is runtime profiling inside `dynamic_weights` itself: copy totals, resident module names, and whether input/device transfers are happening during the transformer forward.

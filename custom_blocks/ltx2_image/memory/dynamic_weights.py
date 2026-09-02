@@ -61,6 +61,8 @@ class DynamicWeightsState:
     copy_bytes_by_name: dict[str, int] = field(default_factory=dict)
     copy_calls_by_name: dict[str, int] = field(default_factory=dict)
     patched_module_count: int = 0
+    selected_resident_modules: list[str] = field(default_factory=list)
+    selected_resident_linear_weights: list[str] = field(default_factory=list)
 
     def add_setup(self, action: str, seconds: float, byte_count: int = 0) -> None:
         self.setup_seconds_by_action[action] = self.setup_seconds_by_action.get(action, 0.0) + seconds
@@ -94,6 +96,8 @@ class DynamicWeightsState:
                 }
                 for key in sorted(self.copy_seconds_by_name)
             },
+            "selected_resident_modules": self.selected_resident_modules,
+            "selected_resident_linear_weights": self.selected_resident_linear_weights,
             "entries": [
                 {
                     "module_name": entry.module_name,
@@ -312,6 +316,7 @@ class DynamicWeightsHook(ModelHook):
             if selected_bytes + module_bytes > self.resident_module_budget_bytes:
                 continue
             self._resident_module_names.add(module_name)
+            self.state.selected_resident_modules.append(module_name)
             selected_bytes += module_bytes
         return selected_bytes
 
@@ -342,10 +347,11 @@ class DynamicWeightsHook(ModelHook):
             ordered_candidates = _spread_order(candidates, self.resident_weight_budget_bytes)
 
         selected_bytes = 0
-        for _, linear, weight_bytes in ordered_candidates:
+        for module_name, linear, weight_bytes in ordered_candidates:
             if selected_bytes + weight_bytes > self.resident_weight_budget_bytes:
                 continue
             self._resident_linear_weight_module_ids.add(id(linear))
+            self.state.selected_resident_linear_weights.append(module_name)
             selected_bytes += weight_bytes
         return selected_bytes
 
@@ -527,6 +533,44 @@ class DynamicWeightsHook(ModelHook):
         moved = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
         self.state.add_copy(name, time.perf_counter() - start, _tensor_size_bytes(moved))
         return moved
+
+    def print_profile_summary(self, *, top_n: int = 8) -> None:
+        summary = self.state.as_dict()
+        copy_runtime = summary["copy_runtime"]
+        copy_seconds = sum(item["seconds"] for item in copy_runtime.values())
+        copy_gb = sum(item["gb"] for item in copy_runtime.values())
+        print(
+            "  [dynamic-weights-profile] "
+            f"summary: mode={self.execution_mode} modules={summary['module_count']} "
+            f"patched={summary['patched_module_count']} copy_seconds={copy_seconds:.4f} "
+            f"copy_gb={copy_gb:.4f}",
+            flush=True,
+        )
+
+        selected_modules = summary["selected_resident_modules"]
+        if selected_modules:
+            print(
+                "  [dynamic-weights-profile] "
+                f"resident_modules={selected_modules}",
+                flush=True,
+            )
+
+        selected_linear_weights = summary["selected_resident_linear_weights"]
+        if selected_linear_weights:
+            print(
+                "  [dynamic-weights-profile] "
+                f"resident_linear_weights={selected_linear_weights[:top_n]} "
+                f"count={len(selected_linear_weights)}",
+                flush=True,
+            )
+
+        if copy_runtime:
+            print("  [dynamic-weights-profile] copy_runtime_by_type:", flush=True)
+            for name, item in sorted(copy_runtime.items(), key=lambda pair: pair[1]["seconds"], reverse=True)[:top_n]:
+                print(
+                    f"    {name}: calls={item['calls']} seconds={item['seconds']:.4f} gb={item['gb']:.4f}",
+                    flush=True,
+                )
 
 
 def apply_dynamic_weights(module: nn.Module, config: DynamicWeightsConfig | None = None) -> DynamicWeightsHook:
