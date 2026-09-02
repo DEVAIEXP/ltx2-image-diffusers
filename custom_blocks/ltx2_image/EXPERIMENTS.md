@@ -986,7 +986,10 @@ Use this Windows run as the current dynamic-weights reference when WSL decode be
 | Environment | Preset shape | Setup | Denoise | Avg step | Copy time | Resident modules | Peak VRAM | Peak RAM | Pass 1 |
 | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: |
 | Windows, standby purged before transformer | `linear_runtime`, eager pinned weights, `6 GB` resident module budget, native attention | `40.5351s` | `14.9614s` | `~1.72s/it` | `1.0984s / 148.1445 GB` | `[0, 5, 9, 14, 19, 24, 28, 33, 38, 42, 47]` | `6.77 GB` | `27.35 GB` | `66.4s` |
+| WSL, fake prompt, pinned memory disabled | `linear_runtime`, pageable streamed weights, `6 GB` resident module budget, native attention | `5.9899s` | `36.0936s` | `~4.51s/it` | `34.6336s / 148.1445 GB` | `[0, 5, 9, 14, 19, 24, 28, 33, 38, 42, 47]` | `6.42 GB` | `1.34 GB` | `50.0s` |
 
 Setup breakdown: `pin_linear_weights: 31.5272s / 18.5181 GB`, `resident_budget_modules_to_device: 8.4379s / 5.5077 GB`, `resident_modules_to_device: 0.4867s / 0.9554 GB`, small tensors resident `0.0243s / 0.0042 GB`.
 
 Step profile: first step `0.6680s`, then mostly `~1.78-2.30s`. This remains the best Windows one-shot comparison point after adding dynamic weights and standby purge.
+
+WSL decode follow-up: with pinned dynamic weights disabled, the run completed through VAE decode (`load_vae_to_cuda: 0.9268s`, `vae_decode_modular_call: 0.6174s`, Pass 2 `1.7s`) and saved the image. Total fake-prompt runtime was `52.2s`. This confirms the previous VAE `device not ready` failure was tied to the failed pinned-memory path or memory pressure around it, not to VAE decode itself.
