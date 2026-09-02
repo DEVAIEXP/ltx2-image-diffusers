@@ -686,3 +686,14 @@ Insight: avoiding a full temporary collection of pinned tensors reduced setup, d
 ### Skip Redundant Block Device Moves
 
 The manager now checks whether a block actually has tensors outside the target device before calling `.to(target_device)`. This should preserve resident CUDA block placement while avoiding recursive no-op `.to(cpu)` traversal for streamed CPU blocks.
+
+### Skip Redundant Device Move Result
+
+The redundant `.to()` guard was neutral in the stable spread baseline:
+
+| Change | Setup | Pin CPU blocks | Blocks to target devices | Denoise | Step avg | Pass 1 total | Peak VRAM | Peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `spread` + bounded pinning | `40.2046s` | `31.4450s` | `8.0990s` | `34.6251s` | `4.3215s/it` | `91.9s` | `6.71 GB` | `27.65 GB` |
+| + skip redundant block moves | `38.8747s` | `30.1105s` | `8.0700s` | `35.6465s` | `4.4229s/it` | `90.5s` | `6.68 GB` | `27.65 GB` |
+
+Insight: `blocks_to_target_devices` did not materially change, so the remaining setup problem is still CPU pinning. The next controlled A/B should keep the same two-purge spread baseline and vary only `LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS`.
