@@ -29,6 +29,7 @@ class DynamicWeightsConfig:
     execution_mode: str = "plan"
     pin_cpu_memory: bool = False
     lazy_pin_cpu_memory: bool = False
+    allow_pin_memory_fallback: bool = True
     pin_cpu_workers: int = 1
     resident_weight_budget_gb: float = 0.0
     resident_weight_selection: str = "spread"
@@ -124,6 +125,7 @@ class DynamicWeightsHook(ModelHook):
         self._replaced_parameters: list[tuple[nn.Module, str, nn.Parameter]] = []
         self._linear_weight_store: dict[int, torch.Tensor] = {}
         self._lazy_pinned_tensor_ids: set[int] = set()
+        self._pin_memory_disabled = False
         self._resident_linear_weight_module_ids: set[int] = set()
         self._resident_module_names: set[str] = set()
         self.execution_device = torch.device(config.execution_device)
@@ -188,6 +190,7 @@ class DynamicWeightsHook(ModelHook):
             patched_module._parameters[parameter_name] = original_parameter
         self._linear_weight_store.clear()
         self._lazy_pinned_tensor_ids.clear()
+        self._pin_memory_disabled = False
         self._resident_linear_weight_module_ids.clear()
         self._resident_module_names.clear()
 
@@ -444,7 +447,13 @@ class DynamicWeightsHook(ModelHook):
 
         if self.pin_cpu_workers == 1:
             for linear in linears:
-                assign_pinned(pin_linear(linear))
+                try:
+                    assign_pinned(pin_linear(linear))
+                except RuntimeError as exc:
+                    if not self.config.allow_pin_memory_fallback:
+                        raise
+                    self._disable_pin_memory("pin_linear_weights_failed", exc)
+                    break
             return pinned_bytes
 
         linears_iter = iter(linears)
@@ -466,8 +475,17 @@ class DynamicWeightsHook(ModelHook):
             while futures:
                 for future in as_completed(futures):
                     futures.remove(future)
-                    assign_pinned(future.result())
-                    submit_next()
+                    try:
+                        assign_pinned(future.result())
+                    except RuntimeError as exc:
+                        if not self.config.allow_pin_memory_fallback:
+                            raise
+                        self._disable_pin_memory("pin_linear_weights_failed", exc)
+                        for pending in futures:
+                            pending.cancel()
+                        return pinned_bytes
+                    if not self._pin_memory_disabled:
+                        submit_next()
                     break
         return pinned_bytes
 
@@ -487,7 +505,13 @@ class DynamicWeightsHook(ModelHook):
 
         if self.pin_cpu_workers == 1:
             for store_key in store_keys:
-                assign_pinned(pin_key(store_key))
+                try:
+                    assign_pinned(pin_key(store_key))
+                except RuntimeError as exc:
+                    if not self.config.allow_pin_memory_fallback:
+                        raise
+                    self._disable_pin_memory("pin_stored_linear_weights_failed", exc)
+                    break
             return pinned_bytes
 
         store_keys_iter = iter(store_keys)
@@ -509,10 +533,30 @@ class DynamicWeightsHook(ModelHook):
             while futures:
                 for future in as_completed(futures):
                     futures.remove(future)
-                    assign_pinned(future.result())
-                    submit_next()
+                    try:
+                        assign_pinned(future.result())
+                    except RuntimeError as exc:
+                        if not self.config.allow_pin_memory_fallback:
+                            raise
+                        self._disable_pin_memory("pin_stored_linear_weights_failed", exc)
+                        for pending in futures:
+                            pending.cancel()
+                        return pinned_bytes
+                    if not self._pin_memory_disabled:
+                        submit_next()
                     break
         return pinned_bytes
+
+    def _disable_pin_memory(self, action: str, exc: RuntimeError) -> None:
+        if self._pin_memory_disabled:
+            return
+        self._pin_memory_disabled = True
+        self.state.add_setup(action, 0.0, 0)
+        if self.config.verbose:
+            print(
+                f"  [dynamic-weights] {action}: disabling pinned CPU memory fallback after {type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
     def _patch_linear(self, linear: nn.Linear) -> None:
         self._patched_modules.append((linear, linear.forward))
@@ -540,7 +584,7 @@ class DynamicWeightsHook(ModelHook):
         return moved
 
     def _lazy_pin_tensor(self, tensor: torch.Tensor, name: str) -> torch.Tensor:
-        if not self.config.pin_cpu_memory or not self.config.lazy_pin_cpu_memory:
+        if self._pin_memory_disabled or not self.config.pin_cpu_memory or not self.config.lazy_pin_cpu_memory:
             return tensor
         if tensor.device.type == "meta":
             return tensor
@@ -548,7 +592,13 @@ class DynamicWeightsHook(ModelHook):
             return tensor
 
         start = time.perf_counter()
-        pinned = tensor.pin_memory()
+        try:
+            pinned = tensor.pin_memory()
+        except RuntimeError as exc:
+            if not self.config.allow_pin_memory_fallback:
+                raise
+            self._disable_pin_memory(f"lazy_pin_{name}_failed", exc)
+            return tensor
         seconds = time.perf_counter() - start
         pinned_bytes = _tensor_size_bytes(pinned)
 

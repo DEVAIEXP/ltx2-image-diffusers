@@ -969,3 +969,10 @@ The runner now supports `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET` as a convenience laye
 | `long_steps` | Experimental profile for many steps or persistent reuse | `linear_runtime`, lazy pin enabled, `6 GB` resident module budget |
 
 WSL/Linux test note: run the same preset without `LTX_IMAGE_PURGE_WINDOWS_STANDBY_*`. This will tell us whether the strong warm result is mostly from generic pinned-memory/module-residency behavior or from Windows WDDM/shared-memory behavior. Key comparison fields are `build_dynamic_weights_plan`, repeated denoise times, process RAM, and VRAM.
+
+First WSL isolation found two portability issues before denoise:
+
+- Text encoder group offload failed while calling Diffusers `tensor.pin_memory()` (`CUDA error: out of memory`).
+- With fake prompt enabled, the transformer reached dynamic weights setup but failed on our eager `linear.weight.data.pin_memory()` path.
+
+The dynamic weights hook now has `allow_pin_memory_fallback`, exposed as `LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK` and enabled by presets. If large pinned memory allocation fails, the hook logs `pin_linear_weights_failed` or `pin_stored_linear_weights_failed`, disables further pin attempts, and continues with pageable CPU tensors. This keeps WSL/Linux compatibility testing moving, even though performance may drop.
