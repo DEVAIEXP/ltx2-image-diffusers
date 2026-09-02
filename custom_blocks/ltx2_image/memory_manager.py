@@ -218,7 +218,8 @@ class LTX2DynamicBlockManager:
         for block_index, block in enumerate(blocks):
             keep_resident = block_index < pinned_count or (self.manual_hot_blocks_enabled and block_index in self._hot_block_indices)
             target_device = self.device if keep_resident else self.offload_device
-            block.to(target_device)
+            if self._module_has_tensors_off_device(block, target_device):
+                block.to(target_device)
         self._profile_add("setup_runtime", "blocks_to_target_devices", time.perf_counter() - setup_start)
 
         if self.manual_hot_blocks_enabled and self.hot_linear_weight_budget_gb > 0:
@@ -277,6 +278,15 @@ class LTX2DynamicBlockManager:
         size = sum(self._tensor_size_bytes(parameter.data) for parameter in block.parameters(recurse=True))
         size += sum(self._tensor_size_bytes(buffer.data) for buffer in block.buffers(recurse=True))
         return size
+
+    def _module_has_tensors_off_device(self, module: nn.Module, device: torch.device) -> bool:
+        for parameter in module.parameters(recurse=True):
+            if parameter.device != device:
+                return True
+        for buffer in module.buffers(recurse=True):
+            if buffer.device != device:
+                return True
+        return False
 
     def _normalize_ordered_block_list(self, block_indices: tuple[int, ...] | list[int] | None) -> tuple[int, ...]:
         if not block_indices:

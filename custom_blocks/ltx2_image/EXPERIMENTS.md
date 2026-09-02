@@ -671,3 +671,18 @@ Insight: distributed residency improved the denoise loop but setup regressed bec
 `_pin_cpu_blocks` now pins and assigns tensors through a bounded worker queue instead of collecting all source tensor references and pinned results before assignment. This keeps the same pinned tensor set, but should reduce temporary host-memory pressure during setup.
 
 Test with the same stable baseline and `LTX_IMAGE_TRANSFORMER_HOT_BLOCK_SELECTION="spread"`.
+
+### Spread + Bounded Pinning Result
+
+After switching CPU pinning to a bounded assignment queue, `spread` improved again under the two-purge benchmark protocol:
+
+| Change | Setup | Pin CPU blocks | Denoise | Step avg | Pass 1 total | Peak VRAM | Peak RAM | Copy time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `spread` before bounded pinning | `53.6983s` | `45.1439s` | `36.1682s` | `4.5145s/it` | `106.5s` | `6.69 GB` | `46.60 GB` | `1.0667s` |
+| `spread` + bounded pinning | `40.2046s` | `31.4450s` | `34.6251s` | `4.3215s/it` | `91.9s` | `6.71 GB` | `27.65 GB` | `0.3420s` |
+
+Insight: avoiding a full temporary collection of pinned tensors reduced setup, denoise, and peak RAM. The next setup target is `blocks_to_target_devices` around `8s`, which likely includes recursive `.to(cpu)` calls for streamed blocks already loaded on CPU.
+
+### Skip Redundant Block Device Moves
+
+The manager now checks whether a block actually has tensors outside the target device before calling `.to(target_device)`. This should preserve resident CUDA block placement while avoiding recursive no-op `.to(cpu)` traversal for streamed CPU blocks.
