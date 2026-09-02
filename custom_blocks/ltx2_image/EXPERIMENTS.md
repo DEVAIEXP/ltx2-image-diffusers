@@ -865,3 +865,12 @@ Follow-up profiling showed the selected resident modules matched the fastest man
 ```
 
 Insight: the module selection is not the problem. One remaining difference from the manual manager is that non-linear block-local parameters, such as modulation tables used through inline `.to(temb.device)` calls in the block forward, were neither pinned nor made resident by the generic dynamic runtime. The runner now exposes `LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB` and defaults it to `1024` for dynamic weights so these small/medium local tensors can stay resident instead of being copied implicitly during every block forward.
+
+Result after increasing the dynamic small tensor resident threshold to `1024 KB`:
+
+| Mode | Resident small | Patched linears | Pin linear weights | Denoise | Step avg | Pass 1 total | Copy time | Torch alloc/reserved | Peak VRAM | Peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `linear_runtime` + module budget + `16 KB` small tensors | `0.0033 GB` | `444` | `31.7174s / 18.5181 GB` | `93.9007s` | `11.7310s/it` | `144.7s` | `4.5617s` | `6.32/6.63 GiB` | `6.77 GB` | `46.66 GB` |
+| `linear_runtime` + module budget + `1024 KB` small tensors | `0.0282 GB` | `444` | `23.3566s / 18.5181 GB` | `13.9789s` | `1.5810s/it` | `56.1s` | `0.3306s` | `6.32/6.63 GiB` | `6.69 GB` | `27.36 GB` |
+
+Insight: this is the first generic dynamic weights path to beat the ComfyUI denoise loop in isolation on this test. The remaining gap is setup/model initialization: Diffusers still loads the transformer then spends tens of seconds pinning and placing CPU/GPU tensors, while the ComfyUI dynamic loader reports sub-second dynamic preparation plus a larger initialization phase inside the sampler.
