@@ -415,16 +415,68 @@ Result:
 
 Insight: synchronized layer profiling slows the run, but the distribution is useful. The denoise gap is not isolated to one layer type. `cross_attn`, `self_attn`, and `ff` are all significant, which points back to the dynamic weight execution path used by all of their `Linear` modules. The next useful comparison is a block-staged mode that copies a block's linear weights once before the block forward rather than staging each linear call independently.
 
+## Block Staged Linear Weights
+
+A `manual_block_staged` experiment tried to stage every streamed block's linear weights before each block forward, instead of staging each `Linear` call independently.
+
+Configuration difference from the best `manual_hot_blocks` baseline:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_block_staged"
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="0"
+```
+
+Result:
+
+| Mode | Setup | Denoise | Step avg | Pass 1 total | Torch alloc | Torch reserved | Peak VRAM | Peak RAM | Resident blocks | Streamed blocks | Copied GB | Copy time | Key setup runtime |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Best hot-block baseline | `68.6324s` | `70.5502s` | `8.8141s/it` | `161.6s` | `6.32 GiB` | `6.68 GiB` | `6.73 GB` | `46.60 GB` | `11` | `37` | `148.1443 GB` | `0.1107s` | `pin_cpu_blocks=60.9529s` |
+| Block staged | `169.5978s` | `99.1882s` | `12.1739s/it` | `279.9s` | `0.81 GiB` | `1.46 GiB` | `6.38 GB` | `51.86 GB` | `0` | `48` | `192.1872 GB` | `0.0658s` | `pin_cpu_blocks=169.2436s` |
+
+Insight: block-staged execution is not useful in this shape. It loses all resident hot blocks, copies more total weight volume, and greatly increases setup time. Even though measured copy time is low, block runtime gets worse, so this path should be discarded for now.
+
+## Stable Hot Blocks With Parallel Pinning
+
+The latest stable `manual_hot_blocks` run used the current best configuration with a `6 GB` hot-block budget, direct streamed copies, resident small tensors, and parallel CPU pinning.
+
+Configuration:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS="2"
+$env:LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="direct"
+$env:LTX_IMAGE_ATTENTION_BACKEND="native"
+```
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| Setup memory manager | `68.6324s` |
+| Pin CPU blocks | `60.9529s` for `18.5212 GB` |
+| Blocks to target devices | `7.3261s` |
+| Denoise | `70.5502s` |
+| Step average | `8.8141s/it` |
+| Pass 1 total | `161.6s` |
+| Resident block runtime | `3.3982s` across `11` blocks |
+| Streamed block runtime | `65.6985s` across `37` blocks |
+| Copied weight volume | `148.1443 GB` |
+| Measured copy time | `0.1107s` |
+| Torch alloc/reserved | `6.32 GiB` / `6.68 GiB` |
+| Peak VRAM/RAM | `6.73 GB` / `46.60 GB` |
+
+Insight: this confirms the current best path is setup-bound plus streamed-block-runtime-bound, not copy-time-bound. Resident blocks are extremely fast relative to streamed blocks, but increasing the hot-block budget to `8 GB` previously caused a severe slowdown. The next promising direction is better hot-block selection within the same memory budget, guided by the slowest streamed block profile, rather than more aggressive staging.
+
 ## Next Experiments
 
-1. Keep `manual_linear + pinned CPU` as the current baseline.
-2. Fix manager profiling so copy time is broken down by tensor/module type instead of only `tensor_to_input`.
-3. Add a clean-room `manual_buffer_pool` or `manual_cast_buffer` mode:
-   - Keep master weights on CPU.
-   - Use reusable CUDA buffers for weight/bias casting.
-   - Patch `Linear`, `RMSNorm`, and `LayerNorm` forwards to consume staged tensors.
-   - Avoid repeated module-level `.to()`.
-4. Try prefetching the next block/group with a CUDA stream after the buffer-pool mode works correctly.
+1. Keep `manual_hot_blocks + pinned CPU + resident small tensors` as the current baseline.
+2. Test profile-guided hot block selection within the same `6 GB` budget.
+3. Reduce setup cost by avoiding repeated full CPU pinning when possible.
+4. Investigate a ComfyUI-like dynamic staging path that avoids per-run heavyweight setup while preserving fast streamed execution.
 5. Continue micro-committing every working state.
 
 ## Current Verdict
