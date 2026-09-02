@@ -630,6 +630,12 @@ def main():
             use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
             low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
         )
+    elif dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
+        record_event(
+            "skip_transformer_to_cuda",
+            time.time() - event_t0,
+            reason=f"dynamic_weights_{DYNAMIC_WEIGHTS_EXECUTION_MODE}",
+        )
     else:
         transformer.to(DEVICE)
         record_event("load_transformer_to_cuda", time.time() - event_t0)
