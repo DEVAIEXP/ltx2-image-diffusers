@@ -64,6 +64,7 @@ TRANSFORMER_MANAGER_WEIGHT_CACHE_GB = float(os.environ.get("LTX_IMAGE_TRANSFORME
 TRANSFORMER_MANAGER_PIN_CPU_MEMORY = os.environ.get("LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY", "0") == "1"
 TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY = os.environ.get("LTX_IMAGE_TRANSFORMER_LAZY_PIN_CPU_MEMORY", "0") == "1"
 TRANSFORMER_MANAGER_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS", "1"))
+TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE = int(os.environ.get("LTX_IMAGE_TRANSFORMER_SLIDING_WINDOW_SIZE", "0"))
 TRANSFORMER_MANAGER_PROFILE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE_FULL = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL", "0") == "1"
@@ -251,6 +252,7 @@ def main():
         "transformer_manager_keep_streamed_small_tensors_resident": TRANSFORMER_MANAGER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT,
         "transformer_manager_pin_cpu_memory": TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
         "transformer_manager_pin_cpu_workers": TRANSFORMER_MANAGER_PIN_CPU_WORKERS,
+        "transformer_manager_sliding_window_size": TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE,
         "transformer_manager_profile_enabled": TRANSFORMER_MANAGER_PROFILE,
         "transformer_manager_profile_sync_copies": TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
         "transformer_manager_profile_full": TRANSFORMER_MANAGER_PROFILE_FULL,
@@ -412,6 +414,7 @@ def main():
             pin_cpu_memory=TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
             lazy_pin_cpu_memory=TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY,
             pin_cpu_workers=TRANSFORMER_MANAGER_PIN_CPU_WORKERS,
+            sliding_window_size=TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE,
             profile=TRANSFORMER_MANAGER_PROFILE,
             profile_sync_copies=TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
         )
@@ -437,6 +440,7 @@ def main():
             pin_cpu_memory=TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
             lazy_pin_cpu_memory=TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY,
             pin_cpu_workers=TRANSFORMER_MANAGER_PIN_CPU_WORKERS,
+            sliding_window_size=TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE,
             profile=TRANSFORMER_MANAGER_PROFILE,
         )
     elif TRANSFORMER_GROUP_OFFLOAD:

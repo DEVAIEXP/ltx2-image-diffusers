@@ -36,6 +36,7 @@ class LTX2DynamicBlockManager:
         "manual_linear_static_plan",
         "manual_block_staged",
         "manual_hot_blocks",
+        "manual_sliding_window",
     }
     RECOMMENDED_MODE = "manual_linear"
 
@@ -62,6 +63,7 @@ class LTX2DynamicBlockManager:
     keep_streamed_small_tensors_resident: bool = False
     lazy_pin_cpu_memory: bool = False
     pin_cpu_workers: int = 1
+    sliding_window_size: int = 0
 
     def __post_init__(self):
         self.device = torch.device(self.device)
@@ -83,6 +85,7 @@ class LTX2DynamicBlockManager:
         if self.streamed_copy_mode not in {"direct", "buffered", "host_buffered"}:
             raise ValueError("streamed_copy_mode must be 'direct', 'buffered', or 'host_buffered'")
         self.pin_cpu_workers = max(1, int(self.pin_cpu_workers))
+        self.sliding_window_size = max(0, int(self.sliding_window_size))
         self._active_block: int | None = None
         self._block_count = 0
         self._blocks: nn.ModuleList | None = None
@@ -107,6 +110,7 @@ class LTX2DynamicBlockManager:
         self._pinned_cpu_bytes = 0
         self._lazy_pinned_cpu_bytes = 0
         self._lazy_pinned_tensor_ids: set[int] = set()
+        self._sliding_weight_handles: dict[int, list[tuple[nn.Parameter, torch.Tensor]]] = {}
         self._profile_current_block: int | None = None
         self._profile_stats = {
             "setup_runtime": {},
@@ -128,7 +132,7 @@ class LTX2DynamicBlockManager:
 
     @property
     def manual_patch_enabled(self) -> bool:
-        return self.mode in {"manual_linear", "manual_buffered", "manual_cached", "manual_selective", "manual_linear_static_plan", "manual_block_staged", "manual_hot_blocks"}
+        return self.mode in {"manual_linear", "manual_buffered", "manual_cached", "manual_selective", "manual_linear_static_plan", "manual_block_staged", "manual_hot_blocks", "manual_sliding_window"}
 
     @property
     def manual_cache_enabled(self) -> bool:
@@ -160,7 +164,11 @@ class LTX2DynamicBlockManager:
 
     @property
     def manual_hot_blocks_enabled(self) -> bool:
-        return self.mode == "manual_hot_blocks"
+        return self.mode in {"manual_hot_blocks", "manual_sliding_window"}
+
+    @property
+    def manual_sliding_window_enabled(self) -> bool:
+        return self.mode == "manual_sliding_window" and self.sliding_window_size > 0
 
     def attach(self, transformer: nn.Module) -> None:
         self.prepare_transformer(transformer)
@@ -248,6 +256,7 @@ class LTX2DynamicBlockManager:
                 f"hot_block_stride={self.hot_block_stride} hot_block_offset={self.hot_block_offset} "
                 f"hot_linear_weight_count={self._hot_linear_weight_count} hot_linear_weight_gb={hot_linear_weight_gb:.3f} "
                 f"streamed_blocks={streamed} streamed_copy_mode={self.streamed_copy_mode} weight_cache_gb={cache_gb:g} "
+                f"sliding_window_size={self.sliding_window_size} "
                 f"selective_resident_gb={selective_gb:.3f} streamed_small_resident_gb={streamed_small_gb:.3f} "
                 f"pinned_cpu_gb={pinned_cpu_gb:.3f} pin_cpu_workers={self.pin_cpu_workers}",
                 flush=True,
@@ -327,6 +336,7 @@ class LTX2DynamicBlockManager:
             "hot_linear_weight_offset": self.hot_linear_weight_offset,
             "hot_linear_weight_count": self._hot_linear_weight_count,
             "hot_linear_weight_gb": round(self._hot_linear_weight_bytes / 1024**3, 4),
+            "sliding_window_size": self.sliding_window_size,
             "streamed_copy_mode": self.streamed_copy_mode,
             "keep_streamed_small_tensors_resident": self.keep_streamed_small_tensors_resident,
             "streamed_small_resident_gb": round(self._streamed_small_resident_bytes / 1024**3, 4),
@@ -819,6 +829,8 @@ class LTX2DynamicBlockManager:
                     module.forward = dynamic_layer_norm_forward.__get__(module, module.__class__)
 
     def _restore_manual_modules(self) -> None:
+        for block_index in list(self._sliding_weight_handles):
+            self._restore_sliding_block_linear_weights(block_index)
         for module, original_forward in self._patched_modules:
             module.forward = original_forward
         self._patched_modules.clear()
@@ -852,6 +864,51 @@ class LTX2DynamicBlockManager:
             parameter.data = old_data
         for module, name, old_buffer in reversed(buffer_handles):
             setattr(module, name, old_buffer)
+
+    def _promote_sliding_block_linear_weights(self, block_index: int, block: nn.Module) -> None:
+        if block_index in self._sliding_weight_handles or self._is_pinned(block_index):
+            return
+
+        handles: list[tuple[nn.Parameter, torch.Tensor]] = []
+        for module in block.modules():
+            if not isinstance(module, nn.Linear) or module.weight.device == self.device:
+                continue
+
+            old_data = module.weight.data
+            profile_key = self._profile_copy_key("sliding_linear_weight_onload")
+            self._maybe_sync_profile_copy()
+            start_time = time.perf_counter()
+            module.weight.data = old_data.to(device=self.device, dtype=old_data.dtype, non_blocking=True)
+            self._maybe_sync_profile_copy()
+            self._profile_add("copy_runtime", profile_key, time.perf_counter() - start_time, self._tensor_size_bytes(module.weight.data))
+            handles.append((module.weight, old_data))
+
+        if handles:
+            self._sliding_weight_handles[block_index] = handles
+
+    def _restore_sliding_block_linear_weights(self, block_index: int) -> None:
+        handles = self._sliding_weight_handles.pop(block_index, None)
+        if not handles:
+            return
+        for parameter, old_data in reversed(handles):
+            parameter.data = old_data
+
+    def _sync_sliding_window(self, block_index: int) -> None:
+        if not self.manual_sliding_window_enabled or self._blocks is None:
+            return
+
+        desired = {
+            index
+            for index in range(block_index, min(self._block_count, block_index + self.sliding_window_size))
+            if not self._is_pinned(index)
+        }
+
+        for loaded_index in list(self._sliding_weight_handles):
+            if loaded_index not in desired:
+                self._restore_sliding_block_linear_weights(loaded_index)
+
+        for index in sorted(desired):
+            self._promote_sliding_block_linear_weights(index, self._blocks[index])
 
     def _is_pinned(self, block_index: int) -> bool:
         return block_index < min(self.pinned_blocks, self._block_count) or block_index in self._hot_block_indices
@@ -902,6 +959,8 @@ class LTX2DynamicBlockManager:
 
         if self.manual_patch_enabled:
             self._profile_current_block = block_index
+            if self.manual_sliding_window_enabled:
+                self._sync_sliding_window(block_index)
             start_time = time.perf_counter()
             try:
                 if self.manual_block_staged_enabled:
