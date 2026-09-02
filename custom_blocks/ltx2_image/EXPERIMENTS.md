@@ -904,3 +904,11 @@ $env:LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY="1"
 ```
 
 If this works, `build_dynamic_weights_plan` should stay closer to the no-pin run while `dynamic-weights-profile` reports `lazy_pin_linear_weight` under setup runtime and copy time should drop after the first use of each weight.
+
+First full result:
+
+| Mode | Build dynamic plan | Lazy pin during denoise | Denoise | Step profile | Copy time | Pass 1 total | Peak VRAM | Peak RAM |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| `linear_runtime` + module budget + lazy pin | `9.2746s` | `54.8884s / 18.5181 GB` | `71.3503s` | first step `58.8127s`, later mostly `~1.7s/it` | `0.4201s` | `91.5s` | `6.79 GB` | `27.40 GB` |
+
+Insight: lazy pin is technically working, but for an 8-step image run it moves the eager pin cost into the first denoise step instead of eliminating it. After the first-step pinning, later steps are very fast, so this may be useful for long-running or persistent-process workloads, but the best single-run preset remains eager pinned dynamic weights with resident modules and resident small tensors.
