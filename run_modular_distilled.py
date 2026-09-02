@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import time
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import torch
 from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler
 from diffusers.hooks import apply_group_offloading
@@ -26,8 +28,6 @@ from custom_blocks.ltx2_image.memory_manager import LTX2DynamicBlockManager
 from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer2DModel
 from inference_utils import RunTracker, flush
 
-
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 def parse_int_list_env(name: str) -> tuple[int, ...]:
     value = os.environ.get(name, "").strip()

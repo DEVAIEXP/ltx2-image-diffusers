@@ -1,12 +1,30 @@
 import ctypes
 import gc
 import importlib.metadata
+import os
+from pathlib import Path
 import threading
 import time
 
 import psutil
 import torch
 
+
+def is_wsl() -> bool:
+    if os.name == "nt":
+        return False
+    try:
+        version = Path("/proc/version").read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "microsoft" in version or "wsl" in version
+
+
+def should_malloc_trim() -> bool:
+    value = os.environ.get("LTX_IMAGE_MALLOC_TRIM")
+    if value is not None:
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return not is_wsl()
 
 
 def get_sdnq_version():
@@ -24,12 +42,14 @@ def get_sdnq_version():
 
 def flush():
     gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.synchronize()
-    try:
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except Exception:
-        pass
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    if should_malloc_trim():
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
 
 def get_ram_gb():
