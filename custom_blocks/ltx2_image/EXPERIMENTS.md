@@ -932,3 +932,25 @@ First warm benchmark with the current best eager-pinned dynamic preset:
 | `linear_runtime` + module budget + eager pin + repeats `2` | `32.2961s` | `14.4916s` | `14.5287s` | `~1.63s/it` | `0.7809s / 296.2891 GB` | `72.4s` | `6.69 GB` | `27.35 GB` |
 
 Insight: this is the strongest parity signal so far. In a warm/server-style run, the PyTorch-only dynamic weights path is already close to the ComfyUI reference (`72.11s` full prompt execution) while avoiding the VBAR/driver-level risk class. The remaining optimization target is cold setup, mainly `pin_linear_weights` (`23.4006s`) plus resident module placement (`8.3050s`), not the steady denoise loop.
+
+### Preset Planning Notes
+
+The current best results depend on the machine having enough host RAM headroom for pinned streamed weights plus resident modules. On the 64 GB RAM test system, the best dynamic preset used roughly:
+
+- `~27-28 GB` peak process RAM.
+- `~6.7 GB` peak VRAM.
+- `18.5 GB` pinned streamed linear weights.
+- `5.5 GB` resident transformer block budget.
+- `0.028 GB` resident small tensors.
+
+This suggests different default guidance by machine class:
+
+| Machine class | Likely safe starting point | Expected tradeoff |
+| --- | --- | --- |
+| `32 GB RAM` / limited shared memory | Lower resident budget (`3-4 GB`), consider fewer pinned weights, keep standby purge optional on Windows | More streaming and slower denoise, but lower risk of RAM pressure/pagefile stalls. |
+| `64 GB RAM` / `~32 GB` shared memory | Current best preset: `6 GB` resident module budget, eager pinned CPU weights, small tensors `1024 KB` | Best observed balance for 8-step image runs. |
+| `>64 GB RAM` | Test `6 GB`, then carefully A/B `8 GB` and `12 GB` budgets | More budget is not automatically faster; earlier `16 GB` tests regressed badly, likely due pressure/placement effects. |
+
+Important observed behavior: increasing resident/hot budget past the sweet spot can slow the run. In manual tests, `12 GB` improved over `8 GB` in one phase, but `16 GB` became much worse (`denoise_modular_pipe_call: 201.2456s`). The advisor should therefore prefer a conservative budget ladder and stop increasing when step time or setup worsens.
+
+Windows-specific note: standby cache state can dominate benchmark variance. On the test system, purging standby before the transformer stabilized the best dynamic runs and brought denoise down to the `~34-38s` range in manual mode and `~14-15s` in warm dynamic mode. Presets should describe this as an optional elevated Windows optimization, not as a required cross-platform feature.
