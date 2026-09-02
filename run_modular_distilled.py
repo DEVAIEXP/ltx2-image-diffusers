@@ -47,6 +47,22 @@ def parse_bool_env(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def is_wsl_environment() -> bool:
+    if os.name == "nt":
+        return False
+    try:
+        release = os.uname().release.lower()
+    except AttributeError:
+        release = ""
+    if "microsoft" in release or "wsl" in release:
+        return True
+    try:
+        version = Path("/proc/version").read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "microsoft" in version or "wsl" in version
+
+
 DEVICE = os.environ.get("LTX_IMAGE_DEVICE", "cuda:0")
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
@@ -201,6 +217,7 @@ DYNAMIC_WEIGHTS_EXECUTION_MODE = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION
 DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
 DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY")
 DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK", "1")
+DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL", "1")
 DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4"))
 DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB = int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024"))
 DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0"))
@@ -209,6 +226,10 @@ DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = float(preset_env("LTX_IMAGE_DYNAMIC_
 DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS = parse_pattern_list_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS")
 DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower()
 DYNAMIC_WEIGHTS_VERBOSE = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1")
+RUNNING_ON_WSL = is_wsl_environment()
+DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_PIN_CPU_MEMORY and not (
+    RUNNING_ON_WSL and DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL
+)
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
@@ -486,6 +507,7 @@ def main():
         "dtype": str(DTYPE),
         "text_encoder_low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE,
         "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
+        "running_on_wsl": RUNNING_ON_WSL,
         "reset_dynamic_memory_after_run": RESET_DYNAMIC_MEMORY_AFTER_RUN,
         "purge_windows_standby_before_run": PURGE_WINDOWS_STANDBY_BEFORE_RUN,
         "purge_windows_standby_before_transformer": PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER,
@@ -506,8 +528,10 @@ def main():
         "transformer_manager_profile_full": TRANSFORMER_MANAGER_PROFILE_FULL,
         "dynamic_weights_execution_mode": DYNAMIC_WEIGHTS_EXECUTION_MODE,
         "dynamic_weights_pin_cpu_memory": DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
+        "dynamic_weights_effective_pin_cpu_memory": DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
         "dynamic_weights_lazy_pin_cpu_memory": DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
         "dynamic_weights_allow_pin_memory_fallback": DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
+        "dynamic_weights_disable_pin_on_wsl": DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL,
         "dynamic_weights_pin_cpu_workers": DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
         "dynamic_weights_small_tensor_threshold_kb": DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB,
         "dynamic_weights_resident_weight_budget_gb": DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
@@ -525,6 +549,8 @@ def main():
     run_metrics["flash_trivial_mask_wrapper_installed"] = flash_mask_wrapper_installed
     if DYNAMIC_WEIGHTS_PRESET:
         print(f"Using dynamic weights preset: {DYNAMIC_WEIGHTS_PRESET}", flush=True)
+    if DYNAMIC_WEIGHTS_PIN_CPU_MEMORY and not DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY:
+        print("  [dynamic-weights] disabling pinned CPU memory on WSL; set LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0 to force it.", flush=True)
 
     tracker = RunTracker(DEVICE, run_metrics, interval=0.1)
     record_event = tracker.record_event
@@ -684,7 +710,7 @@ def main():
                 ),
                 small_tensor_threshold_bytes=DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB * 1024,
                 execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
-                pin_cpu_memory=DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
+                pin_cpu_memory=DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
                 lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
                 allow_pin_memory_fallback=DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
                 pin_cpu_workers=DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
@@ -704,6 +730,7 @@ def main():
             total_gb=dynamic_weights_summary["total_gb"],
             bytes_by_placement=dynamic_weights_summary["bytes_by_placement"],
             execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
+            pin_cpu_memory=DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
             lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
             allow_pin_memory_fallback=DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
             patched_module_count=dynamic_weights_summary["patched_module_count"],
