@@ -89,6 +89,7 @@ TRANSFORMER_MANAGER_PROFILE_FULL = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER
 DYNAMIC_WEIGHTS_PLAN = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN")
 DYNAMIC_WEIGHTS_EXECUTION_MODE = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
 DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
+DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY")
 DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4"))
 DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB = int(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024"))
 DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = float(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0"))
@@ -558,6 +559,7 @@ def main():
                 small_tensor_threshold_bytes=DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB * 1024,
                 execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
                 pin_cpu_memory=DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
+                lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
                 pin_cpu_workers=DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
                 resident_weight_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
                 resident_weight_selection=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION,
@@ -575,6 +577,7 @@ def main():
             total_gb=dynamic_weights_summary["total_gb"],
             bytes_by_placement=dynamic_weights_summary["bytes_by_placement"],
             execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
+            lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
             patched_module_count=dynamic_weights_summary["patched_module_count"],
             setup_runtime=dynamic_weights_summary["setup_runtime"],
         )

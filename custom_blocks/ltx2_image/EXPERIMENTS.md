@@ -883,3 +883,24 @@ Comfy-Org/comfy-aimdo issue #25 reports that `ModelVBAR` allocation can fail on 
 - Treat VBAR/managed host buffer allocation failure as an optional acceleration failure, not a fatal model-load failure.
 - Keep a plain pinned-memory path as the portable fallback for vGPU, Linux setups without the allocator, or Windows systems where privilege/driver behavior differs.
 - Log the selected dynamic weight backend clearly so benchmark results show whether the run used VBAR-like staging, pinned host tensors, or regular pageable CPU tensors.
+
+The open `comfy-aimdo` issue list reinforces the same boundary: reported failures include `cuMemSetAccess` device-not-ready errors on Blackwell, `cuGetProcAddress` / driver symbol mismatches, ROCm owner-device accounting bugs, VBAR allocation failures on older AMD cards, address-space exhaustion on ROCm/Windows, host buffer free crashes during RAM-pressure eviction, and unexpected system throughput drops after generation. These are allocator/driver/OS failure modes, not ordinary PyTorch module-placement bugs. Any future VBAR-like backend should therefore be optional, capability-probed up front, and paired with the current pinned-memory fallback.
+
+### Dynamic Weights Lazy Pin Candidate
+
+A control run with `linear_runtime`, `6 GB` resident module budget, `1024 KB` small tensor residency, but without pinned CPU memory reduced setup while making denoise much slower:
+
+| Mode | Build dynamic plan | Denoise | Step profile | Copy time | Pass 1 total | Peak VRAM | Peak RAM |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| `linear_runtime` + module budget + no pin | `9.0407s` | `121.8672s` | first step `44.7585s`, later `10-13s/it` | `118.7173s` | `142.1s` | `6.79 GB` | `28.22 GB` |
+
+Insight: pageable CPU copies are the wrong tradeoff. The next test adds `LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY=1`, which should avoid the eager `pin_linear_weights` setup cost while pinning each streamed CPU weight on first use so later copies can use the faster pinned path.
+
+Test command delta:
+
+```powershell
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY="1"
+```
+
+If this works, `build_dynamic_weights_plan` should stay closer to the no-pin run while `dynamic-weights-profile` reports `lazy_pin_linear_weight` under setup runtime and copy time should drop after the first use of each weight.

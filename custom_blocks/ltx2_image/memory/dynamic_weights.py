@@ -28,6 +28,7 @@ class DynamicWeightsConfig:
     small_tensor_threshold_bytes: int = 16 * 1024
     execution_mode: str = "plan"
     pin_cpu_memory: bool = False
+    lazy_pin_cpu_memory: bool = False
     pin_cpu_workers: int = 1
     resident_weight_budget_gb: float = 0.0
     resident_weight_selection: str = "spread"
@@ -122,6 +123,7 @@ class DynamicWeightsHook(ModelHook):
         self._patched_modules: list[tuple[nn.Module, object]] = []
         self._replaced_parameters: list[tuple[nn.Module, str, nn.Parameter]] = []
         self._linear_weight_store: dict[int, torch.Tensor] = {}
+        self._lazy_pinned_tensor_ids: set[int] = set()
         self._resident_linear_weight_module_ids: set[int] = set()
         self._resident_module_names: set[str] = set()
         self.execution_device = torch.device(config.execution_device)
@@ -185,6 +187,7 @@ class DynamicWeightsHook(ModelHook):
             patched_module, parameter_name, original_parameter = self._replaced_parameters.pop()
             patched_module._parameters[parameter_name] = original_parameter
         self._linear_weight_store.clear()
+        self._lazy_pinned_tensor_ids.clear()
         self._resident_linear_weight_module_ids.clear()
         self._resident_module_names.clear()
 
@@ -255,11 +258,12 @@ class DynamicWeightsHook(ModelHook):
             else:
                 self._move_small_local_tensors_to_device(submodule)
 
-        if self.config.pin_cpu_memory and linear_modules_to_pin:
+        eager_pin_cpu_memory = self.config.pin_cpu_memory and not self.config.lazy_pin_cpu_memory
+        if eager_pin_cpu_memory and linear_modules_to_pin:
             start = time.perf_counter()
             pinned_bytes = self._pin_linear_weights(linear_modules_to_pin)
             self.state.add_setup("pin_linear_weights", time.perf_counter() - start, pinned_bytes)
-        if self.config.pin_cpu_memory and store_weights_to_pin:
+        if eager_pin_cpu_memory and store_weights_to_pin:
             start = time.perf_counter()
             pinned_bytes = self._pin_stored_linear_weights(store_weights_to_pin)
             self.state.add_setup("pin_stored_linear_weights", time.perf_counter() - start, pinned_bytes)
@@ -529,20 +533,55 @@ class DynamicWeightsHook(ModelHook):
             return None
         if tensor.device == input.device and tensor.dtype == input.dtype:
             return tensor
+        tensor = self._lazy_pin_tensor(tensor, name)
         start = time.perf_counter()
         moved = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
         self.state.add_copy(name, time.perf_counter() - start, _tensor_size_bytes(moved))
         return moved
 
+    def _lazy_pin_tensor(self, tensor: torch.Tensor, name: str) -> torch.Tensor:
+        if not self.config.pin_cpu_memory or not self.config.lazy_pin_cpu_memory:
+            return tensor
+        if tensor.device.type == "meta":
+            return tensor
+        if tensor.device.type != "cpu" or tensor.is_pinned():
+            return tensor
+
+        start = time.perf_counter()
+        pinned = tensor.pin_memory()
+        seconds = time.perf_counter() - start
+        pinned_bytes = _tensor_size_bytes(pinned)
+
+        if isinstance(tensor, nn.Parameter):
+            tensor.data = pinned
+            pinned_tensor = tensor
+            tensor_id = id(tensor)
+        else:
+            pinned_tensor = pinned
+            tensor_id = id(pinned)
+            for store_key, stored_tensor in tuple(self._linear_weight_store.items()):
+                if stored_tensor is tensor:
+                    self._linear_weight_store[store_key] = pinned
+                    break
+
+        if tensor_id not in self._lazy_pinned_tensor_ids:
+            self._lazy_pinned_tensor_ids.add(tensor_id)
+            self.state.add_setup(f"lazy_pin_{name}", seconds, pinned_bytes)
+        return pinned_tensor
+
     def print_profile_summary(self, *, top_n: int = 8) -> None:
         summary = self.state.as_dict()
+        setup_runtime = summary["setup_runtime"]
+        setup_seconds = sum(item["seconds"] for item in setup_runtime.values())
+        setup_gb = sum(item["gb"] for item in setup_runtime.values())
         copy_runtime = summary["copy_runtime"]
         copy_seconds = sum(item["seconds"] for item in copy_runtime.values())
         copy_gb = sum(item["gb"] for item in copy_runtime.values())
         print(
             "  [dynamic-weights-profile] "
             f"summary: mode={self.execution_mode} modules={summary['module_count']} "
-            f"patched={summary['patched_module_count']} copy_seconds={copy_seconds:.4f} "
+            f"patched={summary['patched_module_count']} setup_seconds={setup_seconds:.4f} "
+            f"setup_gb={setup_gb:.4f} copy_seconds={copy_seconds:.4f} "
             f"copy_gb={copy_gb:.4f}",
             flush=True,
         )
@@ -563,6 +602,14 @@ class DynamicWeightsHook(ModelHook):
                 f"count={len(selected_linear_weights)}",
                 flush=True,
             )
+
+        if setup_runtime:
+            print("  [dynamic-weights-profile] setup_runtime_by_type:", flush=True)
+            for key, item in sorted(setup_runtime.items(), key=lambda pair: pair[1]["seconds"], reverse=True)[:top_n]:
+                print(
+                    f"    {key}: seconds={item['seconds']:.4f} gb={item['gb']:.4f}",
+                    flush=True,
+                )
 
         if copy_runtime:
             print("  [dynamic-weights-profile] copy_runtime_by_type:", flush=True)
