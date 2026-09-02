@@ -55,6 +55,7 @@ class LTX2DynamicBlockManager:
     profile_layer_runtime: bool = False
     profile_sync_layers: bool = False
     hot_blocks: tuple[int, ...] | list[int] | None = None
+    hot_block_candidates: tuple[int, ...] | list[int] | None = None
     hot_block_budget_gb: float = 0.0
     hot_block_stride: int = 3
     hot_block_offset: int = 0
@@ -77,6 +78,7 @@ class LTX2DynamicBlockManager:
         self.pinned_blocks = max(0, int(self.pinned_blocks))
         self.weight_cache_gb = max(0.0, float(self.weight_cache_gb))
         self.hot_blocks = tuple(sorted({int(block) for block in (self.hot_blocks or []) if int(block) >= 0}))
+        self.hot_block_candidates = self._normalize_ordered_block_list(self.hot_block_candidates)
         self.hot_block_budget_gb = max(0.0, float(self.hot_block_budget_gb))
         self.hot_block_stride = max(1, int(self.hot_block_stride))
         self.hot_block_offset = max(0, int(self.hot_block_offset))
@@ -257,6 +259,7 @@ class LTX2DynamicBlockManager:
                 f"  [manager] mode={self.mode} pinned_blocks={pinned_count} "
                 f"hot_blocks={sorted(self._hot_block_indices)} hot_block_budget_gb={self.hot_block_budget_gb:g} "
                 f"hot_block_stride={self.hot_block_stride} hot_block_offset={self.hot_block_offset} "
+                f"hot_block_candidates={list(self.hot_block_candidates)} "
                 f"hot_linear_weight_count={self._hot_linear_weight_count} hot_linear_weight_gb={hot_linear_weight_gb:.3f} "
                 f"streamed_blocks={streamed} streamed_copy_mode={self.streamed_copy_mode} weight_cache_gb={cache_gb:g} "
                 f"sliding_window_size={self.sliding_window_size} "
@@ -270,6 +273,19 @@ class LTX2DynamicBlockManager:
         size += sum(self._tensor_size_bytes(buffer.data) for buffer in block.buffers(recurse=True))
         return size
 
+    def _normalize_ordered_block_list(self, block_indices: tuple[int, ...] | list[int] | None) -> tuple[int, ...]:
+        if not block_indices:
+            return ()
+        seen: set[int] = set()
+        ordered: list[int] = []
+        for block in block_indices:
+            block_index = int(block)
+            if block_index < 0 or block_index in seen:
+                continue
+            seen.add(block_index)
+            ordered.append(block_index)
+        return tuple(ordered)
+
     def _select_hot_blocks_by_budget(self, blocks: nn.ModuleList, pinned_count: int) -> set[int]:
         explicit_blocks = {block for block in self.hot_blocks if block < len(blocks)}
         if explicit_blocks or not self.manual_hot_blocks_enabled or self.hot_block_budget_gb <= 0:
@@ -279,11 +295,14 @@ class LTX2DynamicBlockManager:
         if budget_bytes <= 0:
             return set()
 
-        start_index = pinned_count + self.hot_block_offset
-        if start_index >= len(blocks):
-            return set()
+        if self.hot_block_candidates:
+            candidates = [block for block in self.hot_block_candidates if pinned_count <= block < len(blocks)]
+        else:
+            start_index = pinned_count + self.hot_block_offset
+            if start_index >= len(blocks):
+                return set()
+            candidates = list(range(start_index, len(blocks), self.hot_block_stride))
 
-        candidates = list(range(start_index, len(blocks), self.hot_block_stride))
         selected: list[int] = []
         used_bytes = 0
         for block_index in candidates:
@@ -347,6 +366,7 @@ class LTX2DynamicBlockManager:
         return {
             "mode": self.mode,
             "hot_blocks": list(self.selected_hot_blocks),
+            "hot_block_candidates": list(self.hot_block_candidates),
             "hot_block_budget_gb": self.hot_block_budget_gb,
             "hot_block_stride": self.hot_block_stride,
             "hot_block_offset": self.hot_block_offset,
