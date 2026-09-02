@@ -954,3 +954,18 @@ This suggests different default guidance by machine class:
 Important observed behavior: increasing resident/hot budget past the sweet spot can slow the run. In manual tests, `12 GB` improved over `8 GB` in one phase, but `16 GB` became much worse (`denoise_modular_pipe_call: 201.2456s`). The advisor should therefore prefer a conservative budget ladder and stop increasing when step time or setup worsens.
 
 Windows-specific note: standby cache state can dominate benchmark variance. On the test system, purging standby before the transformer stabilized the best dynamic runs and brought denoise down to the `~34-38s` range in manual mode and `~14-15s` in warm dynamic mode. Presets should describe this as an optional elevated Windows optimization, not as a required cross-platform feature.
+
+### Dynamic Weights Presets
+
+The runner now supports `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET` as a convenience layer over the existing environment variables. Explicit environment variables still override preset values. Presets intentionally do not enable Windows standby purge so they remain portable to Linux/WSL.
+
+| Preset | Intended use | Main resolved settings |
+| --- | --- | --- |
+| `off` | Disable dynamic execution | `execution_mode=plan` |
+| `one_shot_fast` | Best current one-shot baseline on the 64 GB Windows test system | `linear_runtime`, eager pinned CPU weights, `6 GB` resident module budget, `1024 KB` small tensors, native attention |
+| `warm_server` | ComfyUI-like warm/server benchmark | Same as `one_shot_fast` plus `generation_repeats=2` |
+| `low_ram` | Conservative start for systems around `32 GB` RAM | `linear_runtime`, eager pin, `3 GB` resident module budget, `2` pin workers |
+| `compat` | Highest portability baseline for driver/OS-sensitive machines | `linear_runtime`, no pinned CPU memory, `3 GB` resident module budget |
+| `long_steps` | Experimental profile for many steps or persistent reuse | `linear_runtime`, lazy pin enabled, `6 GB` resident module budget |
+
+WSL/Linux test note: run the same preset without `LTX_IMAGE_PURGE_WINDOWS_STANDBY_*`. This will tell us whether the strong warm result is mostly from generic pinned-memory/module-residency behavior or from Windows WDDM/shared-memory behavior. Key comparison fields are `build_dynamic_weights_plan`, repeated denoise times, process RAM, and VRAM.

@@ -55,10 +55,115 @@ MODEL_TAG = "distilled_modular"
 MODEL_PATH = os.environ.get("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
 MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("LTX_IMAGE_LOW_CPU_MEM_USAGE", "1")
+DYNAMIC_WEIGHTS_PRESET = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET", "").strip().lower()
+_DYNAMIC_WEIGHTS_PRESETS = {
+    "off": {
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "plan",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN": "0",
+    },
+    "one_shot_fast": {
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": r"^transformer_blocks\.\d+$",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "warm_server": {
+        "LTX_IMAGE_GENERATION_REPEATS": "2",
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": r"^transformer_blocks\.\d+$",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "low_ram": {
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "2",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "3",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": r"^transformer_blocks\.\d+$",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "compat": {
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "3",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": r"^transformer_blocks\.\d+$",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "long_steps": {
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": r"^transformer_blocks\.\d+$",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+}
+if DYNAMIC_WEIGHTS_PRESET and DYNAMIC_WEIGHTS_PRESET not in _DYNAMIC_WEIGHTS_PRESETS:
+    valid_dynamic_weights_presets = ", ".join(sorted(_DYNAMIC_WEIGHTS_PRESETS))
+    raise ValueError(
+        f"Invalid LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET={DYNAMIC_WEIGHTS_PRESET!r}. "
+        f"Valid values: {valid_dynamic_weights_presets}"
+    )
+
+
+def preset_env(name: str, default: str = "") -> str:
+    if name in os.environ:
+        return os.environ[name]
+    if not DYNAMIC_WEIGHTS_PRESET:
+        return default
+    return _DYNAMIC_WEIGHTS_PRESETS[DYNAMIC_WEIGHTS_PRESET].get(name, default)
+
+
+def parse_bool_preset_env(name: str, default: str = "0") -> bool:
+    return preset_env(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_int_list_preset_env(name: str) -> tuple[int, ...]:
+    value = preset_env(name, "").strip()
+    if not value:
+        return ()
+    return tuple(int(item.strip()) for item in value.split(",") if item.strip())
+
+
+def parse_pattern_list_preset_env(name: str) -> tuple[str, ...]:
+    value = preset_env(name, "").strip()
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(";") if item.strip())
+
 AUTO_CPU_OFFLOAD = parse_bool_env("LTX_IMAGE_AUTO_CPU_OFFLOAD")
 TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_env("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD", "1")
-TRANSFORMER_GROUP_OFFLOAD = parse_bool_env("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD")
-TRANSFORMER_MEMORY_MANAGER = os.environ.get("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "manual_linear").lower()
+TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD")
+TRANSFORMER_MEMORY_MANAGER = preset_env("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "manual_linear").lower()
 TRANSFORMER_MANAGER_PINNED_BLOCKS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PINNED_BLOCKS", "0"))
 TRANSFORMER_MANAGER_HOT_BLOCKS = parse_int_list_env("LTX_IMAGE_TRANSFORMER_HOT_BLOCKS")
 TRANSFORMER_MANAGER_HOT_BLOCK_CANDIDATES = parse_int_list_env("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_CANDIDATES")
@@ -86,23 +191,23 @@ TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = parse_bool_env("LTX_IMAGE_TRANSFORMER_
 TRANSFORMER_MANAGER_PROFILE_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFILE_LAYERS")
 TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS")
 TRANSFORMER_MANAGER_PROFILE_FULL = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL")
-DYNAMIC_WEIGHTS_PLAN = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN")
-DYNAMIC_WEIGHTS_EXECUTION_MODE = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
-DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
-DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY")
-DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4"))
-DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB = int(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024"))
-DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = float(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0"))
-DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION", "spread").lower()
-DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = float(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0"))
-DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS = parse_pattern_list_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS")
-DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower()
-DYNAMIC_WEIGHTS_VERBOSE = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1")
+DYNAMIC_WEIGHTS_PLAN = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN")
+DYNAMIC_WEIGHTS_EXECUTION_MODE = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
+DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
+DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY")
+DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4"))
+DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB = int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024"))
+DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0"))
+DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION", "spread").lower()
+DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0"))
+DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS = parse_pattern_list_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS")
+DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower()
+DYNAMIC_WEIGHTS_VERBOSE = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1")
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
 PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_AFTER_RUN")
-ATTENTION_BACKEND = os.environ.get("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
+ATTENTION_BACKEND = preset_env("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
 FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
 DROP_TRIVIAL_ATTENTION_MASK = (
     parse_bool_env("LTX_IMAGE_DROP_TRIVIAL_ATTENTION_MASK")
@@ -134,7 +239,7 @@ PAG_ENABLED = parse_bool_env("LTX_IMAGE_PAG_ENABLED")
 PAG_SCALE = float(os.environ.get("LTX_IMAGE_PAG_SCALE", "0.2"))
 PAG_APPLIED_LAYERS = [int(x) for x in os.environ.get("LTX_IMAGE_PAG_LAYERS", "28").split(",") if x]
 FAKE_PROMPT_EMBEDS = parse_bool_env("LTX_IMAGE_FAKE_PROMPT")
-GENERATION_REPEATS = max(1, int(os.environ.get("LTX_IMAGE_GENERATION_REPEATS", "1")))
+GENERATION_REPEATS = max(1, int(preset_env("LTX_IMAGE_GENERATION_REPEATS", "1")))
 
 prompt = os.environ.get(
     "LTX_IMAGE_PROMPT",
@@ -364,6 +469,7 @@ def main():
         "seed": seed,
         "num_inference_steps": NUM_INFERENCE_STEPS,
         "generation_repeats": GENERATION_REPEATS,
+        "dynamic_weights_preset": DYNAMIC_WEIGHTS_PRESET or None,
         "guidance_scale": GUIDANCE_SCALE,
         "guidance_rescale": GUIDANCE_RESCALE,
         "vae_decode_timestep": DECODE_TIMESTEP,
@@ -392,7 +498,16 @@ def main():
         "transformer_manager_profile_layers": TRANSFORMER_MANAGER_PROFILE_LAYERS,
         "transformer_manager_profile_sync_layers": TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS,
         "transformer_manager_profile_full": TRANSFORMER_MANAGER_PROFILE_FULL,
+        "dynamic_weights_execution_mode": DYNAMIC_WEIGHTS_EXECUTION_MODE,
+        "dynamic_weights_pin_cpu_memory": DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
+        "dynamic_weights_lazy_pin_cpu_memory": DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
+        "dynamic_weights_pin_cpu_workers": DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
         "dynamic_weights_small_tensor_threshold_kb": DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB,
+        "dynamic_weights_resident_weight_budget_gb": DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
+        "dynamic_weights_resident_weight_selection": DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION,
+        "dynamic_weights_resident_module_budget_gb": DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
+        "dynamic_weights_resident_module_patterns": DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS,
+        "dynamic_weights_resident_module_selection": DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION,
         "attention_backend": ATTENTION_BACKEND,
         "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,
         "events": [],
@@ -401,6 +516,8 @@ def main():
 
     flash_mask_wrapper_installed = install_trivial_mask_flash_wrapper()
     run_metrics["flash_trivial_mask_wrapper_installed"] = flash_mask_wrapper_installed
+    if DYNAMIC_WEIGHTS_PRESET:
+        print(f"Using dynamic weights preset: {DYNAMIC_WEIGHTS_PRESET}", flush=True)
 
     tracker = RunTracker(DEVICE, run_metrics, interval=0.1)
     record_event = tracker.record_event
