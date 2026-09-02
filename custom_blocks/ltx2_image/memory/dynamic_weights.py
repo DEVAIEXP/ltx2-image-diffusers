@@ -31,6 +31,9 @@ class DynamicWeightsConfig:
     pin_cpu_workers: int = 1
     resident_weight_budget_gb: float = 0.0
     resident_weight_selection: str = "spread"
+    resident_module_budget_gb: float = 0.0
+    resident_module_patterns: tuple[str, ...] = ()
+    resident_module_selection: str = "spread"
     verbose: bool = False
 
 
@@ -116,14 +119,19 @@ class DynamicWeightsHook(ModelHook):
         self._replaced_parameters: list[tuple[nn.Module, str, nn.Parameter]] = []
         self._linear_weight_store: dict[int, torch.Tensor] = {}
         self._resident_linear_weight_module_ids: set[int] = set()
+        self._resident_module_names: set[str] = set()
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
         self.pin_cpu_workers = max(1, int(config.pin_cpu_workers))
         self.resident_weight_budget_bytes = int(max(0.0, float(config.resident_weight_budget_gb)) * 1024**3)
+        self.resident_module_budget_bytes = int(max(0.0, float(config.resident_module_budget_gb)) * 1024**3)
         self.resident_weight_selection = config.resident_weight_selection.lower()
         if self.resident_weight_selection not in {"first", "spread"}:
             raise ValueError("DynamicWeightsConfig.resident_weight_selection must be 'first' or 'spread'")
+        self.resident_module_selection = config.resident_module_selection.lower()
+        if self.resident_module_selection not in {"first", "spread"}:
+            raise ValueError("DynamicWeightsConfig.resident_module_selection must be 'first' or 'spread'")
 
     def initialize_hook(self, module: nn.Module) -> nn.Module:
         self.state = build_dynamic_weight_plan(module, self.config)
@@ -174,6 +182,7 @@ class DynamicWeightsHook(ModelHook):
             patched_module._parameters[parameter_name] = original_parameter
         self._linear_weight_store.clear()
         self._resident_linear_weight_module_ids.clear()
+        self._resident_module_names.clear()
 
     def _move_value_to_execution_device(self, value: Any, name: str) -> Any:
         if isinstance(value, torch.Tensor):
@@ -200,6 +209,10 @@ class DynamicWeightsHook(ModelHook):
         store_weights_to_pin: list[int] = []
 
         self._move_root_local_tensors_to_device(module)
+        if use_store and self.resident_module_budget_bytes > 0 and self.config.resident_module_patterns:
+            start = time.perf_counter()
+            selected_bytes = self._select_resident_modules(module, skip_patterns)
+            self.state.add_setup("select_resident_modules", time.perf_counter() - start, selected_bytes)
         if use_store and self.resident_weight_budget_bytes > 0:
             start = time.perf_counter()
             selected_bytes = self._select_resident_linear_weights(module, skip_patterns, resident_patterns)
@@ -209,6 +222,14 @@ class DynamicWeightsHook(ModelHook):
             if module_name == "":
                 continue
             if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
+                continue
+            if self._is_descendant_of_resident_module(module_name):
+                continue
+            if module_name in self._resident_module_names:
+                start = time.perf_counter()
+                before = _module_size_bytes(submodule)
+                submodule.to(self.execution_device)
+                self.state.add_setup("resident_budget_modules_to_device", time.perf_counter() - start, before)
                 continue
 
             is_resident_module = bool(
@@ -264,6 +285,39 @@ class DynamicWeightsHook(ModelHook):
         if linear.weight.device.type == "cpu" and not linear.weight.data.is_pinned():
             linear_modules_to_pin.append(linear)
 
+    def _select_resident_modules(
+        self,
+        module: nn.Module,
+        skip_patterns: tuple[re.Pattern[str], ...],
+    ) -> int:
+        module_patterns = tuple(re.compile(pattern) for pattern in self.config.resident_module_patterns)
+        candidates: list[tuple[str, nn.Module, int]] = []
+        for module_name, submodule in module.named_modules():
+            if module_name == "":
+                continue
+            if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
+                continue
+            if not any(pattern.search(module_name) for pattern in module_patterns):
+                continue
+            if any(_is_module_descendant(module_name, selected_name) for selected_name in self._resident_module_names):
+                continue
+            candidates.append((module_name, submodule, _module_size_bytes(submodule)))
+
+        ordered_candidates = candidates
+        if self.resident_module_selection == "spread":
+            ordered_candidates = _spread_order(candidates, self.resident_module_budget_bytes)
+
+        selected_bytes = 0
+        for module_name, _, module_bytes in ordered_candidates:
+            if selected_bytes + module_bytes > self.resident_module_budget_bytes:
+                continue
+            self._resident_module_names.add(module_name)
+            selected_bytes += module_bytes
+        return selected_bytes
+
+    def _is_descendant_of_resident_module(self, module_name: str) -> bool:
+        return any(_is_module_descendant(module_name, resident_name) for resident_name in self._resident_module_names)
+
     def _select_resident_linear_weights(
         self,
         module: nn.Module,
@@ -275,6 +329,8 @@ class DynamicWeightsHook(ModelHook):
             if module_name == "" or not isinstance(submodule, nn.Linear):
                 continue
             if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
+                continue
+            if self._is_descendant_of_resident_module(module_name):
                 continue
             if resident_patterns and any(pattern.search(module_name) for pattern in resident_patterns):
                 continue
@@ -553,7 +609,11 @@ def _module_size_bytes(module: nn.Module) -> int:
     return size
 
 
-def _spread_order(items: list[tuple[str, nn.Linear, int]], budget_bytes: int) -> list[tuple[str, nn.Linear, int]]:
+def _is_module_descendant(module_name: str, parent_name: str) -> bool:
+    return module_name.startswith(f"{parent_name}.")
+
+
+def _spread_order(items: list[tuple[str, Any, int]], budget_bytes: int) -> list[tuple[str, Any, int]]:
     if len(items) <= 2:
         return items
     average_bytes = max(1, sum(item[2] for item in items) // len(items))

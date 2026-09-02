@@ -799,3 +799,28 @@ $env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION="spread"
 This keeps a spread of large `nn.Linear.weight` tensors resident on the execution device while the remaining linear weights stay in the internal store with `meta` placeholders in the active modules. This is still model-agnostic: selection is based on module order and byte budget, not LTX block names.
 
 Smoke test result: a CUDA sequential model with three large linears successfully ran with one resident linear weight and two store-backed `meta` weights.
+
+### Dynamic Weights Linear Weight Budget Result
+
+First full transformer result with `linear_store_runtime`, `6 GB` resident linear weight budget, and `spread` selection:
+
+| Mode | Patched linears | Resident linear weights | Pin stored weights | Denoise | Step avg | Pass 1 total | Torch alloc/reserved | Peak VRAM | Peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `linear_store_runtime` + resident linear budget | `361` | `5.9934 GB` | `29.6968s / 18.0312 GB` | `96.1833s` | `12.0193s/it` | `145.9s` | `6.80/7.17 GiB` | `6.97 GB` | `46.25 GB` |
+
+Insight: per-linear residency is not coherent enough for this transformer. It reduces repeated streamed linears, but leaves many blocks with mixed resident/streamed weights and remains far slower than `manual_hot_blocks`.
+
+### Dynamic Weights Resident Module Budget
+
+`linear_store_runtime` now supports a generic resident module budget:
+
+```powershell
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="0"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="6"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
+```
+
+This keeps whole matching modules resident on the execution device and skips patching their descendants. For LTX this lets the portable dynamic weights runtime treat `transformer_blocks.N` as the budget unit without hardcoding LTX-specific names in the manager.
+
+Smoke test result: a CUDA sequential model with two block-like submodules successfully ran with one resident block and remaining linears store-backed through `meta` placeholders.

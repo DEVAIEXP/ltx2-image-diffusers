@@ -36,6 +36,13 @@ def parse_int_list_env(name: str) -> tuple[int, ...]:
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
 
 
+def parse_pattern_list_env(name: str) -> tuple[str, ...]:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(";") if item.strip())
+
+
 def parse_bool_env(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -85,6 +92,9 @@ DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_C
 DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4"))
 DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = float(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0"))
 DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION", "spread").lower()
+DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = float(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0"))
+DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS = parse_pattern_list_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS")
+DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower()
 DYNAMIC_WEIGHTS_VERBOSE = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1")
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
@@ -548,6 +558,9 @@ def main():
                 pin_cpu_workers=DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
                 resident_weight_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
                 resident_weight_selection=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION,
+                resident_module_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
+                resident_module_patterns=DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS,
+                resident_module_selection=DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION,
                 verbose=DYNAMIC_WEIGHTS_VERBOSE,
             ),
         )
