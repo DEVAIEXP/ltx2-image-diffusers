@@ -67,6 +67,8 @@ TRANSFORMER_MANAGER_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_
 TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE = int(os.environ.get("LTX_IMAGE_TRANSFORMER_SLIDING_WINDOW_SIZE", "0"))
 TRANSFORMER_MANAGER_PROFILE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES", "0") == "1"
+TRANSFORMER_MANAGER_PROFILE_LAYERS = os.environ.get("LTX_IMAGE_TRANSFORMER_PROFILE_LAYERS", "0") == "1"
+TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS = os.environ.get("LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE_FULL = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL", "0") == "1"
 ATTENTION_BACKEND = os.environ.get("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
 FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
@@ -255,6 +257,8 @@ def main():
         "transformer_manager_sliding_window_size": TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE,
         "transformer_manager_profile_enabled": TRANSFORMER_MANAGER_PROFILE,
         "transformer_manager_profile_sync_copies": TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
+        "transformer_manager_profile_layers": TRANSFORMER_MANAGER_PROFILE_LAYERS,
+        "transformer_manager_profile_sync_layers": TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS,
         "transformer_manager_profile_full": TRANSFORMER_MANAGER_PROFILE_FULL,
         "attention_backend": ATTENTION_BACKEND,
         "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,
@@ -417,6 +421,8 @@ def main():
             sliding_window_size=TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE,
             profile=TRANSFORMER_MANAGER_PROFILE,
             profile_sync_copies=TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
+            profile_layer_runtime=TRANSFORMER_MANAGER_PROFILE_LAYERS,
+            profile_sync_layers=TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS,
         )
         transformer_manager.attach(transformer)
         record_event(

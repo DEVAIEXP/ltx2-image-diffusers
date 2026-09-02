@@ -52,6 +52,8 @@ class LTX2DynamicBlockManager:
     pin_cpu_memory: bool = False
     profile: bool = False
     profile_sync_copies: bool = False
+    profile_layer_runtime: bool = False
+    profile_sync_layers: bool = False
     hot_blocks: tuple[int, ...] | list[int] | None = None
     hot_block_budget_gb: float = 0.0
     hot_block_stride: int = 3
@@ -116,6 +118,7 @@ class LTX2DynamicBlockManager:
             "setup_runtime": {},
             "block_runtime": {},
             "copy_runtime": {},
+            "layer_runtime": {},
         }
 
     @property
@@ -310,6 +313,22 @@ class LTX2DynamicBlockManager:
         stats["seconds"] += elapsed
         stats["bytes"] += byte_count
 
+    @contextmanager
+    def profile_layer(self, block_index: int, layer_name: str):
+        if not self.profile or not self.profile_layer_runtime:
+            yield
+            return
+        key = f"block:{block_index}/{layer_name}"
+        if self.profile_sync_layers and self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        start_time = time.perf_counter()
+        try:
+            yield
+        finally:
+            if self.profile_sync_layers and self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            self._profile_add("layer_runtime", key, time.perf_counter() - start_time)
+
     def _profile_summary_bucket(self, bucket: str) -> dict:
         return {
             key: {
@@ -346,6 +365,7 @@ class LTX2DynamicBlockManager:
             "setup_runtime": self._profile_summary_bucket("setup_runtime"),
             "block_runtime": self._profile_summary_bucket("block_runtime"),
             "copy_runtime": self._profile_summary_bucket("copy_runtime"),
+            "layer_runtime": self._profile_summary_bucket("layer_runtime"),
         }
 
     def _split_profile_copy_key(self, key: str) -> tuple[str | None, str]:
@@ -362,6 +382,15 @@ class LTX2DynamicBlockManager:
             stats["calls"] += value["calls"]
             stats["seconds"] += value["seconds"]
             stats["gb"] += value["gb"]
+        return dict(sorted(totals.items(), key=lambda item: item[1]["seconds"], reverse=True))
+
+    def _profile_totals_by_layer_type(self, layer_runtime: dict) -> dict[str, dict[str, float]]:
+        totals: dict[str, dict[str, float]] = {}
+        for key, value in layer_runtime.items():
+            _, layer_name = self._split_profile_copy_key(key)
+            stats = totals.setdefault(layer_name, {"calls": 0, "seconds": 0.0})
+            stats["calls"] += value["calls"]
+            stats["seconds"] += value["seconds"]
         return dict(sorted(totals.items(), key=lambda item: item[1]["seconds"], reverse=True))
 
     def _profile_totals_by_block_residency(self, block_runtime: dict) -> dict[str, dict[str, float]]:
@@ -384,6 +413,7 @@ class LTX2DynamicBlockManager:
         summary = self.profile_summary()
         block_runtime = summary["block_runtime"]
         copy_runtime = summary["copy_runtime"]
+        layer_runtime = summary["layer_runtime"]
         setup_runtime = summary["setup_runtime"]
         block_total = sum(value["seconds"] for value in block_runtime.values())
         copy_total = sum(value["seconds"] for value in copy_runtime.values())
@@ -417,6 +447,14 @@ class LTX2DynamicBlockManager:
                 flush=True,
             )
 
+        if layer_runtime:
+            print("  [manager-profile] layer_runtime_by_type:", flush=True)
+            for key, value in self._profile_totals_by_layer_type(layer_runtime).items():
+                print(
+                    f"    {key}: calls={value['calls']} seconds={value['seconds']:.4f}",
+                    flush=True,
+                )
+
         print(f"  [manager-profile] slowest_blocks_top_{top_n}:", flush=True)
         slowest_blocks = sorted(block_runtime.items(), key=lambda item: item[1]["seconds"], reverse=True)[:top_n]
         for key, value in slowest_blocks:
@@ -433,6 +471,15 @@ class LTX2DynamicBlockManager:
                 flush=True,
             )
 
+        if layer_runtime:
+            print(f"  [manager-profile] slowest_layers_top_{top_n}:", flush=True)
+            slowest_layers = sorted(layer_runtime.items(), key=lambda item: item[1]["seconds"], reverse=True)[:top_n]
+            for key, value in slowest_layers:
+                print(
+                    f"    {key}: calls={value['calls']} seconds={value['seconds']:.4f}",
+                    flush=True,
+                )
+
         if not full:
             print(
                 "  [manager-profile] full profile saved in metrics JSON; set "
@@ -441,6 +488,13 @@ class LTX2DynamicBlockManager:
             )
             return
 
+        if layer_runtime:
+            print("  [manager-profile] layer_runtime_full:", flush=True)
+            for key, value in layer_runtime.items():
+                print(
+                    f"    {key}: calls={value['calls']} seconds={value['seconds']:.4f}",
+                    flush=True,
+                )
         print("  [manager-profile] block_runtime_full:", flush=True)
         for key, value in block_runtime.items():
             print(
@@ -961,6 +1015,7 @@ class LTX2DynamicBlockManager:
             self._profile_current_block = block_index
             if self.manual_sliding_window_enabled:
                 self._sync_sliding_window(block_index)
+            block._ltx2_memory_manager = self
             start_time = time.perf_counter()
             try:
                 if self.manual_block_staged_enabled:
@@ -970,6 +1025,8 @@ class LTX2DynamicBlockManager:
                 if self.manual_block_staged_enabled:
                     self._clear_staged_block()
                 self._profile_add("block_runtime", block_index, time.perf_counter() - start_time)
+                if hasattr(block, "_ltx2_memory_manager"):
+                    delattr(block, "_ltx2_memory_manager")
                 self._profile_current_block = None
             return
         if self.block_swap_enabled and not self._is_pinned(block_index):

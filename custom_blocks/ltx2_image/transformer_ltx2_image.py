@@ -177,78 +177,85 @@ class LTX2ImageTransformerBlock(nn.Module):
         all_perturbed: bool = False,
     ) -> torch.Tensor:
         batch_size = hidden_states.size(0)
+        block_idx = getattr(self, "_ltx2_block_idx", -1)
+        memory_manager = getattr(self, "_ltx2_memory_manager", None)
+        profile_layer = memory_manager.profile_layer if memory_manager is not None else None
 
-        num_ada_params = self.scale_shift_table.shape[0]
-        ada_values = self.scale_shift_table[None, None].to(temb.device) + temb.view(
-            batch_size, temb.size(1), num_ada_params, -1
-        )
-        video_ada_params = ada_values.unbind(dim=2)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = video_ada_params[:6]
-
-        if self.video_cross_attn_adaln:
-            shift_text_q, scale_text_q, gate_text_q = video_ada_params[6:9]
-
-        if temb_prompt is not None:
-            num_prompt_params = self.prompt_scale_shift_table.shape[0]
-            prompt_ada_values = self.prompt_scale_shift_table[None, None].to(temb_prompt.device) + temb_prompt.view(
-                batch_size, temb_prompt.size(1), num_prompt_params, -1
+        with profile_layer(block_idx, "adaln") if profile_layer is not None else nullcontext():
+            num_ada_params = self.scale_shift_table.shape[0]
+            ada_values = self.scale_shift_table[None, None].to(temb.device) + temb.view(
+                batch_size, temb.size(1), num_ada_params, -1
             )
-            shift_text_kv, scale_text_kv = prompt_ada_values.unbind(dim=2)
-        else:
-            shift_text_kv, scale_text_kv = (
-                self.prompt_scale_shift_table[None, None]
-                .to(device=hidden_states.device, dtype=hidden_states.dtype)
-                .unbind(dim=2)
-            )
+            video_ada_params = ada_values.unbind(dim=2)
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = video_ada_params[:6]
+
+            if self.video_cross_attn_adaln:
+                shift_text_q, scale_text_q, gate_text_q = video_ada_params[6:9]
+
+            if temb_prompt is not None:
+                num_prompt_params = self.prompt_scale_shift_table.shape[0]
+                prompt_ada_values = self.prompt_scale_shift_table[None, None].to(temb_prompt.device) + temb_prompt.view(
+                    batch_size, temb_prompt.size(1), num_prompt_params, -1
+                )
+                shift_text_kv, scale_text_kv = prompt_ada_values.unbind(dim=2)
+            else:
+                shift_text_kv, scale_text_kv = (
+                    self.prompt_scale_shift_table[None, None]
+                    .to(device=hidden_states.device, dtype=hidden_states.dtype)
+                    .unbind(dim=2)
+                )
 
         # 1. Self-Attention
-        norm_hidden_states = self.norm1(hidden_states)
-        norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
-        attn_hidden_states = self.attn1(
-            hidden_states=norm_hidden_states,
-            encoder_hidden_states=None,
-            query_rotary_emb=video_rotary_emb,
-            perturbation_mask=perturbation_mask,
-            all_perturbed=all_perturbed,
-        )
-        hidden_states = hidden_states + attn_hidden_states * gate_msa
+        with profile_layer(block_idx, "self_attn") if profile_layer is not None else nullcontext():
+            norm_hidden_states = self.norm1(hidden_states)
+            norm_hidden_states = norm_hidden_states * (1 + scale_msa) + shift_msa
+            attn_hidden_states = self.attn1(
+                hidden_states=norm_hidden_states,
+                encoder_hidden_states=None,
+                query_rotary_emb=video_rotary_emb,
+                perturbation_mask=perturbation_mask,
+                all_perturbed=all_perturbed,
+            )
+            hidden_states = hidden_states + attn_hidden_states * gate_msa
 
         # 2. Cross-Attention
-        norm_hidden_states = self.norm2(hidden_states)
-        if self.video_cross_attn_adaln:
-            norm_hidden_states = norm_hidden_states * (1 + scale_text_q) + shift_text_q
+        with profile_layer(block_idx, "cross_attn") if profile_layer is not None else nullcontext():
+            norm_hidden_states = self.norm2(hidden_states)
+            if self.video_cross_attn_adaln:
+                norm_hidden_states = norm_hidden_states * (1 + scale_text_q) + shift_text_q
 
-        encoder_hidden_states = encoder_hidden_states * (1 + scale_text_kv) + shift_text_kv
+            encoder_hidden_states = encoder_hidden_states * (1 + scale_text_kv) + shift_text_kv
 
-        if _LOG_ATTENTION_MASK:
-            prepared_attention_mask = None
-            if encoder_attention_mask is not None:
-                sequence_length = encoder_hidden_states.shape[1]
-                prepared_attention_mask = self.attn2.prepare_attention_mask(
-                    encoder_attention_mask, sequence_length, batch_size
-                )
-                prepared_attention_mask = prepared_attention_mask.view(
-                    batch_size, self.attn2.heads, -1, prepared_attention_mask.shape[-1]
-                )
-            _log_attention_mask(encoder_attention_mask, prepared_attention_mask, block_idx=getattr(self, "_ltx2_block_idx", None))
+            if _LOG_ATTENTION_MASK:
+                prepared_attention_mask = None
+                if encoder_attention_mask is not None:
+                    sequence_length = encoder_hidden_states.shape[1]
+                    prepared_attention_mask = self.attn2.prepare_attention_mask(
+                        encoder_attention_mask, sequence_length, batch_size
+                    )
+                    prepared_attention_mask = prepared_attention_mask.view(
+                        batch_size, self.attn2.heads, -1, prepared_attention_mask.shape[-1]
+                    )
+                _log_attention_mask(encoder_attention_mask, prepared_attention_mask, block_idx=block_idx)
 
-        attention_mask_for_attn = encoder_attention_mask
-        if getattr(self, "drop_trivial_attention_mask", _DROP_TRIVIAL_ATTENTION_MASK_DEFAULT) and attention_mask_for_attn is not None:
-            if bool(torch.all(attention_mask_for_attn == 0).item()):
-                attention_mask_for_attn = None
+            attention_mask_for_attn = encoder_attention_mask
+            if getattr(self, "drop_trivial_attention_mask", _DROP_TRIVIAL_ATTENTION_MASK_DEFAULT) and attention_mask_for_attn is not None:
+                if bool(torch.all(attention_mask_for_attn == 0).item()):
+                    attention_mask_for_attn = None
 
-        attn_hidden_states = self.attn2(
-            norm_hidden_states,
-            encoder_hidden_states=encoder_hidden_states,
-            attention_mask=attention_mask_for_attn,
-        )
-        if self.video_cross_attn_adaln:
-            attn_hidden_states = attn_hidden_states * gate_text_q
-        hidden_states = hidden_states + attn_hidden_states
+            attn_hidden_states = self.attn2(
+                norm_hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                attention_mask=attention_mask_for_attn,
+            )
+            if self.video_cross_attn_adaln:
+                attn_hidden_states = attn_hidden_states * gate_text_q
+            hidden_states = hidden_states + attn_hidden_states
 
         # 3. Feedforward
-        norm_hidden_states = self.norm3(hidden_states) * (1 + scale_mlp) + shift_mlp
-        hidden_states = hidden_states + self.ff(norm_hidden_states) * gate_mlp
+        with profile_layer(block_idx, "ff") if profile_layer is not None else nullcontext():
+            norm_hidden_states = self.norm3(hidden_states) * (1 + scale_mlp) + shift_mlp
+            hidden_states = hidden_states + self.ff(norm_hidden_states) * gate_mlp
 
         return hidden_states
 
