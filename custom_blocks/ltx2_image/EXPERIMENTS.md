@@ -719,3 +719,14 @@ With bounded pin assignment and `spread` hot block selection, `8` pin workers re
 | `8` | `29.2975s` | `20.5812s` | `37.2691s` | `4.6274s/it` | `83.3s` | `6.68 GB` | `27.66 GB` | `1.2723s` |
 
 Insight: `8` workers buys setup time but appears to disturb the denoise path enough that total Pass 1 is only marginally better. Treat `4` as the safer balanced baseline and `8` as the faster-setup variant. The next A/B should reduce hot block budget with `spread` to see whether fewer resident blocks lower setup enough without giving back too much denoise speed.
+
+### Hot Block Budget 5 GB Result
+
+With `spread` selection and `4` pin workers, reducing the hot block budget from `6 GB` to `5 GB` reduced VRAM but did not improve runtime:
+
+| Hot block budget | Hot blocks | Setup | Pin CPU blocks | Blocks to target devices | Denoise | Step avg | Pass 1 total | Torch alloc/reserved | Peak VRAM | Peak RAM | Copy time |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `6 GB` | `[0, 5, 9, 14, 19, 24, 28, 33, 38, 42, 47]` | `32.3166s` | `23.5359s` | `8.1473s` | `34.8546s` | `4.3236s/it` | `83.8s` | `6.32/6.63 GiB` | `6.68 GB` | `27.65 GB` | `0.1083s` |
+| `5 GB` | `[0, 6, 12, 18, 24, 29, 35, 41, 47]` | `31.8124s` | `24.9162s` | `6.3818s` | `37.8765s` | `4.7343s/it` | `85.0s` | `5.32/5.63 GiB` | `6.31 GB` | `28.35 GB` | `1.5416s` |
+
+Insight: `5 GB` is useful as a lower-VRAM profile, but not as the fastest profile. The current speed baseline remains `6 GB`, `spread`, and `4` pin workers.
