@@ -760,3 +760,21 @@ With `spread`, `6 GB` hot block budget, and the two-purge benchmark protocol, `6
 | `8` | `29.2975s` | `20.5812s` | `37.2691s` | `4.6274s/it` | `83.3s` | `6.68 GB` | `27.66 GB` | `1.2723s` |
 
 Insight: `4` workers remains the best balanced setting. Higher worker counts can improve or vary setup, but they increase denoise/copy disturbance in this benchmark band.
+
+### Dynamic Weights Store Runtime
+
+The `dynamic_weights` module now has a second execution mode:
+
+```powershell
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_store_runtime"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS="4"
+$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="off"
+$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
+```
+
+This mode moves large `nn.Linear.weight` tensors into an internal runtime store and replaces the active module parameter with a `meta` placeholder. The patched linear forward reads from the store and copies the weight to the input device when needed.
+
+This is closer to the intended dynamic-weight architecture than `linear_runtime`, because it separates module execution from weight storage. It is still not ComfyUI-equivalent yet: weights are still first materialized by Diffusers `from_pretrained`, and the store is not loaded directly from checkpoint shards. The next architectural target is a loader-backed store that can avoid the expensive eager pin/materialization setup path.
+
+Smoke test result: a tiny CUDA `nn.Sequential(nn.RMSNorm, nn.Linear)` model successfully entered `linear_store_runtime`, executed with a `meta` linear weight placeholder, and restored the original parameter after hook removal.
