@@ -924,3 +924,11 @@ $env:LTX_IMAGE_GENERATION_REPEATS="2"
 This keeps the default single-run path unchanged when unset. With repeats enabled, the runner rebuilds latents and runs denoise multiple times before VAE decode, saving the last latent/image. This is intended to separate cold setup cost from warm execution cost and to compare more fairly against server-style systems such as ComfyUI.
 
 Preset implication: eager pinned dynamic weights are still best for short one-shot runs. Lazy pin may become useful only when the same process/model performs additional warm generations, because the first generation pays the pinning cost and later generations can reuse pinned CPU weights.
+
+First warm benchmark with the current best eager-pinned dynamic preset:
+
+| Mode | Build dynamic plan | Denoise repeat 1 | Denoise repeat 2 | Avg step | Copy time | Pass 1 total | Peak VRAM | Peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `linear_runtime` + module budget + eager pin + repeats `2` | `32.2961s` | `14.4916s` | `14.5287s` | `~1.63s/it` | `0.7809s / 296.2891 GB` | `72.4s` | `6.69 GB` | `27.35 GB` |
+
+Insight: this is the strongest parity signal so far. In a warm/server-style run, the PyTorch-only dynamic weights path is already close to the ComfyUI reference (`72.11s` full prompt execution) while avoiding the VBAR/driver-level risk class. The remaining optimization target is cold setup, mainly `pin_linear_weights` (`23.4006s`) plus resident module placement (`8.3050s`), not the steady denoise loop.
