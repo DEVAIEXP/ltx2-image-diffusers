@@ -59,6 +59,7 @@ class LTX2DynamicBlockManager:
     hot_block_budget_gb: float = 0.0
     hot_block_stride: int = 3
     hot_block_offset: int = 0
+    hot_block_selection: str = "stride"
     hot_linear_weight_budget_gb: float = 0.0
     hot_linear_weight_stride: int = 3
     hot_linear_weight_offset: int = 1
@@ -82,6 +83,9 @@ class LTX2DynamicBlockManager:
         self.hot_block_budget_gb = max(0.0, float(self.hot_block_budget_gb))
         self.hot_block_stride = max(1, int(self.hot_block_stride))
         self.hot_block_offset = max(0, int(self.hot_block_offset))
+        self.hot_block_selection = self.hot_block_selection.lower()
+        if self.hot_block_selection not in {"stride", "spread"}:
+            raise ValueError("hot_block_selection must be 'stride' or 'spread'")
         self.hot_linear_weight_budget_gb = max(0.0, float(self.hot_linear_weight_budget_gb))
         self.hot_linear_weight_stride = max(1, int(self.hot_linear_weight_stride))
         self.hot_linear_weight_offset = max(0, int(self.hot_linear_weight_offset))
@@ -259,6 +263,7 @@ class LTX2DynamicBlockManager:
                 f"  [manager] mode={self.mode} pinned_blocks={pinned_count} "
                 f"hot_blocks={sorted(self._hot_block_indices)} hot_block_budget_gb={self.hot_block_budget_gb:g} "
                 f"hot_block_stride={self.hot_block_stride} hot_block_offset={self.hot_block_offset} "
+                f"hot_block_selection={self.hot_block_selection} "
                 f"hot_block_candidates={list(self.hot_block_candidates)} "
                 f"hot_linear_weight_count={self._hot_linear_weight_count} hot_linear_weight_gb={hot_linear_weight_gb:.3f} "
                 f"streamed_blocks={streamed} streamed_copy_mode={self.streamed_copy_mode} weight_cache_gb={cache_gb:g} "
@@ -298,10 +303,9 @@ class LTX2DynamicBlockManager:
         if self.hot_block_candidates:
             candidates = [block for block in self.hot_block_candidates if pinned_count <= block < len(blocks)]
         else:
-            start_index = pinned_count + self.hot_block_offset
-            if start_index >= len(blocks):
+            candidates = self._default_hot_block_candidates(blocks, pinned_count, budget_bytes)
+            if not candidates:
                 return set()
-            candidates = list(range(start_index, len(blocks), self.hot_block_stride))
 
         selected: list[int] = []
         used_bytes = 0
@@ -314,6 +318,34 @@ class LTX2DynamicBlockManager:
             selected.append(block_index)
             used_bytes += block_bytes
         return set(selected)
+
+    def _default_hot_block_candidates(self, blocks: nn.ModuleList, pinned_count: int, budget_bytes: int) -> list[int]:
+        start_index = pinned_count + self.hot_block_offset
+        if start_index >= len(blocks):
+            return []
+        if self.hot_block_selection == "stride":
+            return list(range(start_index, len(blocks), self.hot_block_stride))
+
+        eligible = list(range(start_index, len(blocks)))
+        block_sizes = [(block_index, self._block_size_bytes(blocks[block_index])) for block_index in eligible]
+        fitting_sizes = [size for _, size in block_sizes if 0 < size <= budget_bytes]
+        if not fitting_sizes:
+            return []
+        avg_size = sum(fitting_sizes) / len(fitting_sizes)
+        target_count = max(1, min(len(eligible), int(budget_bytes // avg_size)))
+        if target_count == 1:
+            return [eligible[0]]
+
+        positions = [round(i * (len(eligible) - 1) / (target_count - 1)) for i in range(target_count)]
+        candidates: list[int] = []
+        seen: set[int] = set()
+        for position in positions:
+            block_index = eligible[position]
+            if block_index not in seen:
+                seen.add(block_index)
+                candidates.append(block_index)
+        return candidates
+
     def _profile_copy_key(self, tensor_name: str) -> str:
         block = self._profile_current_block
         if block is None:
@@ -370,6 +402,7 @@ class LTX2DynamicBlockManager:
             "hot_block_budget_gb": self.hot_block_budget_gb,
             "hot_block_stride": self.hot_block_stride,
             "hot_block_offset": self.hot_block_offset,
+            "hot_block_selection": self.hot_block_selection,
             "hot_linear_weight_budget_gb": self.hot_linear_weight_budget_gb,
             "hot_linear_weight_stride": self.hot_linear_weight_stride,
             "hot_linear_weight_offset": self.hot_linear_weight_offset,

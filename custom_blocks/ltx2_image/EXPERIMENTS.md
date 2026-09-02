@@ -637,3 +637,20 @@ Observed comparison with the same baseline and `LTX_IMAGE_LOW_CPU_MEM_USAGE="1"`
 | Before transformer | `38.7616s` | `4.8405s/it` | `6.32 GiB` / `6.63 GiB` |
 
 Insight: standby/cache pressure can build during the prompt/connectors stage before transformer setup. Purging only at process start is helpful but not sufficient for the fastest run. The new pre-transformer purge is a benchmark hygiene control for Windows and should be kept separate from portable manager behavior.
+
+## Hot Block Selection Policy
+
+A new optional hot-block selection policy was added for the dynamic manager:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_SELECTION="stride" # default, previous behavior
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_SELECTION="spread" # experimental
+```
+
+`stride` preserves the current baseline: candidates are visited by `hot_block_stride` and selection stops when the VRAM budget is exhausted. With a `6 GB` block budget this produced the current best stable pattern:
+
+```text
+[0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]
+```
+
+`spread` keeps the same budget but distributes the resident blocks across the full transformer depth. The intent is to test whether broader coverage reduces streamed work in later blocks without increasing the memory budget. This is a controlled A/B against the current best baseline and should be run with the Windows standby purge controls enabled both before the run and before transformer setup.
