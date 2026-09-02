@@ -391,9 +391,29 @@ Result:
 | Mode | Pin workers | Setup | Pin CPU blocks | Denoise | Step avg | Pass 1 total | Torch alloc | Torch reserved | Peak VRAM | Peak RAM | Copied GB | Copy time | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | Eager pin baseline | `1` | `95.3611s` | `82.5627s` | `68.4448s` | n/a | `185.5s` | `6.32 GiB` | `6.63 GiB` | `6.78 GB` | `27.66 GB` | `148.1443 GB` | `0.1080s` | Best previous stable path. |
+| Parallel CPU pinning | `2` | `65.8865s` | `60.6064s` | `69.2341s` | `8.6495s/it` | `157.4s` | `6.32 GiB` | `6.63 GiB` | `6.69 GB` | `46.60 GB` | `148.1443 GB` | `0.6513s` | Slightly best Pass 1 total so far. |
 | Parallel CPU pinning | `4` | `66.6127s` | `55.3440s` | `68.5952s` | `8.5691s/it` | `157.9s` | `6.32 GiB` | `6.63 GiB` | `6.74 GB` | `46.61 GB` | `148.1443 GB` | `1.7122s` | Best Pass 1 total so far, but with higher peak RAM. |
 
-Insight: parallel CPU pinning reduced setup by about `28.7s` and Pass 1 by about `27.6s` while keeping denoise essentially unchanged. The new per-step timing shows denoise is uniform at about `8.57s/it`; unlike ComfyUI, there is no hidden first-step initialization spike in this path. The tradeoff is higher reported peak RAM, so `4` workers is promising but should be compared against `2` and `8`.
+Insight: parallel CPU pinning reduced setup by about `29s` and Pass 1 by about `28s` while keeping denoise essentially unchanged. The new per-step timing shows denoise is uniform at about `8.6s/it`; unlike ComfyUI, there is no hidden first-step initialization spike in this path. `2` and `4` workers are effectively tied, so `2` is the better conservative default candidate unless repeated runs prove otherwise. The tradeoff is higher reported peak RAM.
+
+## Layer Runtime Profile
+
+Layer-level profiling was added to identify whether the denoise gap is dominated by attention, feed-forward, or modulation. This run used the best `manual_hot_blocks` baseline with synchronized layer timing enabled.
+
+Configuration difference from the best baseline:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_PROFILE_LAYERS="1"
+$env:LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS="1"
+```
+
+Result:
+
+| Mode | Setup | Denoise | Step avg | Pass 1 total | Resident block time | Streamed block time | Cross-attn | Self-attn | FF | AdaLN |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `manual_hot_blocks` + layer sync profile | `71.9572s` | `82.5902s` | `10.3239s/it` | `176.8s` | `13.4310s` | `69.0724s` | `30.8499s` | `27.6515s` | `23.3325s` | `0.6158s` |
+
+Insight: synchronized layer profiling slows the run, but the distribution is useful. The denoise gap is not isolated to one layer type. `cross_attn`, `self_attn`, and `ff` are all significant, which points back to the dynamic weight execution path used by all of their `Linear` modules. The next useful comparison is a block-staged mode that copies a block's linear weights once before the block forward rather than staging each linear call independently.
 
 ## Next Experiments
 
