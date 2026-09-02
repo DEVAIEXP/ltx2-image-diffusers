@@ -230,6 +230,7 @@ RUNNING_ON_WSL = is_wsl_environment()
 DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_PIN_CPU_MEMORY and not (
     RUNNING_ON_WSL and DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL
 )
+PRE_VAE_CLEANUP_REPEATS = int(os.environ.get("LTX_IMAGE_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
@@ -456,6 +457,39 @@ def purge_windows_standby_cache_event(record_event, event_name: str) -> None:
     print(f"  [windows-memory] {event_name}: standby cache purge requested", flush=True)
 
 
+def cleanup_before_vae_decode(record_event) -> None:
+    if PRE_VAE_CLEANUP_REPEATS <= 0:
+        return
+
+    before_free_gb = before_total_gb = None
+    after_free_gb = after_total_gb = None
+    if torch.cuda.is_available():
+        before_free, before_total = torch.cuda.mem_get_info(DEVICE)
+        before_free_gb = before_free / 1024**3
+        before_total_gb = before_total / 1024**3
+
+    event_t0 = time.time()
+    for _ in range(PRE_VAE_CLEANUP_REPEATS):
+        flush()
+        if torch.cuda.is_available() and hasattr(torch.cuda, "ipc_collect"):
+            torch.cuda.ipc_collect()
+
+    if torch.cuda.is_available():
+        after_free, after_total = torch.cuda.mem_get_info(DEVICE)
+        after_free_gb = after_free / 1024**3
+        after_total_gb = after_total / 1024**3
+
+    record_event(
+        "cleanup_before_vae_decode",
+        time.time() - event_t0,
+        repeats=PRE_VAE_CLEANUP_REPEATS,
+        before_free_vram_gb=None if before_free_gb is None else round(before_free_gb, 4),
+        before_total_vram_gb=None if before_total_gb is None else round(before_total_gb, 4),
+        after_free_vram_gb=None if after_free_gb is None else round(after_free_gb, 4),
+        after_total_vram_gb=None if after_total_gb is None else round(after_total_gb, 4),
+    )
+
+
 def denoise_progress_callback(components, step_index, timestep, callback_kwargs):
     now = time.perf_counter()
     last_time = getattr(denoise_progress_callback, "last_time", now)
@@ -539,6 +573,7 @@ def main():
         "dynamic_weights_resident_module_budget_gb": DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
         "dynamic_weights_resident_module_patterns": DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS,
         "dynamic_weights_resident_module_selection": DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION,
+        "pre_vae_cleanup_repeats": PRE_VAE_CLEANUP_REPEATS,
         "attention_backend": ATTENTION_BACKEND,
         "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,
         "events": [],
@@ -913,7 +948,9 @@ def main():
         if DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and "dynamic_weights_runtime_summary" not in run_metrics:
             run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()
         remove_dynamic_weights(transformer)
+        dynamic_weights_hook = None
     del prepare_pipe, denoise_pipe, transformer, scheduler
+    cleanup_before_vae_decode(record_event)
     flush()
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
     t0 = step_start("Pass 2: Decode VAE")
