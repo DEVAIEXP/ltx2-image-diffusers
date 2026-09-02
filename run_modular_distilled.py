@@ -80,6 +80,9 @@ TRANSFORMER_MANAGER_PROFILE_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFI
 TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS")
 TRANSFORMER_MANAGER_PROFILE_FULL = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL")
 DYNAMIC_WEIGHTS_PLAN = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN")
+DYNAMIC_WEIGHTS_EXECUTION_MODE = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
+DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
+DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4"))
 DYNAMIC_WEIGHTS_VERBOSE = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1")
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
@@ -523,7 +526,11 @@ def main():
         drop_trivial_attention_mask=drop_trivial_attention_mask,
     )
 
-    if DYNAMIC_WEIGHTS_PLAN:
+    dynamic_weights_enabled = DYNAMIC_WEIGHTS_PLAN or DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan"
+    if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and TRANSFORMER_MEMORY_MANAGER != "off":
+        raise ValueError("Dynamic weights execution currently requires LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER='off'. Use execution_mode='plan' with the block manager.")
+
+    if dynamic_weights_enabled:
         event_t0 = time.time()
         dynamic_weights_hook = apply_dynamic_weights(
             transformer,
@@ -534,6 +541,9 @@ def main():
                 always_resident_modules_pattern=(
                     r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
                 ),
+                execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
+                pin_cpu_memory=DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
+                pin_cpu_workers=DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
                 verbose=DYNAMIC_WEIGHTS_VERBOSE,
             ),
         )
@@ -544,6 +554,9 @@ def main():
             module_count=dynamic_weights_summary["module_count"],
             total_gb=dynamic_weights_summary["total_gb"],
             bytes_by_placement=dynamic_weights_summary["bytes_by_placement"],
+            execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
+            patched_module_count=dynamic_weights_summary["patched_module_count"],
+            setup_runtime=dynamic_weights_summary["setup_runtime"],
         )
 
     event_t0 = time.time()
@@ -690,7 +703,9 @@ def main():
     del connector_prompt_embeds, connector_attention_mask
     if transformer_manager is not None:
         transformer_manager.detach(transformer)
-    if DYNAMIC_WEIGHTS_PLAN:
+    if dynamic_weights_enabled:
+        if DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
+            run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()
         remove_dynamic_weights(transformer)
     del prepare_pipe, denoise_pipe, transformer, scheduler
     flush()

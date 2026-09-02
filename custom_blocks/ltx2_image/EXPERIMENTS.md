@@ -730,3 +730,33 @@ With `spread` selection and `4` pin workers, reducing the hot block budget from 
 | `5 GB` | `[0, 6, 12, 18, 24, 29, 35, 41, 47]` | `31.8124s` | `24.9162s` | `6.3818s` | `37.8765s` | `4.7343s/it` | `85.0s` | `5.32/5.63 GiB` | `6.31 GB` | `28.35 GB` | `1.5416s` |
 
 Insight: `5 GB` is useful as a lower-VRAM profile, but not as the fastest profile. The current speed baseline remains `6 GB`, `spread`, and `4` pin workers.
+
+## Dynamic Weights Linear Runtime
+
+The `dynamic_weights` module now has an experimental execution mode:
+
+```powershell
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_runtime"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS="4"
+$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="off"
+$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
+```
+
+This is the first real dynamic-weight execution path, separate from the LTX-specific block manager. It patches `nn.Linear` modules generically, keeps configured resident modules on the execution device, keeps small non-linear local tensors on the execution device, and streams large linear weights from CPU to the input device during forward.
+
+Important: this is not expected to beat `manual_hot_blocks` yet. Its purpose is to move the architecture toward a portable Diffusers-style dynamic weight runtime, so future iterations can add residency budgets, reusable device buffers, and loader-backed storage without baking LTX transformer details into the core mechanism.
+
+Smoke test result: a tiny CUDA `nn.Sequential(nn.RMSNorm, nn.Linear)` model successfully patched, executed, and restored through the hook.
+
+### Pin CPU Workers 6 Result
+
+With `spread`, `6 GB` hot block budget, and the two-purge benchmark protocol, `6` pin workers did not beat the `4` worker baseline:
+
+| Pin workers | Setup | Pin CPU blocks | Denoise | Step avg | Pass 1 total | Peak VRAM | Peak RAM | Copy time |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `4` | `32.3166s` | `23.5359s` | `34.8546s` | `4.3236s/it` | `83.8s` | `6.68 GB` | `27.65 GB` | `0.1083s` |
+| `6` | `34.0698s` | `25.4730s` | `38.0033s` | `4.7176s/it` | `89.0s` | `6.73 GB` | `27.66 GB` | `1.5200s` |
+| `8` | `29.2975s` | `20.5812s` | `37.2691s` | `4.6274s/it` | `83.3s` | `6.68 GB` | `27.66 GB` | `1.2723s` |
+
+Insight: `4` workers remains the best balanced setting. Higher worker counts can improve or vary setup, but they increase denoise/copy disturbance in this benchmark band.
