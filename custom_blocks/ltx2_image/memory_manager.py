@@ -442,9 +442,12 @@ class LTX2DynamicBlockManager:
         print(
             f"  [manager-profile] summary: mode={summary['mode']} "
             f"blocks={len(block_runtime)} block_seconds={block_total:.4f} "
-            f"copy_seconds={copy_total:.4f} copy_gb={copy_gb:.4f}",
+            f"copy_seconds={copy_total:.4f} copy_gb={copy_gb:.4f} "
+            f"hot_blocks={summary['hot_blocks']}",
             flush=True,
         )
+        if summary["hot_block_candidates"]:
+            print(f"  [manager-profile] hot_block_candidates: {summary['hot_block_candidates']}", flush=True)
 
         print("  [manager-profile] setup_runtime:", flush=True)
         for key, value in sorted(setup_runtime.items(), key=lambda item: item[1]["seconds"], reverse=True):

@@ -471,6 +471,27 @@ Result:
 
 Insight: this confirms the current best path is setup-bound plus streamed-block-runtime-bound, not copy-time-bound. Resident blocks are extremely fast relative to streamed blocks, but increasing the hot-block budget to `8 GB` previously caused a severe slowdown. The next promising direction is better hot-block selection within the same memory budget, guided by the slowest streamed block profile, rather than more aggressive staging.
 
+## Profile-Guided Hot Block Candidates
+
+`LTX_IMAGE_TRANSFORMER_HOT_BLOCK_CANDIDATES` was added so a profile-derived block priority list can be budgeted safely. Unlike explicit `LTX_IMAGE_TRANSFORMER_HOT_BLOCKS`, candidates are selected in order only until `LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB` is reached.
+
+Configuration difference from the best baseline:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCKS=""
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_CANDIDATES="36,2,29,32,12,19,9,22,16,28,4,1,7,13,25,31,35,38,40,43,44,47"
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+```
+
+Result:
+
+| Mode | Setup | Denoise | Step avg | Pass 1 total | Torch alloc | Torch reserved | Peak VRAM | Peak RAM | Resident block time | Streamed block time | Copied GB | Copy time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stride/budget baseline | `68.6324s` | `70.5502s` | `8.8141s/it` | `161.6s` | `6.32 GiB` | `6.68 GiB` | `6.73 GB` | `46.60 GB` | `3.3982s` | `65.6985s` | `148.1443 GB` | `0.1107s` |
+| Profile-guided candidates | `69.1140s` | `70.0661s` | `8.7537s/it` | `161.6s` | `6.32 GiB` | `6.68 GiB` | `6.85 GB` | `46.60 GB` | `3.3800s` | `65.2779s` | `148.1443 GB` | `0.1106s` |
+
+Insight: profile-guided candidates did not materially improve the result, but they also did not regress it. The similar copied volume suggests the `6 GB` budget still selects roughly the same number of blocks. The changing slowest-block list across runs means single-run slowest-block ordering is noisy; future selection should be based on averaged profiles or structural knowledge, not one trace.
+
 ## Next Experiments
 
 1. Keep `manual_hot_blocks + pinned CPU + resident small tensors` as the current baseline.
