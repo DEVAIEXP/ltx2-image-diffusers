@@ -495,10 +495,32 @@ Insight: profile-guided candidates did not materially improve the result, but th
 ## Next Experiments
 
 1. Keep `manual_hot_blocks + pinned CPU + resident small tensors` as the current baseline.
-2. Test profile-guided hot block selection within the same `6 GB` budget.
-3. Reduce setup cost by avoiding repeated full CPU pinning when possible.
-4. Investigate a ComfyUI-like dynamic staging path that avoids per-run heavyweight setup while preserving fast streamed execution.
-5. Continue micro-committing every working state.
+2. Move new experiments toward a Diffusers-style `Config + apply_* + ModelHook` API.
+3. Build a generic dynamic weight plan before changing execution behavior.
+4. Reduce setup cost by avoiding repeated full CPU pinning when possible.
+5. Investigate a ComfyUI-like dynamic staging path that avoids per-run heavyweight setup while preserving fast streamed execution.
+6. Continue micro-committing every working state.
+
+## Diffusers-Friendly Dynamic Weights Direction
+
+The ComfyUI Dynamic VRAM blog clarified the target behavior: a lightweight load plan, on-demand weight materialization, a cache that keeps successfully materialized weights resident when memory allows, and a temporary path when memory pressure prevents residency.
+
+To keep this experiment portable to a future Diffusers-style implementation, new work should follow these rules:
+
+1. Prefer `Config` dataclasses plus `apply_*` functions.
+2. Use `ModelHook` and `HookRegistry` for attach/detach behavior.
+3. Keep the dynamic weight core model-agnostic.
+4. Keep LTX-specific knowledge in adapter/planning code only.
+5. Avoid custom devices, global PyTorch monkeypatching, and loader replacement until the execution model proves useful.
+6. Bring in one behavior at a time and benchmark each step.
+
+A planner-only module now exists behind:
+
+```powershell
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN="1"
+```
+
+This builds a generic `nn.Linear` weight plan and records module count, total planned weight size, and placement buckets. It does not change the forward path yet.
 
 ## Current Verdict
 

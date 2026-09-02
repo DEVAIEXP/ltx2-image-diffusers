@@ -21,6 +21,7 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
     LTX2ImageDenoiseStep,
     LTX2ImagePrepareLatentsStep,
 )
+from custom_blocks.ltx2_image.memory import DynamicWeightsConfig, apply_dynamic_weights
 from custom_blocks.ltx2_image.memory_manager import LTX2DynamicBlockManager
 from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer2DModel
 from inference_utils import RunTracker, flush
@@ -71,6 +72,8 @@ TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = os.environ.get("LTX_IMAGE_TRANSFORMER_
 TRANSFORMER_MANAGER_PROFILE_LAYERS = os.environ.get("LTX_IMAGE_TRANSFORMER_PROFILE_LAYERS", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS = os.environ.get("LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS", "0") == "1"
 TRANSFORMER_MANAGER_PROFILE_FULL = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL", "0") == "1"
+DYNAMIC_WEIGHTS_PLAN = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN", "0") == "1"
+DYNAMIC_WEIGHTS_VERBOSE = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1") == "1"
 ATTENTION_BACKEND = os.environ.get("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
 FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
 DROP_TRIVIAL_ATTENTION_MASK = (
@@ -391,6 +394,29 @@ def main():
         patched_processors=patched_attention_processors,
         drop_trivial_attention_mask=drop_trivial_attention_mask,
     )
+
+    if DYNAMIC_WEIGHTS_PLAN:
+        event_t0 = time.time()
+        dynamic_weights_hook = apply_dynamic_weights(
+            transformer,
+            DynamicWeightsConfig(
+                execution_device=DEVICE,
+                offload_device=OFFLOAD_DEVICE,
+                target_module_classes=(torch.nn.Linear,),
+                always_resident_modules_pattern=(
+                    r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
+                ),
+                verbose=DYNAMIC_WEIGHTS_VERBOSE,
+            ),
+        )
+        dynamic_weights_summary = dynamic_weights_hook.state.as_dict()
+        record_event(
+            "build_dynamic_weights_plan",
+            time.time() - event_t0,
+            module_count=dynamic_weights_summary["module_count"],
+            total_gb=dynamic_weights_summary["total_gb"],
+            bytes_by_placement=dynamic_weights_summary["bytes_by_placement"],
+        )
 
     event_t0 = time.time()
     transformer_manager = None
