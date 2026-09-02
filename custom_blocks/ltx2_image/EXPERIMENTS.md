@@ -546,6 +546,30 @@ Runtime samples:
 
 Insight: the planner itself is cheap and is seeing the expected large-weight universe, close to the ComfyUI staged model size. The major speedup compared to earlier `~70s` denoise runs likely comes from system/driver/cache state after restart rather than the planner changing execution. Still, these are the best observed Diffusers-side samples and are now the performance band to preserve while implementing the next dynamic-weight features.
 
+## Windows Standby Cache Control
+
+Windows memory state appears to materially affect repeatability. After boot, the system showed only about `6 GB` of RAM cache/standby memory. After the first run, standby/cache grew to about `32 GB+` and later runs tended to degrade. Clearing the standby list before the next run produced the best observed result so far. The Windows pagefile was also changed from system-managed to a fixed `32 GB` size to avoid pagefile resizing during inference.
+
+Configuration stayed on the same best baseline:
+
+```powershell
+$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS="2"
+$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="direct"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN="1"
+```
+
+Result after clearing standby cache:
+
+| Setup | Pin CPU blocks | Denoise | Step avg | Pass 1 total | Peak VRAM | Peak RAM | Resident block time | Streamed block time | Copy time | Hot blocks |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `44.4104s` | `35.9688s` | `39.3172s` | `4.9083s/it` | `97.9s` | `6.68 GB` | `46.60 GB` | `2.9649s` | `35.2593s` | `2.1533s` | `[0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]` |
+
+Insight: this strongly suggests that Windows standby/cache pressure was a hidden benchmark variable. Clearing standby cache reduced both setup and denoise. The denoise path is now much closer to ComfyUI's total sampler timing, though still slower than ComfyUI's steady per-step rate. Future benchmark comparisons should record whether standby cache was cleared, whether NVIDIA system fallback was enabled, and whether pagefile was fixed or system-managed.
+
 ## Current Verdict
 
 The modular pipeline plus custom dynamic manager is already more memory-stable than the old runner and can beat the old Diffusers-side denoise time in the best pinned-memory configuration.
