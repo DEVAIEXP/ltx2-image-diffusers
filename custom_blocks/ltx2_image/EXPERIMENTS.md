@@ -603,3 +603,20 @@ Recommended protocol:
 4. Repeat with `LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN="1"` and check whether the next run degrades less without external cache clearing.
 
 Update: Diffusers rejects `low_cpu_mem_usage=False` together with `device_map="cpu"` during `from_pretrained`. The runner now keeps `device_map="cpu"` only when `LTX_IMAGE_LOW_CPU_MEM_USAGE="1"`. When testing `LTX_IMAGE_LOW_CPU_MEM_USAGE="0"`, transformer loading uses the regular CPU loading path before the custom manager is attached. Treat this as a loading-path A/B, not as a perfectly isolated boolean change.
+
+## Windows Standby Purge Helper
+
+The runner now has an optional Windows-only benchmark helper that calls `NtSetSystemInformation(SystemMemoryListInformation=80, MemoryPurgeStandbyList=4)` through Python `ctypes`. It enables `SeProfileSingleProcessPrivilege` on the current process token first, so the Python process must run from an elevated/admin terminal.
+
+```powershell
+$env:LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
+$env:LTX_IMAGE_PURGE_WINDOWS_STANDBY_AFTER_RUN="1"
+```
+
+Smoke test result from an elevated terminal:
+
+```text
+{'system_information_class': 80, 'command': 4, 'privilege': 'SeProfileSingleProcessPrivilege'}
+```
+
+Use `BEFORE_RUN=1` for cold benchmark control. Use `AFTER_RUN=1` to test whether back-to-back runs stay stable without calling an external executable. This remains a Windows benchmark hygiene tool, not part of the portable dynamic-memory manager.
