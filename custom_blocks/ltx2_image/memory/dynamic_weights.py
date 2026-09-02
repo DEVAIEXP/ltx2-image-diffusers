@@ -209,7 +209,7 @@ class DynamicWeightsHook(ModelHook):
         store_weights_to_pin: list[int] = []
 
         self._move_root_local_tensors_to_device(module)
-        if use_store and self.resident_module_budget_bytes > 0 and self.config.resident_module_patterns:
+        if self.resident_module_budget_bytes > 0 and self.config.resident_module_patterns:
             start = time.perf_counter()
             selected_bytes = self._select_resident_modules(module, skip_patterns)
             self.state.add_setup("select_resident_modules", time.perf_counter() - start, selected_bytes)

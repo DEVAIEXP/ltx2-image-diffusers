@@ -824,3 +824,25 @@ $env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
 This keeps whole matching modules resident on the execution device and skips patching their descendants. For LTX this lets the portable dynamic weights runtime treat `transformer_blocks.N` as the budget unit without hardcoding LTX-specific names in the manager.
 
 Smoke test result: a CUDA sequential model with two block-like submodules successfully ran with one resident block and remaining linears store-backed through `meta` placeholders.
+
+First full transformer result with `linear_store_runtime`, `6 GB` resident module budget, and `spread` selection:
+
+| Mode | Patched linears | Resident modules | Pin stored weights | Denoise | Step avg | Pass 1 total | Torch alloc/reserved | Peak VRAM | Peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `linear_store_runtime` + resident module budget | `444` | `5.5077 GB` | `31.4762s / 18.5181 GB` | `92.9394s` | `11.5235s/it` | `143.7s` | `6.32/6.63 GiB` | `6.69 GB` | `46.66 GB` |
+
+Insight: module residency is structurally closer to `manual_hot_blocks`, but the store/meta path is still much slower than the LTX-specific direct-parameter path. The next A/B enables the same resident module budget for `linear_runtime` so the module selection is generic while streamed linears keep regular CPU parameters instead of store-backed `meta` placeholders.
+
+### Dynamic Weights Linear Runtime Module Budget
+
+`resident_module_budget_gb` now also works with `linear_runtime`. This tests generic module-level residency without the store/meta indirection:
+
+```powershell
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_runtime"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="0"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="6"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
+```
+
+Smoke test result: a CUDA sequential model with block-like submodules successfully ran with one resident block and remaining linears patched through regular CPU parameters.
