@@ -134,6 +134,7 @@ PAG_ENABLED = parse_bool_env("LTX_IMAGE_PAG_ENABLED")
 PAG_SCALE = float(os.environ.get("LTX_IMAGE_PAG_SCALE", "0.2"))
 PAG_APPLIED_LAYERS = [int(x) for x in os.environ.get("LTX_IMAGE_PAG_LAYERS", "28").split(",") if x]
 FAKE_PROMPT_EMBEDS = parse_bool_env("LTX_IMAGE_FAKE_PROMPT")
+GENERATION_REPEATS = max(1, int(os.environ.get("LTX_IMAGE_GENERATION_REPEATS", "1")))
 
 prompt = os.environ.get(
     "LTX_IMAGE_PROMPT",
@@ -362,6 +363,7 @@ def main():
         "height": HEIGHT,
         "seed": seed,
         "num_inference_steps": NUM_INFERENCE_STEPS,
+        "generation_repeats": GENERATION_REPEATS,
         "guidance_scale": GUIDANCE_SCALE,
         "guidance_rescale": GUIDANCE_RESCALE,
         "vae_decode_timestep": DECODE_TIMESTEP,
@@ -673,65 +675,84 @@ def main():
     record_event("build_prepare_latents_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
 
     event_t0 = time.time()
-    prepare_state = prepare_pipe(
-        width=WIDTH,
-        height=HEIGHT,
-        num_inference_steps=NUM_INFERENCE_STEPS,
-        batch_size=latent_batch_size,
-        transformer_batch_multiplier=transformer_batch_multiplier,
-        generator=generator,
-        output=["latents", "timesteps", "latent_height", "latent_width", "in_channels", "video_rotary_emb"],
-    )
-    record_event("prepare_latents_modular_pipe_call", time.time() - event_t0)
-
-    event_t0 = time.time()
     denoise_pipe = LTX2ImageDenoiseStep().init_pipeline()
     denoise_pipe.update_components(transformer=transformer, scheduler=scheduler)
     record_event("build_denoise_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
 
-    denoise_progress_callback.timesteps = prepare_state["timesteps"]
-    denoise_progress_callback.start_time = time.perf_counter()
-    denoise_progress_callback.last_time = denoise_progress_callback.start_time
-    denoise_progress_callback.step_times = []
-    print(f"  Starting denoise loop with attention backend: {ATTENTION_BACKEND}", flush=True)
-    event_t0 = time.time()
-    with get_attention_backend_context():
-        denoise_state = denoise_pipe(
-            latents=prepare_state["latents"],
-            timesteps=prepare_state["timesteps"],
-            connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
-            connector_attention_mask=connector_attention_mask.to(device=DEVICE),
-            latent_height=prepare_state["latent_height"],
-            latent_width=prepare_state["latent_width"],
-            video_rotary_emb=prepare_state["video_rotary_emb"],
+    image_latent = None
+    latent_height = None
+    latent_width = None
+    latent_channels = None
+    run_metrics["denoise_step_times_by_repeat"] = []
+
+    for repeat_index in range(GENERATION_REPEATS):
+        repeat_suffix = "" if GENERATION_REPEATS == 1 else f"_repeat_{repeat_index + 1}"
+        if GENERATION_REPEATS > 1:
+            print(f"  Warm generation repeat {repeat_index + 1}/{GENERATION_REPEATS}", flush=True)
+
+        event_t0 = time.time()
+        prepare_state = prepare_pipe(
+            width=WIDTH,
+            height=HEIGHT,
+            num_inference_steps=NUM_INFERENCE_STEPS,
             batch_size=latent_batch_size,
             transformer_batch_multiplier=transformer_batch_multiplier,
-            do_classifier_free_guidance=False,
-            do_perturbed_attention_guidance=do_perturbed_attention_guidance,
-            guidance_scale=GUIDANCE_SCALE,
-            guidance_rescale=GUIDANCE_RESCALE,
-            pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
-            pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
-            callback_on_step_end=denoise_progress_callback,
-            callback_on_step_end_tensor_inputs=["latents"],
-            output="latents",
+            generator=generator,
+            output=["latents", "timesteps", "latent_height", "latent_width", "in_channels", "video_rotary_emb"],
         )
-    record_event("denoise_modular_pipe_call", time.time() - event_t0, attention_backend=ATTENTION_BACKEND)
-    run_metrics["denoise_step_times"] = denoise_progress_callback.step_times
+        record_event(f"prepare_latents_modular_pipe_call{repeat_suffix}", time.time() - event_t0)
+
+        denoise_progress_callback.timesteps = prepare_state["timesteps"]
+        denoise_progress_callback.start_time = time.perf_counter()
+        denoise_progress_callback.last_time = denoise_progress_callback.start_time
+        denoise_progress_callback.step_times = []
+        print(f"  Starting denoise loop{repeat_suffix} with attention backend: {ATTENTION_BACKEND}", flush=True)
+        event_t0 = time.time()
+        with get_attention_backend_context():
+            denoise_state = denoise_pipe(
+                latents=prepare_state["latents"],
+                timesteps=prepare_state["timesteps"],
+                connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
+                connector_attention_mask=connector_attention_mask.to(device=DEVICE),
+                latent_height=prepare_state["latent_height"],
+                latent_width=prepare_state["latent_width"],
+                video_rotary_emb=prepare_state["video_rotary_emb"],
+                batch_size=latent_batch_size,
+                transformer_batch_multiplier=transformer_batch_multiplier,
+                do_classifier_free_guidance=False,
+                do_perturbed_attention_guidance=do_perturbed_attention_guidance,
+                guidance_scale=GUIDANCE_SCALE,
+                guidance_rescale=GUIDANCE_RESCALE,
+                pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
+                pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
+                callback_on_step_end=denoise_progress_callback,
+                callback_on_step_end_tensor_inputs=["latents"],
+                output="latents",
+            )
+        record_event(
+            f"denoise_modular_pipe_call{repeat_suffix}",
+            time.time() - event_t0,
+            attention_backend=ATTENTION_BACKEND,
+            repeat_index=repeat_index,
+        )
+        run_metrics["denoise_step_times_by_repeat"].append(list(denoise_progress_callback.step_times))
+        run_metrics["denoise_step_times"] = denoise_progress_callback.step_times
+
+        if image_latent is not None:
+            del image_latent
+        image_latent = denoise_state.to(OFFLOAD_DEVICE)
+        latent_height = prepare_state["latent_height"]
+        latent_width = prepare_state["latent_width"]
+        latent_channels = prepare_state["in_channels"]
+        print(f"  Image latent: {image_latent.shape}")
+        del prepare_state, denoise_state
+
     if transformer_manager is not None and TRANSFORMER_MANAGER_PROFILE:
         run_metrics["transformer_manager_profile_summary"] = transformer_manager.profile_summary()
         transformer_manager.print_profile_summary(full=TRANSFORMER_MANAGER_PROFILE_FULL)
     if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
         run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()
         dynamic_weights_hook.print_profile_summary()
-
-
-    image_latent = denoise_state.to(OFFLOAD_DEVICE)
-    latent_height = prepare_state["latent_height"]
-    latent_width = prepare_state["latent_width"]
-    latent_channels = prepare_state["in_channels"]
-    print(f"  Image latent: {image_latent.shape}")
-
     del connector_prompt_embeds, connector_attention_mask
     if transformer_manager is not None:
         transformer_manager.detach(transformer)

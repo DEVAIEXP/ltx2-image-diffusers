@@ -912,3 +912,15 @@ First full result:
 | `linear_runtime` + module budget + lazy pin | `9.2746s` | `54.8884s / 18.5181 GB` | `71.3503s` | first step `58.8127s`, later mostly `~1.7s/it` | `0.4201s` | `91.5s` | `6.79 GB` | `27.40 GB` |
 
 Insight: lazy pin is technically working, but for an 8-step image run it moves the eager pin cost into the first denoise step instead of eliminating it. After the first-step pinning, later steps are very fast, so this may be useful for long-running or persistent-process workloads, but the best single-run preset remains eager pinned dynamic weights with resident modules and resident small tensors.
+
+### Warm Generation Benchmark
+
+The runner now supports repeated generation with a single loaded/configured transformer:
+
+```powershell
+$env:LTX_IMAGE_GENERATION_REPEATS="2"
+```
+
+This keeps the default single-run path unchanged when unset. With repeats enabled, the runner rebuilds latents and runs denoise multiple times before VAE decode, saving the last latent/image. This is intended to separate cold setup cost from warm execution cost and to compare more fairly against server-style systems such as ComfyUI.
+
+Preset implication: eager pinned dynamic weights are still best for short one-shot runs. Lazy pin may become useful only when the same process/model performs additional warm generations, because the first generation pays the pinning cost and later generations can reuse pinned CPU weights.
