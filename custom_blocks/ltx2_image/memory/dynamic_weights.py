@@ -191,6 +191,8 @@ class DynamicWeightsHook(ModelHook):
         linear_modules_to_pin: list[nn.Linear] = []
         store_weights_to_pin: list[int] = []
 
+        self._move_root_local_tensors_to_device(module)
+
         for module_name, submodule in module.named_modules():
             if module_name == "":
                 continue
@@ -247,6 +249,24 @@ class DynamicWeightsHook(ModelHook):
         if linear.weight.device.type == "cpu" and not linear.weight.data.is_pinned():
             linear_modules_to_pin.append(linear)
 
+    def _move_root_local_tensors_to_device(self, module: nn.Module) -> None:
+        start = time.perf_counter()
+        moved_bytes = 0
+        for parameter in module.parameters(recurse=False):
+            if parameter.device == self.execution_device:
+                continue
+            tensor_bytes = _tensor_size_bytes(parameter.data)
+            parameter.data = parameter.data.to(self.execution_device)
+            moved_bytes += tensor_bytes
+        for buffer in module.buffers(recurse=False):
+            if buffer.device == self.execution_device:
+                continue
+            tensor_bytes = _tensor_size_bytes(buffer.data)
+            buffer.data = buffer.data.to(self.execution_device)
+            moved_bytes += tensor_bytes
+        if moved_bytes:
+            self.state.add_setup("root_tensors_to_device", time.perf_counter() - start, moved_bytes)
+
     def _store_linear_weight(self, linear: nn.Linear) -> None:
         if id(linear) in self._linear_weight_store:
             return
@@ -261,7 +281,8 @@ class DynamicWeightsHook(ModelHook):
         )
         linear._parameters["weight"] = nn.Parameter(meta_weight, requires_grad=original_parameter.requires_grad)
 
-    def _move_small_local_tensors_to_device(self, module: nn.Module) -> None:
+    def _move_small_local_tensors_to_device(self, module: nn.Module) -> int:
+        moved_bytes = 0
         for parameter in module.parameters(recurse=False):
             if parameter.device == self.execution_device:
                 continue
@@ -271,6 +292,7 @@ class DynamicWeightsHook(ModelHook):
             start = time.perf_counter()
             parameter.data = parameter.data.to(self.execution_device)
             self.state.add_setup("small_parameters_to_device", time.perf_counter() - start, tensor_bytes)
+            moved_bytes += tensor_bytes
         for buffer in module.buffers(recurse=False):
             if buffer.device == self.execution_device:
                 continue
@@ -280,6 +302,8 @@ class DynamicWeightsHook(ModelHook):
             start = time.perf_counter()
             buffer.data = buffer.data.to(self.execution_device)
             self.state.add_setup("small_buffers_to_device", time.perf_counter() - start, tensor_bytes)
+            moved_bytes += tensor_bytes
+        return moved_bytes
 
     def _pin_linear_weights(self, linears: list[nn.Linear]) -> int:
         pinned_bytes = 0
