@@ -29,6 +29,8 @@ class DynamicWeightsConfig:
     execution_mode: str = "plan"
     pin_cpu_memory: bool = False
     pin_cpu_workers: int = 1
+    resident_weight_budget_gb: float = 0.0
+    resident_weight_selection: str = "spread"
     verbose: bool = False
 
 
@@ -113,10 +115,15 @@ class DynamicWeightsHook(ModelHook):
         self._patched_modules: list[tuple[nn.Module, object]] = []
         self._replaced_parameters: list[tuple[nn.Module, str, nn.Parameter]] = []
         self._linear_weight_store: dict[int, torch.Tensor] = {}
+        self._resident_linear_weight_module_ids: set[int] = set()
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
         self.pin_cpu_workers = max(1, int(config.pin_cpu_workers))
+        self.resident_weight_budget_bytes = int(max(0.0, float(config.resident_weight_budget_gb)) * 1024**3)
+        self.resident_weight_selection = config.resident_weight_selection.lower()
+        if self.resident_weight_selection not in {"first", "spread"}:
+            raise ValueError("DynamicWeightsConfig.resident_weight_selection must be 'first' or 'spread'")
 
     def initialize_hook(self, module: nn.Module) -> nn.Module:
         self.state = build_dynamic_weight_plan(module, self.config)
@@ -166,6 +173,7 @@ class DynamicWeightsHook(ModelHook):
             patched_module, parameter_name, original_parameter = self._replaced_parameters.pop()
             patched_module._parameters[parameter_name] = original_parameter
         self._linear_weight_store.clear()
+        self._resident_linear_weight_module_ids.clear()
 
     def _move_value_to_execution_device(self, value: Any, name: str) -> Any:
         if isinstance(value, torch.Tensor):
@@ -192,6 +200,10 @@ class DynamicWeightsHook(ModelHook):
         store_weights_to_pin: list[int] = []
 
         self._move_root_local_tensors_to_device(module)
+        if use_store and self.resident_weight_budget_bytes > 0:
+            start = time.perf_counter()
+            selected_bytes = self._select_resident_linear_weights(module, skip_patterns, resident_patterns)
+            self.state.add_setup("select_resident_linear_weights", time.perf_counter() - start, selected_bytes)
 
         for module_name, submodule in module.named_modules():
             if module_name == "":
@@ -210,6 +222,9 @@ class DynamicWeightsHook(ModelHook):
                 continue
 
             if isinstance(submodule, nn.Linear):
+                if use_store and id(submodule) in self._resident_linear_weight_module_ids:
+                    self._move_resident_linear_to_device(submodule)
+                    continue
                 self._move_linear_to_runtime_devices(submodule, linear_modules_to_pin, store_weights_to_pin, use_store)
                 self._patch_linear(submodule)
             else:
@@ -248,6 +263,49 @@ class DynamicWeightsHook(ModelHook):
             return
         if linear.weight.device.type == "cpu" and not linear.weight.data.is_pinned():
             linear_modules_to_pin.append(linear)
+
+    def _select_resident_linear_weights(
+        self,
+        module: nn.Module,
+        skip_patterns: tuple[re.Pattern[str], ...],
+        resident_patterns: tuple[re.Pattern[str], ...],
+    ) -> int:
+        candidates: list[tuple[str, nn.Linear, int]] = []
+        for module_name, submodule in module.named_modules():
+            if module_name == "" or not isinstance(submodule, nn.Linear):
+                continue
+            if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
+                continue
+            if resident_patterns and any(pattern.search(module_name) for pattern in resident_patterns):
+                continue
+            candidates.append((module_name, submodule, _tensor_size_bytes(submodule.weight.data)))
+
+        if self.resident_weight_selection == "first":
+            ordered_candidates = candidates
+        else:
+            ordered_candidates = _spread_order(candidates, self.resident_weight_budget_bytes)
+
+        selected_bytes = 0
+        for _, linear, weight_bytes in ordered_candidates:
+            if selected_bytes + weight_bytes > self.resident_weight_budget_bytes:
+                continue
+            self._resident_linear_weight_module_ids.add(id(linear))
+            selected_bytes += weight_bytes
+        return selected_bytes
+
+    def _move_resident_linear_to_device(self, linear: nn.Linear) -> None:
+        start = time.perf_counter()
+        moved_bytes = 0
+        if linear.weight.device != self.execution_device:
+            weight_bytes = _tensor_size_bytes(linear.weight.data)
+            linear.weight.data = linear.weight.data.to(self.execution_device, non_blocking=True)
+            moved_bytes += weight_bytes
+        if linear.bias is not None and linear.bias.device != self.execution_device:
+            bias_bytes = _tensor_size_bytes(linear.bias.data)
+            linear.bias.data = linear.bias.data.to(self.execution_device, non_blocking=True)
+            moved_bytes += bias_bytes
+        if moved_bytes:
+            self.state.add_setup("resident_linear_weights_to_device", time.perf_counter() - start, moved_bytes)
 
     def _move_root_local_tensors_to_device(self, module: nn.Module) -> None:
         start = time.perf_counter()
@@ -493,6 +551,30 @@ def _module_size_bytes(module: nn.Module) -> int:
     size = sum(_tensor_size_bytes(parameter.data) for parameter in module.parameters(recurse=True))
     size += sum(_tensor_size_bytes(buffer.data) for buffer in module.buffers(recurse=True))
     return size
+
+
+def _spread_order(items: list[tuple[str, nn.Linear, int]], budget_bytes: int) -> list[tuple[str, nn.Linear, int]]:
+    if len(items) <= 2:
+        return items
+    average_bytes = max(1, sum(item[2] for item in items) // len(items))
+    target_count = max(1, min(len(items), budget_bytes // average_bytes))
+    if target_count == 1:
+        spread_indices = [len(items) // 2]
+    else:
+        spread_indices = [
+            round(position * (len(items) - 1) / (target_count - 1))
+            for position in range(target_count)
+        ]
+    seen = set()
+    ordered: list[tuple[str, nn.Linear, int]] = []
+    for index in spread_indices:
+        if index not in seen:
+            seen.add(index)
+            ordered.append(items[index])
+    for index, item in enumerate(items):
+        if index not in seen:
+            ordered.append(item)
+    return ordered
 
 
 def _tensor_size_bytes(tensor: torch.Tensor) -> int:

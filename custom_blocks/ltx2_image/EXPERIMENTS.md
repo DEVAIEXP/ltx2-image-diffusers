@@ -778,3 +778,24 @@ This mode moves large `nn.Linear.weight` tensors into an internal runtime store 
 This is closer to the intended dynamic-weight architecture than `linear_runtime`, because it separates module execution from weight storage. It is still not ComfyUI-equivalent yet: weights are still first materialized by Diffusers `from_pretrained`, and the store is not loaded directly from checkpoint shards. The next architectural target is a loader-backed store that can avoid the expensive eager pin/materialization setup path.
 
 Smoke test result: a tiny CUDA `nn.Sequential(nn.RMSNorm, nn.Linear)` model successfully entered `linear_store_runtime`, executed with a `meta` linear weight placeholder, and restored the original parameter after hook removal.
+
+First full transformer result with every non-resident linear streamed:
+
+| Mode | Setup | Denoise | Step avg | Pass 1 total | Torch alloc/reserved | Peak VRAM | Peak RAM | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `linear_store_runtime` all streamed | `45.2711s` | `127.1036s` | `15.8834s/it` | `182.9s` | `0.81/1.18 GiB` | `6.32 GB` | `52.16 GB` | Works, but is a VRAM-minimum profile rather than a speed profile. |
+
+Insight: patching `576` linear modules and streaming all large weights is too slow. The next runtime change is a generic resident-weight budget so `linear_store_runtime` can keep a budgeted spread of `Linear.weight` tensors on the execution device while still storing the rest outside the module.
+
+### Dynamic Weights Resident Weight Budget
+
+`linear_store_runtime` now supports a generic resident weight budget:
+
+```powershell
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="6"
+$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION="spread"
+```
+
+This keeps a spread of large `nn.Linear.weight` tensors resident on the execution device while the remaining linear weights stay in the internal store with `meta` placeholders in the active modules. This is still model-agnostic: selection is based on module order and byte budget, not LTX block names.
+
+Smoke test result: a CUDA sequential model with three large linears successfully ran with one resident linear weight and two store-backed `meta` weights.
