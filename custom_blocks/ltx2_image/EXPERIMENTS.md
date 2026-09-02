@@ -620,3 +620,20 @@ Smoke test result from an elevated terminal:
 ```
 
 Use `BEFORE_RUN=1` for cold benchmark control. Use `AFTER_RUN=1` to test whether back-to-back runs stay stable without calling an external executable. This remains a Windows benchmark hygiene tool, not part of the portable dynamic-memory manager.
+
+## Purge Before Transformer Result
+
+A second Windows standby purge point was added after prompt/connectors cleanup and immediately before transformer loading:
+
+```powershell
+$env:LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
+```
+
+Observed comparison with the same baseline and `LTX_IMAGE_LOW_CPU_MEM_USAGE="1"`:
+
+| Purge placement | Denoise | Step avg | Torch alloc/reserved |
+| --- | ---: | ---: | ---: |
+| Before full run only | `52.4843s` | `6.5116s/it` | `6.32 GiB` / `6.63 GiB` |
+| Before transformer | `38.7616s` | `4.8405s/it` | `6.32 GiB` / `6.63 GiB` |
+
+Insight: standby/cache pressure can build during the prompt/connectors stage before transformer setup. Purging only at process start is helpful but not sufficient for the fastest run. The new pre-transformer purge is a benchmark hygiene control for Windows and should be kept separate from portable manager behavior.

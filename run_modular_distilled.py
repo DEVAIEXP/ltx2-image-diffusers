@@ -82,6 +82,7 @@ DYNAMIC_WEIGHTS_PLAN = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN")
 DYNAMIC_WEIGHTS_VERBOSE = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1")
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
+PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
 PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_AFTER_RUN")
 ATTENTION_BACKEND = os.environ.get("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
 FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
@@ -355,6 +356,7 @@ def main():
         "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
         "reset_dynamic_memory_after_run": RESET_DYNAMIC_MEMORY_AFTER_RUN,
         "purge_windows_standby_before_run": PURGE_WINDOWS_STANDBY_BEFORE_RUN,
+        "purge_windows_standby_before_transformer": PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER,
         "purge_windows_standby_after_run": PURGE_WINDOWS_STANDBY_AFTER_RUN,
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
         "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
@@ -488,12 +490,16 @@ def main():
     flush()
     record_event("offload_connector_outputs", 0.0)
 
-    event_t0 = time.time()
     transformer_load_kwargs = {
         "subfolder": "transformer",
         "torch_dtype": DTYPE,
         "low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
     }
+
+    if PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER:
+        purge_windows_standby_cache_event(record_event, "purge_windows_standby_before_transformer")
+
+    event_t0 = time.time()
     if MODEL_LOW_CPU_MEM_USAGE:
         transformer_load_kwargs["device_map"] = "cpu"
     transformer = LTX2ImageTransformer2DModel.from_pretrained(MODEL_PATH, **transformer_load_kwargs)
