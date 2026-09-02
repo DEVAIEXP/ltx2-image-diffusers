@@ -147,6 +147,17 @@ class DynamicWeightsHook(ModelHook):
         self._restore_patches()
         return module
 
+    def pre_forward(self, module: nn.Module, *args, **kwargs) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        if self.execution_mode == "plan":
+            return args, kwargs
+        return (
+            tuple(self._move_value_to_execution_device(value, "forward_input") for value in args),
+            {
+                key: self._move_value_to_execution_device(value, f"forward_input:{key}")
+                for key, value in kwargs.items()
+            },
+        )
+
     def _restore_patches(self) -> None:
         while self._patched_modules:
             patched_module, original_forward = self._patched_modules.pop()
@@ -155,6 +166,24 @@ class DynamicWeightsHook(ModelHook):
             patched_module, parameter_name, original_parameter = self._replaced_parameters.pop()
             patched_module._parameters[parameter_name] = original_parameter
         self._linear_weight_store.clear()
+
+    def _move_value_to_execution_device(self, value: Any, name: str) -> Any:
+        if isinstance(value, torch.Tensor):
+            if value.device == self.execution_device:
+                return value
+            if value.device.type == "meta":
+                return value
+            start = time.perf_counter()
+            moved = value.to(device=self.execution_device, non_blocking=True)
+            self.state.add_copy(name, time.perf_counter() - start, _tensor_size_bytes(moved))
+            return moved
+        if isinstance(value, tuple):
+            return tuple(self._move_value_to_execution_device(item, name) for item in value)
+        if isinstance(value, list):
+            return [self._move_value_to_execution_device(item, name) for item in value]
+        if isinstance(value, dict):
+            return {key: self._move_value_to_execution_device(item, f"{name}:{key}") for key, item in value.items()}
+        return value
 
     def _prepare_linear_runtime(self, module: nn.Module, *, use_store: bool) -> None:
         skip_patterns = tuple(re.compile(pattern) for pattern in self.config.skip_modules_pattern)
