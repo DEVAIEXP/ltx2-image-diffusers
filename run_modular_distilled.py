@@ -90,6 +90,7 @@ DYNAMIC_WEIGHTS_PLAN = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN")
 DYNAMIC_WEIGHTS_EXECUTION_MODE = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
 DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
 DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4"))
+DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB = int(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024"))
 DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = float(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0"))
 DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION", "spread").lower()
 DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = float(os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0"))
@@ -388,6 +389,7 @@ def main():
         "transformer_manager_profile_layers": TRANSFORMER_MANAGER_PROFILE_LAYERS,
         "transformer_manager_profile_sync_layers": TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS,
         "transformer_manager_profile_full": TRANSFORMER_MANAGER_PROFILE_FULL,
+        "dynamic_weights_small_tensor_threshold_kb": DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB,
         "attention_backend": ATTENTION_BACKEND,
         "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,
         "events": [],
@@ -553,6 +555,7 @@ def main():
                 always_resident_modules_pattern=(
                     r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
                 ),
+                small_tensor_threshold_bytes=DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB * 1024,
                 execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
                 pin_cpu_memory=DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
                 pin_cpu_workers=DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,

@@ -854,3 +854,14 @@ First full transformer result with `linear_runtime`, `6 GB` resident module budg
 | `linear_runtime` + resident module budget | `444` | `5.5077 GB` | `31.7174s / 18.5181 GB` | `93.9007s` | `11.7310s/it` | `144.7s` | `6.32/6.63 GiB` | `6.77 GB` | `46.66 GB` |
 
 Insight: removing the `store/meta` indirection did not recover speed. The generic dynamic path is still far slower than `manual_hot_blocks`, so the next diagnostic is runtime profiling inside `dynamic_weights` itself: copy totals, resident module names, and whether input/device transfers are happening during the transformer forward.
+
+Follow-up profiling showed the selected resident modules matched the fastest manual baseline exactly:
+
+```text
+[dynamic-weights-profile] summary: mode=linear_runtime modules=584 patched=444 copy_seconds=4.5617 copy_gb=148.1445
+[dynamic-weights-profile] resident_modules=['transformer_blocks.0', 'transformer_blocks.5', 'transformer_blocks.9', 'transformer_blocks.14', 'transformer_blocks.19', 'transformer_blocks.24', 'transformer_blocks.28', 'transformer_blocks.33', 'transformer_blocks.38', 'transformer_blocks.42', 'transformer_blocks.47']
+[dynamic-weights-profile] copy_runtime_by_type:
+  linear_weight: calls=3552 seconds=4.5617 gb=148.1445
+```
+
+Insight: the module selection is not the problem. One remaining difference from the manual manager is that non-linear block-local parameters, such as modulation tables used through inline `.to(temb.device)` calls in the block forward, were neither pinned nor made resident by the generic dynamic runtime. The runner now exposes `LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB` and defaults it to `1024` for dynamic weights so these small/medium local tensors can stay resident instead of being copied implicitly during every block forward.
