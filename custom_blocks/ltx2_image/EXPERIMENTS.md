@@ -978,3 +978,15 @@ First WSL isolation found two portability issues before denoise:
 The dynamic weights hook now has `allow_pin_memory_fallback`, exposed as `LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK` and enabled by presets. If large pinned memory allocation fails, the hook logs `pin_linear_weights_failed` or `pin_stored_linear_weights_failed`, disables further pin attempts, and continues with pageable CPU tensors when the CUDA context remains healthy.
 
 Follow-up WSL result: catching `torch.AcceleratorError` after a failed large `pin_memory()` was not enough. Denoise completed, but VAE decode later failed with `CUDA driver error: device not ready`, indicating that the failed pin attempt can poison the CUDA context. The runner now detects WSL and disables dynamic-weights pinned CPU memory by default via `LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=1`. Set it to `0` only for explicit pinning experiments.
+
+### Windows Baseline For WSL Comparison
+
+Use this Windows run as the current dynamic-weights reference when WSL decode becomes stable:
+
+| Environment | Preset shape | Setup | Denoise | Avg step | Copy time | Resident modules | Peak VRAM | Peak RAM | Pass 1 |
+| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: |
+| Windows, standby purged before transformer | `linear_runtime`, eager pinned weights, `6 GB` resident module budget, native attention | `40.5351s` | `14.9614s` | `~1.72s/it` | `1.0984s / 148.1445 GB` | `[0, 5, 9, 14, 19, 24, 28, 33, 38, 42, 47]` | `6.77 GB` | `27.35 GB` | `66.4s` |
+
+Setup breakdown: `pin_linear_weights: 31.5272s / 18.5181 GB`, `resident_budget_modules_to_device: 8.4379s / 5.5077 GB`, `resident_modules_to_device: 0.4867s / 0.9554 GB`, small tensors resident `0.0243s / 0.0042 GB`.
+
+Step profile: first step `0.6680s`, then mostly `~1.78-2.30s`. This remains the best Windows one-shot comparison point after adding dynamic weights and standby purge.
