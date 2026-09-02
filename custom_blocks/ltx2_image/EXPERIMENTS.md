@@ -522,6 +522,30 @@ $env:LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN="1"
 
 This builds a generic `nn.Linear` weight plan and records module count, total planned weight size, and placement buckets. It does not change the forward path yet.
 
+## Dynamic Planner Baseline Runs
+
+Two runs after a terminal/system restart used the same best `manual_hot_blocks` baseline with the planner enabled. The planner is expected to be execution-neutral.
+
+Planner summary:
+
+| Metric | Value |
+| --- | ---: |
+| Linear modules | `584` |
+| Planned weight size | `24.4404 GB` |
+| Resident module weights | `0.4122 GB` |
+| Resident small tensors | `0.0033 GB` |
+| Streamed large weights | `24.0249 GB` |
+| Planner build time | `0.0156s` to `0.0654s` |
+
+Runtime samples:
+
+| Run | Setup | Pin CPU blocks | Denoise | Step avg | Pass 1 total | Peak VRAM | Peak RAM | Resident block time | Streamed block time | Copy time | Hot blocks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Restart sample 1 | `53.8306s` | `45.3256s` | `48.6036s` | `6.0708s/it` | `117.9s` | `6.68 GB` | `46.60 GB` | `5.3954s` | `41.8514s` | `0.7978s` | `[0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]` |
+| Restart sample 2 | `52.3666s` | `47.4792s` | `58.3191s` | `7.2376s/it` | `128.8s` | `6.74 GB` | `46.60 GB` | `0.6015s` | `55.4244s` | `2.1821s` | `[0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]` |
+
+Insight: the planner itself is cheap and is seeing the expected large-weight universe, close to the ComfyUI staged model size. The major speedup compared to earlier `~70s` denoise runs likely comes from system/driver/cache state after restart rather than the planner changing execution. Still, these are the best observed Diffusers-side samples and are now the performance band to preserve while implementing the next dynamic-weight features.
+
 ## Current Verdict
 
 The modular pipeline plus custom dynamic manager is already more memory-stable than the old runner and can beat the old Diffusers-side denoise time in the best pinned-memory configuration.
