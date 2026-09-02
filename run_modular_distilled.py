@@ -21,7 +21,7 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
     LTX2ImageDenoiseStep,
     LTX2ImagePrepareLatentsStep,
 )
-from custom_blocks.ltx2_image.memory import DynamicWeightsConfig, apply_dynamic_weights
+from custom_blocks.ltx2_image.memory import DynamicWeightsConfig, apply_dynamic_weights, remove_dynamic_weights
 from custom_blocks.ltx2_image.memory_manager import LTX2DynamicBlockManager
 from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer2DModel
 from inference_utils import RunTracker, flush
@@ -35,16 +35,22 @@ def parse_int_list_env(name: str) -> tuple[int, ...]:
         return ()
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
 
+
+def parse_bool_env(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 DEVICE = os.environ.get("LTX_IMAGE_DEVICE", "cuda:0")
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_modular"
 MODEL_PATH = os.environ.get("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
-LOW_CPU_MEM_USAGE = True
-AUTO_CPU_OFFLOAD = os.environ.get("LTX_IMAGE_AUTO_CPU_OFFLOAD", "0") == "1"
-TEXT_ENCODER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD", "1") == "1"
-TRANSFORMER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD", "0") == "1"
+TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
+MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("LTX_IMAGE_LOW_CPU_MEM_USAGE", "1")
+AUTO_CPU_OFFLOAD = parse_bool_env("LTX_IMAGE_AUTO_CPU_OFFLOAD")
+TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_env("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD", "1")
+TRANSFORMER_GROUP_OFFLOAD = parse_bool_env("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD")
 TRANSFORMER_MEMORY_MANAGER = os.environ.get("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "manual_linear").lower()
 TRANSFORMER_MANAGER_PINNED_BLOCKS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PINNED_BLOCKS", "0"))
 TRANSFORMER_MANAGER_HOT_BLOCKS = parse_int_list_env("LTX_IMAGE_TRANSFORMER_HOT_BLOCKS")
@@ -59,25 +65,26 @@ TRANSFORMER_MANAGER_STREAMED_COPY_MODE = os.environ.get("LTX_IMAGE_TRANSFORMER_S
 TRANSFORMER_MANAGER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT = (
     os.environ.get("LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT", "0") == "1"
 )
-TRANSFORMER_MANAGER_SYNCHRONIZE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_SYNCHRONIZE", "0") == "1"
-TRANSFORMER_MANAGER_EMPTY_CACHE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_EMPTY_CACHE", "0") == "1"
-TRANSFORMER_MANAGER_VERBOSE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_VERBOSE", "0") == "1"
+TRANSFORMER_MANAGER_SYNCHRONIZE = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_SYNCHRONIZE")
+TRANSFORMER_MANAGER_EMPTY_CACHE = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_EMPTY_CACHE")
+TRANSFORMER_MANAGER_VERBOSE = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_VERBOSE")
 TRANSFORMER_MANAGER_WEIGHT_CACHE_GB = float(os.environ.get("LTX_IMAGE_TRANSFORMER_WEIGHT_CACHE_GB", "0.0"))
-TRANSFORMER_MANAGER_PIN_CPU_MEMORY = os.environ.get("LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY", "0") == "1"
-TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY = os.environ.get("LTX_IMAGE_TRANSFORMER_LAZY_PIN_CPU_MEMORY", "0") == "1"
+TRANSFORMER_MANAGER_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY")
+TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_TRANSFORMER_LAZY_PIN_CPU_MEMORY")
 TRANSFORMER_MANAGER_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS", "1"))
 TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE = int(os.environ.get("LTX_IMAGE_TRANSFORMER_SLIDING_WINDOW_SIZE", "0"))
-TRANSFORMER_MANAGER_PROFILE = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE", "0") == "1"
-TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES", "0") == "1"
-TRANSFORMER_MANAGER_PROFILE_LAYERS = os.environ.get("LTX_IMAGE_TRANSFORMER_PROFILE_LAYERS", "0") == "1"
-TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS = os.environ.get("LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS", "0") == "1"
-TRANSFORMER_MANAGER_PROFILE_FULL = os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL", "0") == "1"
-DYNAMIC_WEIGHTS_PLAN = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN", "0") == "1"
-DYNAMIC_WEIGHTS_VERBOSE = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1") == "1"
+TRANSFORMER_MANAGER_PROFILE = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE")
+TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES")
+TRANSFORMER_MANAGER_PROFILE_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFILE_LAYERS")
+TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS")
+TRANSFORMER_MANAGER_PROFILE_FULL = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL")
+DYNAMIC_WEIGHTS_PLAN = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN")
+DYNAMIC_WEIGHTS_VERBOSE = parse_bool_env("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1")
+RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
 ATTENTION_BACKEND = os.environ.get("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
 FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
 DROP_TRIVIAL_ATTENTION_MASK = (
-    os.environ.get("LTX_IMAGE_DROP_TRIVIAL_ATTENTION_MASK", "0") == "1"
+    parse_bool_env("LTX_IMAGE_DROP_TRIVIAL_ATTENTION_MASK")
     or ATTENTION_BACKEND in FLASH_COMPATIBLE_ATTENTION_BACKENDS
 )
 GROUP_OFFLOAD_CONFIG = {
@@ -85,11 +92,11 @@ GROUP_OFFLOAD_CONFIG = {
     "device": DEVICE,
     "text_encoder_group_offload": TEXT_ENCODER_GROUP_OFFLOAD,
     "text_encoder_offload_type": os.environ.get("LTX_IMAGE_TEXT_ENCODER_OFFLOAD_TYPE", "leaf_level"),
-    "text_encoder_use_stream": os.environ.get("LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM", "1") == "1",
+    "text_encoder_use_stream": parse_bool_env("LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM", "1"),
     "text_encoder_num_blocks_per_group": int(os.environ.get("LTX_IMAGE_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
     "transformer_group_offload": TRANSFORMER_GROUP_OFFLOAD,
     "transformer_offload_type": os.environ.get("LTX_IMAGE_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
-    "transformer_use_stream": os.environ.get("LTX_IMAGE_TRANSFORMER_OFFLOAD_STREAM", "1") == "1",
+    "transformer_use_stream": parse_bool_env("LTX_IMAGE_TRANSFORMER_OFFLOAD_STREAM", "1"),
     "transformer_num_blocks_per_group": int(os.environ.get("LTX_IMAGE_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
 }
 
@@ -102,10 +109,10 @@ GUIDANCE_RESCALE = float(os.environ.get("LTX_IMAGE_GUIDANCE_RESCALE", "0.7"))
 DECODE_TIMESTEP = float(os.environ.get("LTX_IMAGE_DECODE_TIMESTEP", "0.0"))
 DECODE_NOISE_SCALE_ENV = os.environ.get("LTX_IMAGE_DECODE_NOISE_SCALE")
 DECODE_NOISE_SCALE = None if DECODE_NOISE_SCALE_ENV in (None, "") else float(DECODE_NOISE_SCALE_ENV)
-PAG_ENABLED = os.environ.get("LTX_IMAGE_PAG_ENABLED", "0") == "1"
+PAG_ENABLED = parse_bool_env("LTX_IMAGE_PAG_ENABLED")
 PAG_SCALE = float(os.environ.get("LTX_IMAGE_PAG_SCALE", "0.2"))
 PAG_APPLIED_LAYERS = [int(x) for x in os.environ.get("LTX_IMAGE_PAG_LAYERS", "28").split(",") if x]
-FAKE_PROMPT_EMBEDS = os.environ.get("LTX_IMAGE_FAKE_PROMPT", "0") == "1"
+FAKE_PROMPT_EMBEDS = parse_bool_env("LTX_IMAGE_FAKE_PROMPT")
 
 prompt = os.environ.get(
     "LTX_IMAGE_PROMPT",
@@ -137,7 +144,7 @@ def apply_model_group_offload(model, *, prefix):
         "offload_device": torch.device(OFFLOAD_DEVICE),
         "offload_type": offload_type,
         "use_stream": GROUP_OFFLOAD_CONFIG[f"{prefix}_use_stream"],
-        "low_cpu_mem_usage": LOW_CPU_MEM_USAGE,
+        "low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE if prefix == "text_encoder" else MODEL_LOW_CPU_MEM_USAGE,
     }
     if offload_type == "block_level":
         kwargs["num_blocks_per_group"] = GROUP_OFFLOAD_CONFIG[f"{prefix}_num_blocks_per_group"]
@@ -250,6 +257,9 @@ def main():
         "pag_scale": PAG_SCALE if PAG_ENABLED else 0.0,
         "pag_applied_layers": PAG_APPLIED_LAYERS if PAG_ENABLED else None,
         "dtype": str(DTYPE),
+        "text_encoder_low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE,
+        "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
+        "reset_dynamic_memory_after_run": RESET_DYNAMIC_MEMORY_AFTER_RUN,
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
         "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
         "transformer_manager_pinned_blocks": TRANSFORMER_MANAGER_PINNED_BLOCKS,
@@ -289,6 +299,7 @@ def main():
             MODEL_PATH,
             subfolder="text_encoder",
             torch_dtype=DTYPE,
+            low_cpu_mem_usage=TEXT_ENCODER_LOW_CPU_MEM_USAGE,
         )
         record_event("load_text_encoder", time.time() - event_t0, source=MODEL_PATH)
 
@@ -300,7 +311,7 @@ def main():
                 time.time() - event_t0,
                 offload_type=GROUP_OFFLOAD_CONFIG["text_encoder_offload_type"],
                 use_stream=GROUP_OFFLOAD_CONFIG["text_encoder_use_stream"],
-                low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+                low_cpu_mem_usage=TEXT_ENCODER_LOW_CPU_MEM_USAGE,
             )
         else:
             text_encoder.to(DEVICE)
@@ -337,7 +348,10 @@ def main():
 
     event_t0 = time.time()
     connectors = LTX2ImageTextConnectors.from_pretrained(
-        MODEL_PATH, subfolder="connectors", torch_dtype=DTYPE
+        MODEL_PATH,
+        subfolder="connectors",
+        torch_dtype=DTYPE,
+        low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
     ).to(DEVICE)
     record_event("load_connectors_to_cuda", time.time() - event_t0, source=MODEL_PATH)
 
@@ -381,6 +395,7 @@ def main():
         subfolder="transformer",
         torch_dtype=DTYPE,
         device_map="cpu",
+        low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
     )
     record_event("load_transformer", time.time() - event_t0, source=MODEL_PATH)
 
@@ -485,7 +500,7 @@ def main():
             time.time() - event_t0,
             offload_type=GROUP_OFFLOAD_CONFIG["transformer_offload_type"],
             use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
-            low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+            low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
         )
     else:
         transformer.to(DEVICE)
@@ -560,13 +575,20 @@ def main():
     del connector_prompt_embeds, connector_attention_mask
     if transformer_manager is not None:
         transformer_manager.detach(transformer)
+    if DYNAMIC_WEIGHTS_PLAN:
+        remove_dynamic_weights(transformer)
     del prepare_pipe, denoise_pipe, transformer, scheduler
     flush()
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
     t0 = step_start("Pass 2: Decode VAE")
 
     event_t0 = time.time()
-    vae = AutoencoderKLLTX2Video.from_pretrained(MODEL_PATH, subfolder="vae", torch_dtype=DTYPE).to(DEVICE)
+    vae = AutoencoderKLLTX2Video.from_pretrained(
+        MODEL_PATH,
+        subfolder="vae",
+        torch_dtype=DTYPE,
+        low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
+    ).to(DEVICE)
     record_event("load_vae_to_cuda", time.time() - event_t0, source=MODEL_PATH)
 
     event_t0 = time.time()
@@ -610,6 +632,14 @@ def main():
     print(f"  TOTAL: {total_time:.1f}s | Peak VRAM: {tracker.global_peak_vram:.2f} GB | Peak RAM: {tracker.global_peak_ram:.2f} GB")
     print(f"  Output: {output_path}")
     print(f"  Metrics JSON: {metrics_path}")
+    if RESET_DYNAMIC_MEMORY_AFTER_RUN:
+        event_t0 = time.time()
+        flush()
+        if torch.cuda.is_available() and hasattr(torch.cuda, "ipc_collect"):
+            torch.cuda.ipc_collect()
+        record_event("reset_dynamic_memory_after_run", time.time() - event_t0)
+        metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
+        print("  Dynamic memory state reset after run.")
     print("=" * 70)
 
 

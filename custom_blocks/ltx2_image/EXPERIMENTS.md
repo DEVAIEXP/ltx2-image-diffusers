@@ -575,3 +575,29 @@ Insight: this strongly suggests that Windows standby/cache pressure was a hidden
 The modular pipeline plus custom dynamic manager is already more memory-stable than the old runner and can beat the old Diffusers-side denoise time in the best pinned-memory configuration.
 
 However, ComfyUI remains much faster. Matching it likely requires moving from block/module offload to layer-level staged weight casting with reusable buffers.
+
+## Low CPU Memory and Cleanup A/B
+
+Question: whether `low_cpu_mem_usage` contributes to Windows standby/cache growth and whether an internal cleanup can reduce the need for an external standby-list clear.
+
+Code change:
+
+```powershell
+$env:LTX_IMAGE_LOW_CPU_MEM_USAGE="0"              # applies to transformer/connectors/VAE only
+$env:LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN="1" # optional Python/CUDA cleanup at script end
+```
+
+The text encoder intentionally remains fixed at `low_cpu_mem_usage=True` so the A/B test isolates the image-side components. The runner now records `text_encoder_low_cpu_mem_usage`, `model_low_cpu_mem_usage`, and `reset_dynamic_memory_after_run` in the metrics JSON.
+
+Interpretation before testing:
+
+- `low_cpu_mem_usage=True` is not proven to be the direct cause of standby cache growth, but it may influence how shards/memmaps/file cache are touched during loading.
+- `low_cpu_mem_usage=False` may increase temporary RAM pressure because weights can be materialized more directly in host memory before placement.
+- ComfyUI does not appear to call a global Windows standby-list cleaner. Its `reset_cast_buffers()` resets ComfyUI dynamic VRAM state, stream cast buffers, dirty mmap state, dynamic pin activity, and CUDA cache. Our new reset flag is closer to that kind of local cleanup, not to `EmptyStandbyList`.
+
+Recommended protocol:
+
+1. Run the current baseline with `LTX_IMAGE_LOW_CPU_MEM_USAGE="1"` and note setup, denoise, RAM cache/standby, and pass total.
+2. Clear Windows standby cache externally if you want a cold comparable run.
+3. Run with `LTX_IMAGE_LOW_CPU_MEM_USAGE="0"` using the same env vars and compare setup/pin time, denoise time, peak RAM, and standby cache growth.
+4. Repeat with `LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN="1"` and check whether the next run degrades less without external cache clearing.
