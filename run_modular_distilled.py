@@ -390,14 +390,21 @@ def main():
     record_event("offload_connector_outputs", 0.0)
 
     event_t0 = time.time()
-    transformer = LTX2ImageTransformer2DModel.from_pretrained(
-        MODEL_PATH,
-        subfolder="transformer",
-        torch_dtype=DTYPE,
-        device_map="cpu",
+    transformer_load_kwargs = {
+        "subfolder": "transformer",
+        "torch_dtype": DTYPE,
+        "low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
+    }
+    if MODEL_LOW_CPU_MEM_USAGE:
+        transformer_load_kwargs["device_map"] = "cpu"
+    transformer = LTX2ImageTransformer2DModel.from_pretrained(MODEL_PATH, **transformer_load_kwargs)
+    record_event(
+        "load_transformer",
+        time.time() - event_t0,
+        source=MODEL_PATH,
         low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
+        device_map=transformer_load_kwargs.get("device_map"),
     )
-    record_event("load_transformer", time.time() - event_t0, source=MODEL_PATH)
 
     event_t0 = time.time()
     patched_attention_processors, resolved_attention_backend, drop_trivial_attention_mask = apply_transformer_attention_backend(transformer)

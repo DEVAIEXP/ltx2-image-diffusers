@@ -601,3 +601,5 @@ Recommended protocol:
 2. Clear Windows standby cache externally if you want a cold comparable run.
 3. Run with `LTX_IMAGE_LOW_CPU_MEM_USAGE="0"` using the same env vars and compare setup/pin time, denoise time, peak RAM, and standby cache growth.
 4. Repeat with `LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN="1"` and check whether the next run degrades less without external cache clearing.
+
+Update: Diffusers rejects `low_cpu_mem_usage=False` together with `device_map="cpu"` during `from_pretrained`. The runner now keeps `device_map="cpu"` only when `LTX_IMAGE_LOW_CPU_MEM_USAGE="1"`. When testing `LTX_IMAGE_LOW_CPU_MEM_USAGE="0"`, transformer loading uses the regular CPU loading path before the custom manager is attached. Treat this as a loading-path A/B, not as a perfectly isolated boolean change.
