@@ -874,3 +874,12 @@ Result after increasing the dynamic small tensor resident threshold to `1024 KB`
 | `linear_runtime` + module budget + `1024 KB` small tensors | `0.0282 GB` | `444` | `23.3566s / 18.5181 GB` | `13.9789s` | `1.5810s/it` | `56.1s` | `0.3306s` | `6.32/6.63 GiB` | `6.69 GB` | `27.36 GB` |
 
 Insight: this is the first generic dynamic weights path to beat the ComfyUI denoise loop in isolation on this test. The remaining gap is setup/model initialization: Diffusers still loads the transformer then spends tens of seconds pinning and placing CPU/GPU tensors, while the ComfyUI dynamic loader reports sub-second dynamic preparation plus a larger initialization phase inside the sampler.
+
+### Dynamic VRAM Portability Notes
+
+Comfy-Org/comfy-aimdo issue #25 reports that `ModelVBAR` allocation can fail on NVIDIA GRID / vGPU environments and should degrade gracefully instead of hard-crashing. This does not affect the current `dynamic_weights` implementation because it uses regular CPU/CUDA tensors and pinned memory, not `comfy-aimdo`/VBAR. It is still an important design constraint if we later add a VBAR-like allocator or virtual device:
+
+- Detect allocator support at initialization time, not during the first model forward.
+- Treat VBAR/managed host buffer allocation failure as an optional acceleration failure, not a fatal model-load failure.
+- Keep a plain pinned-memory path as the portable fallback for vGPU, Linux setups without the allocator, or Windows systems where privilege/driver behavior differs.
+- Log the selected dynamic weight backend clearly so benchmark results show whether the run used VBAR-like staging, pinned host tensors, or regular pageable CPU tensors.
