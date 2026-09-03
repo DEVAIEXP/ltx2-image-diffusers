@@ -431,7 +431,7 @@ def main():
         else:
             print(f"Using dynamic weights preset: {DYNAMIC_WEIGHTS_PRESET}", flush=True)
     if DYNAMIC_WEIGHTS_PIN_CPU_MEMORY and not DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY:
-        print("  [dynamic-weights] disabling pinned CPU memory on WSL; set LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0 to force it.", flush=True)
+        print("  [dynamic-weights] disabling pinned CPU memory on WSL; set DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0 (or legacy LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0) to force it.", flush=True)
 
     tracker = RunTracker(DEVICE, run_metrics, interval=0.1)
     record_event = tracker.record_event
