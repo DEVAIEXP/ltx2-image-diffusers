@@ -1020,13 +1020,13 @@ Additional Ubuntu native preset probes:
 
 Insight: on Ubuntu native, `LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM=1` works and is currently the fastest full-run path. The best run was `ubuntu_6` at `43.7s` total, with Pass 1 only `26.1s`. This is much faster than the earlier ComfyUI reference total (`72.11s`) and shows that Linux native plus pinned dynamic weights is the strongest platform so far. The intended low-RAM test needs to be repeated with explicit resident budget cleanup, because `ubuntu_7` still selected the same 11 resident modules and moved `5.5077 GB`, so it did not validate a true lower-budget profile.
 
-Architecture note: dynamic weights presets now live with the `dynamic_weights` manager rather than in the runner. The runner resolves `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET=auto` through that manager and then passes explicit parameters to `DynamicWeightsConfig`. Resident module presets use `auto`, which lets the manager infer repeated module groups from the PyTorch module graph instead of hardcoding LTX-specific names. This keeps the script thin and makes the policy easier to port toward a Diffusers-native design later.
+Architecture note: dynamic weights presets now live with the `dynamic_weights` manager rather than in the runner. The runner resolves `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET=auto` through that manager and then passes explicit parameters to `DynamicWeightsConfig`. Resident module presets use `auto`, which lets the manager infer repeated module groups from the PyTorch module graph instead of hardcoding LTX-specific names. This keeps the script thin and makes the policy easier to port toward a Diffusers-native design later. The legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET` alias remains valid for old commands.
 
 Windows auto preset validation:
 
 | Run | Key settings | Dynamic setup | Denoise | Pass 1 | Peak VRAM | Peak RAM |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Windows auto | `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET=auto`, standby purge before transformer | `31.9337s` | `14.5646s` | `56.9s` | `6.77 GB` | `27.36 GB` |
+| Windows auto | `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET=auto`, standby purge before transformer | `31.9337s` | `14.5646s` | `56.9s` | `6.77 GB` | `27.36 GB` |
 
 Insight: `auto` resolved to the Windows fast path and inferred `resolved_resident_module_patterns=['^transformer_blocks\\.\\d+$']` from the module graph, selecting the same 11 resident modules as the previous hand-tuned path. This preserves the best Windows denoise behavior while removing the LTX-specific resident-module regex from the preset policy.
 
@@ -1052,4 +1052,14 @@ For this step the wrapper still uses the normal Diffusers loading path and appli
 
 ## Dynamic Weights Profile Output
 
-`DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE=0` (or legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_SHOW_PROFILE=0`) suppresses the printed `[dynamic-weights-profile]` block while keeping the runtime summary in metrics JSON. This is useful when running repeated benchmarks without filling the chat/context with long profile dumps.
+`DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE=1` (or legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_SHOW_PROFILE=1`) enables the printed `[dynamic-weights-profile]` block. That flag controls the detailed dynamic weights profile, such as resident modules and copy breakdowns, and defaults to `0` to keep benchmark output compact.
+
+Runner-level metric output now uses generic `DIFFUSERS_RUNNER_*` aliases, with old `LTX_IMAGE_*` names kept as fallback:
+
+- `DIFFUSERS_RUNNER_METRICS_LEVEL=0`: quiet console metrics and no metrics JSON.
+- `DIFFUSERS_RUNNER_METRICS_LEVEL=1`: show console timings/events/denoise steps, but do not save metrics JSON.
+- `DIFFUSERS_RUNNER_METRICS_LEVEL=2`: show console timings and save metrics JSON.
+- `DIFFUSERS_RUNNER_SAVE_METRICS=1`: save metrics JSON even when the metrics level is `0` or `1`.
+- `DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE=1`: additionally print the compact `[dynamic-weights] setup=...` line during setup.
+
+New benchmark commands should prefer `DIFFUSERS_DYNAMIC_WEIGHTS_*` for the manager and `DIFFUSERS_RUNNER_*` for script/runtime controls. Historical `LTX_IMAGE_*` entries above are preserved as the exact commands used during those experiments.

@@ -35,8 +35,24 @@ from custom_blocks.ltx2_image.memory import (
 from inference_utils import RunTracker, flush
 
 
+_RUNNER_ENV_PREFIX = "DIFFUSERS_RUNNER_"
+_LEGACY_RUNNER_ENV_PREFIX = "LTX_IMAGE_"
+
+
+def runner_env_names(name: str) -> tuple[str, ...]:
+    if name.startswith("LTX_IMAGE_DYNAMIC_WEIGHTS_") or name.startswith("DIFFUSERS_DYNAMIC_WEIGHTS_"):
+        return dynamic_weights_env_names(name)
+    if name.startswith(_LEGACY_RUNNER_ENV_PREFIX):
+        generic_name = _RUNNER_ENV_PREFIX + name[len(_LEGACY_RUNNER_ENV_PREFIX) :]
+        return (generic_name, name)
+    if name.startswith(_RUNNER_ENV_PREFIX):
+        legacy_name = _LEGACY_RUNNER_ENV_PREFIX + name[len(_RUNNER_ENV_PREFIX) :]
+        return (name, legacy_name)
+    return (name,)
+
+
 def env_value(name: str, default: str = "") -> str:
-    for env_name in dynamic_weights_env_names(name):
+    for env_name in runner_env_names(name):
         if env_name in os.environ:
             return os.environ[env_name]
     return os.environ.get(name, default)
@@ -46,13 +62,30 @@ def parse_bool_env(name: str, default: str = "0") -> bool:
     return env_value(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def parse_metrics_level() -> int:
+    value = env_value("LTX_IMAGE_METRICS_LEVEL", "0").strip()
+    try:
+        level = int(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid DIFFUSERS_RUNNER_METRICS_LEVEL/LTX_IMAGE_METRICS_LEVEL={value!r}. "
+            "Valid values: 0, 1, 2."
+        ) from exc
+    if level not in {0, 1, 2}:
+        raise ValueError(
+            f"Invalid DIFFUSERS_RUNNER_METRICS_LEVEL/LTX_IMAGE_METRICS_LEVEL={value!r}. "
+            "Valid values: 0, 1, 2."
+        )
+    return level
+
+
 RUNNING_ON_WSL = is_wsl_environment()
-DEVICE = os.environ.get("LTX_IMAGE_DEVICE", "cuda:0")
+DEVICE = env_value("LTX_IMAGE_DEVICE", "cuda:0")
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_modular"
-MODEL_PATH = os.environ.get("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
+MODEL_PATH = env_value("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
 MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("LTX_IMAGE_LOW_CPU_MEM_USAGE", "1")
 DYNAMIC_WEIGHTS_SETTINGS = DynamicWeightsSettings.from_env(
@@ -66,6 +99,9 @@ DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.effective_preset
 
 
 def preset_env(name: str, default: str = "") -> str:
+    for env_name in runner_env_names(name):
+        if env_name in os.environ:
+            return os.environ[env_name]
     return DYNAMIC_WEIGHTS_SETTINGS.preset_value(name, default)
 
 
@@ -86,6 +122,9 @@ RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_
 PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
 PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_AFTER_RUN")
+METRICS_LEVEL = parse_metrics_level()
+SHOW_METRICS = METRICS_LEVEL >= 1 or parse_bool_env("LTX_IMAGE_SHOW_METRICS")
+SAVE_METRICS = METRICS_LEVEL >= 2 or parse_bool_env("LTX_IMAGE_SAVE_METRICS")
 ATTENTION_BACKEND = preset_env("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
 FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
 DROP_TRIVIAL_ATTENTION_MASK = (
@@ -100,31 +139,31 @@ GROUP_OFFLOAD_CONFIG = {
     "text_encoder_use_stream": parse_bool_preset_env("LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM", "1"),
     "text_encoder_num_blocks_per_group": int(preset_env("LTX_IMAGE_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
     "transformer_group_offload": TRANSFORMER_GROUP_OFFLOAD,
-    "transformer_offload_type": os.environ.get("LTX_IMAGE_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
+    "transformer_offload_type": env_value("LTX_IMAGE_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
     "transformer_use_stream": parse_bool_env("LTX_IMAGE_TRANSFORMER_OFFLOAD_STREAM", "1"),
-    "transformer_num_blocks_per_group": int(os.environ.get("LTX_IMAGE_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
+    "transformer_num_blocks_per_group": int(env_value("LTX_IMAGE_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
 }
 
-WIDTH = int(os.environ.get("LTX_IMAGE_WIDTH", "1280"))
-HEIGHT = int(os.environ.get("LTX_IMAGE_HEIGHT", "704"))
-SEED = int(os.environ.get("LTX_IMAGE_SEED", "43"))
-NUM_INFERENCE_STEPS = int(os.environ.get("LTX_IMAGE_STEPS", "8"))
-GUIDANCE_SCALE = float(os.environ.get("LTX_IMAGE_GUIDANCE_SCALE", "1.0"))
-GUIDANCE_RESCALE = float(os.environ.get("LTX_IMAGE_GUIDANCE_RESCALE", "0.7"))
-DECODE_TIMESTEP = float(os.environ.get("LTX_IMAGE_DECODE_TIMESTEP", "0.0"))
-DECODE_NOISE_SCALE_ENV = os.environ.get("LTX_IMAGE_DECODE_NOISE_SCALE")
+WIDTH = int(env_value("LTX_IMAGE_WIDTH", "1280"))
+HEIGHT = int(env_value("LTX_IMAGE_HEIGHT", "704"))
+SEED = int(env_value("LTX_IMAGE_SEED", "43"))
+NUM_INFERENCE_STEPS = int(env_value("LTX_IMAGE_STEPS", "8"))
+GUIDANCE_SCALE = float(env_value("LTX_IMAGE_GUIDANCE_SCALE", "1.0"))
+GUIDANCE_RESCALE = float(env_value("LTX_IMAGE_GUIDANCE_RESCALE", "0.7"))
+DECODE_TIMESTEP = float(env_value("LTX_IMAGE_DECODE_TIMESTEP", "0.0"))
+DECODE_NOISE_SCALE_ENV = env_value("LTX_IMAGE_DECODE_NOISE_SCALE")
 DECODE_NOISE_SCALE = None if DECODE_NOISE_SCALE_ENV in (None, "") else float(DECODE_NOISE_SCALE_ENV)
 PAG_ENABLED = parse_bool_env("LTX_IMAGE_PAG_ENABLED")
-PAG_SCALE = float(os.environ.get("LTX_IMAGE_PAG_SCALE", "0.2"))
-PAG_APPLIED_LAYERS = [int(x) for x in os.environ.get("LTX_IMAGE_PAG_LAYERS", "28").split(",") if x]
+PAG_SCALE = float(env_value("LTX_IMAGE_PAG_SCALE", "0.2"))
+PAG_APPLIED_LAYERS = [int(x) for x in env_value("LTX_IMAGE_PAG_LAYERS", "28").split(",") if x]
 FAKE_PROMPT_EMBEDS = parse_bool_env("LTX_IMAGE_FAKE_PROMPT")
 GENERATION_REPEATS = max(1, int(preset_env("LTX_IMAGE_GENERATION_REPEATS", "1")))
 
-prompt = os.environ.get(
+prompt = env_value(
     "LTX_IMAGE_PROMPT",
     "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy.",
 )
-negative_prompt = os.environ.get("LTX_IMAGE_NEGATIVE_PROMPT", "")
+negative_prompt = env_value("LTX_IMAGE_NEGATIVE_PROMPT", "")
 
 
 def build_run_slug(seed):
@@ -164,7 +203,10 @@ def get_attention_backend():
         return AttentionBackendName(ATTENTION_BACKEND)
     except ValueError as exc:
         valid = ", ".join(backend.value for backend in AttentionBackendName)
-        raise ValueError(f"Invalid LTX_IMAGE_ATTENTION_BACKEND={ATTENTION_BACKEND!r}. Valid values: {valid}") from exc
+        raise ValueError(
+            f"Invalid DIFFUSERS_RUNNER_ATTENTION_BACKEND/LTX_IMAGE_ATTENTION_BACKEND={ATTENTION_BACKEND!r}. "
+            f"Valid values: {valid}"
+        ) from exc
 
 
 def _is_trivial_zero_attention_mask(attn_mask):
@@ -187,7 +229,7 @@ def install_trivial_mask_flash_wrapper():
         def wrapped_backend_fn(*args, _backend_fn=backend_fn, _backend=backend, **kwargs):
             attn_mask = kwargs.get("attn_mask")
             if _is_trivial_zero_attention_mask(attn_mask):
-                if os.environ.get("LTX_IMAGE_LOG_ATTENTION_MASK", "0") == "1":
+                if env_value("LTX_IMAGE_LOG_ATTENTION_MASK", "0") == "1":
                     print(f"  [attention_mask] dropping trivial mask inside backend {_backend.value}", flush=True)
                 kwargs["attn_mask"] = None
             return _backend_fn(*args, **kwargs)
@@ -354,12 +396,13 @@ def denoise_progress_callback(components, step_index, timestep, callback_kwargs)
     reserved_gb = torch.cuda.memory_reserved(DEVICE) / 1024**3
     total_steps = len(denoise_progress_callback.timesteps)
     avg_elapsed = total_elapsed / (step_index + 1)
-    print(
-        f"  [denoise] step {step_index + 1}/{total_steps} timestep={float(timestep):.4f} "
-        f"elapsed={step_elapsed:.4f}s avg={avg_elapsed:.4f}s/it "
-        f"torch_alloc={used_gb:.2f} GiB torch_reserved={reserved_gb:.2f} GiB",
-        flush=True,
-    )
+    if SHOW_METRICS:
+        print(
+            f"  [denoise] step {step_index + 1}/{total_steps} timestep={float(timestep):.4f} "
+            f"elapsed={step_elapsed:.4f}s avg={avg_elapsed:.4f}s/it "
+            f"torch_alloc={used_gb:.2f} GiB torch_reserved={reserved_gb:.2f} GiB",
+            flush=True,
+        )
     return callback_kwargs
 
 
@@ -396,6 +439,9 @@ def main():
         "purge_windows_standby_before_run": PURGE_WINDOWS_STANDBY_BEFORE_RUN,
         "purge_windows_standby_before_transformer": PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER,
         "purge_windows_standby_after_run": PURGE_WINDOWS_STANDBY_AFTER_RUN,
+        "metrics_level": METRICS_LEVEL,
+        "show_metrics": SHOW_METRICS,
+        "save_metrics": SAVE_METRICS,
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
         "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
         **DYNAMIC_WEIGHTS_SETTINGS.as_metrics(),
@@ -416,7 +462,7 @@ def main():
     if DYNAMIC_WEIGHTS_PIN_CPU_MEMORY and not DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY:
         print("  [dynamic-weights] disabling pinned CPU memory on WSL; set DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0 (or legacy LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0) to force it.", flush=True)
 
-    tracker = RunTracker(DEVICE, run_metrics, interval=0.1)
+    tracker = RunTracker(DEVICE, run_metrics, interval=0.1, show_metrics=SHOW_METRICS)
     record_event = tracker.record_event
     step_start = tracker.step_start
     step_end = tracker.step_end
@@ -477,7 +523,8 @@ def main():
         del prompt_pipe, text_encoder, tokenizer
         flush()
 
-    print(f"  prompt_embeds shape: {prompt_embeds.shape}")
+    if SHOW_METRICS:
+        print(f"  prompt_embeds shape: {prompt_embeds.shape}")
     step_end("Pass 0: Encode prompts", t0)
 
     t0 = step_start(f"Pass 1: Generate at {WIDTH}x{HEIGHT}")
@@ -569,7 +616,11 @@ def main():
     )
 
     if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and TRANSFORMER_MEMORY_MANAGER != "off":
-        raise ValueError("Dynamic weights execution currently requires LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER='off'. Use execution_mode='plan' with the block manager.")
+        raise ValueError(
+            "Dynamic weights execution currently requires "
+            "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER/LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER='off'. "
+            "Use execution_mode='plan' with the block manager."
+        )
 
     if dynamic_weights_enabled:
         event_t0 = time.time()
@@ -684,7 +735,8 @@ def main():
         latent_height = prepare_state["latent_height"]
         latent_width = prepare_state["latent_width"]
         latent_channels = prepare_state["in_channels"]
-        print(f"  Image latent: {image_latent.shape}")
+        if SHOW_METRICS:
+            print(f"  Image latent: {image_latent.shape}")
         del prepare_state, denoise_state
 
     if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
@@ -735,7 +787,6 @@ def main():
 
     t0 = step_start("Save Image")
     output_dir.mkdir(parents=True, exist_ok=True)
-    metrics_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{run_slug}.png"
     image.save(output_path)
     print(f"  Image saved successfully to: {output_path}")
@@ -747,23 +798,28 @@ def main():
     run_metrics["global_peak_ram_gb"] = round(tracker.global_peak_ram, 4)
 
     metrics_path = metrics_dir / f"{run_slug}.json"
-    metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
+    if SAVE_METRICS:
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
 
     print("\n" + "=" * 70)
     print(f"  TOTAL: {total_time:.1f}s | Peak VRAM: {tracker.global_peak_vram:.2f} GB | Peak RAM: {tracker.global_peak_ram:.2f} GB")
     print(f"  Output: {output_path}")
-    print(f"  Metrics JSON: {metrics_path}")
+    if SAVE_METRICS:
+        print(f"  Metrics JSON: {metrics_path}")
     if RESET_DYNAMIC_MEMORY_AFTER_RUN:
         event_t0 = time.time()
         flush()
         if torch.cuda.is_available() and hasattr(torch.cuda, "ipc_collect"):
             torch.cuda.ipc_collect()
         record_event("reset_dynamic_memory_after_run", time.time() - event_t0)
-        metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
+        if SAVE_METRICS:
+            metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
         print("  Dynamic memory state reset after run.")
     if PURGE_WINDOWS_STANDBY_AFTER_RUN:
         purge_windows_standby_cache_event(record_event, "purge_windows_standby_after_run")
-        metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
+        if SAVE_METRICS:
+            metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
     print("=" * 70)
 
 

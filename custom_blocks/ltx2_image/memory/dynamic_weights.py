@@ -983,8 +983,8 @@ def load_dynamic_weights_settings_from_env(
         resident_module_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0")),
         resident_module_patterns=_parse_pattern_list_value(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS", "")),
         resident_module_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower(),
-        verbose=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE", "1"),
-        show_profile=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE", "1"),
+        verbose=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE", "0"),
+        show_profile=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE", "0"),
     )
     return DynamicWeightsSettings(
         requested_preset=requested_preset,
