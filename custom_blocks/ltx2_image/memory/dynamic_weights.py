@@ -354,6 +354,28 @@ class DynamicWeightsSettings:
         return load_dynamic_weights_settings_from_env(**kwargs)
 
 
+def build_dynamic_weights_event_payload(
+    settings: DynamicWeightsSettings,
+    state: "DynamicWeightsState",
+) -> dict[str, Any]:
+    summary = state.as_dict()
+    config = settings.config
+    return {
+        "module_count": summary["module_count"],
+        "total_gb": summary["total_gb"],
+        "bytes_by_placement": summary["bytes_by_placement"],
+        "execution_mode": config.execution_mode,
+        "pin_cpu_memory": settings.effective_pin_cpu_memory,
+        "lazy_pin_cpu_memory": config.lazy_pin_cpu_memory,
+        "allow_pin_memory_fallback": config.allow_pin_memory_fallback,
+        "pin_weight_budget_gb": config.pin_weight_budget_gb,
+        "pin_weight_selection": config.pin_weight_selection,
+        "patched_module_count": summary["patched_module_count"],
+        "resolved_resident_module_patterns": summary["resolved_resident_module_patterns"],
+        "setup_runtime": summary["setup_runtime"],
+    }
+
+
 @dataclass(frozen=True)
 class DynamicWeightPlanEntry:
     module_name: str

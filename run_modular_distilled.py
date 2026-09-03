@@ -26,6 +26,7 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
 from custom_blocks.ltx2_image.memory import (
     DynamicWeightsSettings,
     apply_dynamic_weights,
+    build_dynamic_weights_event_payload,
     dynamic_weights_env_names,
     from_pretrained_with_dynamic_weights,
     is_wsl_environment,
@@ -76,22 +77,8 @@ TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("LTX_IMAGE_TEXT_ENCODER_GROUP
 TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD")
 TRANSFORMER_MEMORY_MANAGER = preset_env("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "off").lower()
 DYNAMIC_WEIGHTS_CONFIG = DYNAMIC_WEIGHTS_SETTINGS.config
-DYNAMIC_WEIGHTS_PLAN = DYNAMIC_WEIGHTS_SETTINGS.plan
 DYNAMIC_WEIGHTS_EXECUTION_MODE = DYNAMIC_WEIGHTS_CONFIG.execution_mode
 DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.requested_pin_cpu_memory
-DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_CONFIG.lazy_pin_cpu_memory
-DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK = DYNAMIC_WEIGHTS_CONFIG.allow_pin_memory_fallback
-DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL = DYNAMIC_WEIGHTS_SETTINGS.disable_pin_on_wsl
-DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = DYNAMIC_WEIGHTS_CONFIG.pin_cpu_workers
-DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB = DYNAMIC_WEIGHTS_CONFIG.pin_weight_budget_gb
-DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION = DYNAMIC_WEIGHTS_CONFIG.pin_weight_selection
-DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB = DYNAMIC_WEIGHTS_CONFIG.small_tensor_threshold_bytes // 1024
-DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = DYNAMIC_WEIGHTS_CONFIG.resident_weight_budget_gb
-DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION = DYNAMIC_WEIGHTS_CONFIG.resident_weight_selection
-DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = DYNAMIC_WEIGHTS_CONFIG.resident_module_budget_gb
-DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS = DYNAMIC_WEIGHTS_CONFIG.resident_module_patterns
-DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION = DYNAMIC_WEIGHTS_CONFIG.resident_module_selection
-DYNAMIC_WEIGHTS_VERBOSE = DYNAMIC_WEIGHTS_CONFIG.verbose
 DYNAMIC_WEIGHTS_SHOW_PROFILE = DYNAMIC_WEIGHTS_CONFIG.show_profile
 DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.effective_pin_cpu_memory
 PRE_VAE_CLEANUP_REPEATS = int(preset_env("LTX_IMAGE_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
@@ -587,22 +574,10 @@ def main():
     if dynamic_weights_enabled:
         event_t0 = time.time()
         dynamic_weights_hook = apply_dynamic_weights(transformer, dynamic_weights_config)
-        dynamic_weights_summary = dynamic_weights_hook.state.as_dict()
         record_event(
             "build_dynamic_weights_plan",
             time.time() - event_t0,
-            module_count=dynamic_weights_summary["module_count"],
-            total_gb=dynamic_weights_summary["total_gb"],
-            bytes_by_placement=dynamic_weights_summary["bytes_by_placement"],
-            execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
-            pin_cpu_memory=DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
-            lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
-            allow_pin_memory_fallback=DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
-            pin_weight_budget_gb=DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
-            pin_weight_selection=DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
-            patched_module_count=dynamic_weights_summary["patched_module_count"],
-            resolved_resident_module_patterns=dynamic_weights_summary["resolved_resident_module_patterns"],
-            setup_runtime=dynamic_weights_summary["setup_runtime"],
+            **build_dynamic_weights_event_payload(DYNAMIC_WEIGHTS_SETTINGS, dynamic_weights_hook.state),
         )
 
     event_t0 = time.time()
