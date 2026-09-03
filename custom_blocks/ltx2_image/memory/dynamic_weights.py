@@ -19,6 +19,9 @@ _DYNAMIC_WEIGHTS_HOOK = "dynamic_weights"
 _DYNAMIC_WEIGHTS_ENV_PREFIX = "DIFFUSERS_DYNAMIC_WEIGHTS_"
 _LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX = "LTX_IMAGE_DYNAMIC_WEIGHTS_"
 _PIN_MEMORY_ERRORS = (RuntimeError, getattr(torch, "AcceleratorError", RuntimeError))
+_DEFAULT_ALWAYS_RESIDENT_MODULE_PATTERNS = (
+    r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
+)
 
 
 def generic_dynamic_weights_env_name(name: str) -> str:
@@ -263,7 +266,7 @@ def _parse_bool_value(value: str) -> bool:
 
 
 def _parse_pattern_list_value(value: str) -> tuple[str, ...]:
-    return tuple(item.strip() for item in value.split(";") if item.strip())
+    return tuple(item.strip() for item in re.split(r"[;,]", value) if item.strip())
 
 
 @dataclass(frozen=True)
@@ -1059,7 +1062,7 @@ def load_dynamic_weights_settings_from_env(
     offload_device: str | torch.device = "cpu",
     target_module_classes: tuple[type[nn.Module], ...] = (nn.Linear,),
     skip_modules_pattern: tuple[str, ...] = (),
-    always_resident_modules_pattern: tuple[str, ...] = (),
+    always_resident_modules_pattern: tuple[str, ...] | None = None,
     running_on_wsl: bool | None = None,
     environ: Mapping[str, str] | None = None,
     default_preset: str = "",
@@ -1082,6 +1085,10 @@ def load_dynamic_weights_settings_from_env(
     def preset_bool(name: str, default: str = "0") -> bool:
         return _parse_bool_value(preset_env(name, default))
 
+    default_always_resident_patterns = _DEFAULT_ALWAYS_RESIDENT_MODULE_PATTERNS
+    if always_resident_modules_pattern is not None:
+        default_always_resident_patterns = always_resident_modules_pattern
+
     plan = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_PLAN")
     execution_mode = preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
     requested_pin_cpu_memory = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
@@ -1095,7 +1102,12 @@ def load_dynamic_weights_settings_from_env(
         offload_device=offload_device,
         target_module_classes=target_module_classes,
         skip_modules_pattern=skip_modules_pattern,
-        always_resident_modules_pattern=always_resident_modules_pattern,
+        always_resident_modules_pattern=_parse_pattern_list_value(
+            preset_env(
+                "DIFFUSERS_DYNAMIC_WEIGHTS_ALWAYS_RESIDENT_MODULE_PATTERNS",
+                ",".join(default_always_resident_patterns),
+            )
+        ),
         small_tensor_threshold_bytes=int(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024")) * 1024,
         execution_mode=execution_mode,
         pin_cpu_memory=effective_pin_cpu_memory,

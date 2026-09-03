@@ -57,10 +57,6 @@ MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("LTX_IMAGE_LOW_CPU_MEM_USAGE", "1")
 DYNAMIC_WEIGHTS_SETTINGS = DynamicWeightsSettings.from_env(
     execution_device=DEVICE,
     offload_device=OFFLOAD_DEVICE,
-    target_module_classes=(torch.nn.Linear,),
-    always_resident_modules_pattern=(
-        r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
-    ),
     running_on_wsl=RUNNING_ON_WSL,
     default_preset="auto",
 )
