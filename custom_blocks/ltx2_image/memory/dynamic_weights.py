@@ -470,11 +470,8 @@ class DynamicWeightsHook(ModelHook):
         self.config = config
         self.state = DynamicWeightsState()
         self._patched_modules: list[tuple[nn.Module, object]] = []
-        self._replaced_parameters: list[tuple[nn.Module, str, nn.Parameter]] = []
-        self._linear_weight_store: dict[int, torch.Tensor] = {}
         self._lazy_pinned_tensor_ids: set[int] = set()
         self._pin_memory_disabled = False
-        self._resident_linear_weight_module_ids: set[int] = set()
         self._resident_module_names: set[str] = set()
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
@@ -495,12 +492,10 @@ class DynamicWeightsHook(ModelHook):
 
     def initialize_hook(self, module: nn.Module) -> nn.Module:
         self.state = build_dynamic_weight_plan(module, self.config)
-        if self.execution_mode not in {"plan", "linear_runtime", "linear_store_runtime"}:
-            raise ValueError(
-                "DynamicWeightsConfig.execution_mode must be 'plan', 'linear_runtime', or 'linear_store_runtime'"
-            )
-        if self.execution_mode in {"linear_runtime", "linear_store_runtime"}:
-            self._prepare_linear_runtime(module, use_store=self.execution_mode == "linear_store_runtime")
+        if self.execution_mode not in {"plan", "linear_runtime"}:
+            raise ValueError("DynamicWeightsConfig.execution_mode must be 'plan' or 'linear_runtime'")
+        if self.execution_mode == "linear_runtime":
+            self._prepare_linear_runtime(module)
         if self.config.verbose:
             summary = self.state.as_dict()
             print(
@@ -544,13 +539,8 @@ class DynamicWeightsHook(ModelHook):
         while self._patched_modules:
             patched_module, original_forward = self._patched_modules.pop()
             patched_module.forward = original_forward
-        while self._replaced_parameters:
-            patched_module, parameter_name, original_parameter = self._replaced_parameters.pop()
-            patched_module._parameters[parameter_name] = original_parameter
-        self._linear_weight_store.clear()
         self._lazy_pinned_tensor_ids.clear()
         self._pin_memory_disabled = False
-        self._resident_linear_weight_module_ids.clear()
         self._resident_module_names.clear()
 
     def _move_value_to_execution_device(self, value: Any, name: str) -> Any:
@@ -571,23 +561,18 @@ class DynamicWeightsHook(ModelHook):
             return {key: self._move_value_to_execution_device(item, f"{name}:{key}") for key, item in value.items()}
         return value
 
-    def _prepare_linear_runtime(self, module: nn.Module, *, use_store: bool) -> None:
+    def _prepare_linear_runtime(self, module: nn.Module) -> None:
         skip_patterns = tuple(re.compile(pattern) for pattern in self.config.skip_modules_pattern)
         resident_patterns = tuple(re.compile(pattern) for pattern in self.config.always_resident_modules_pattern)
         resident_module_patterns = _resolve_resident_module_patterns(module, self.config)
         self.state.resolved_resident_module_patterns = [pattern.pattern for pattern in resident_module_patterns]
         linear_modules_to_pin: list[tuple[str, nn.Linear, int]] = []
-        store_weights_to_pin: list[int] = []
 
         self._move_root_local_tensors_to_device(module)
         if self.resident_module_budget_bytes > 0 and resident_module_patterns:
             start = time.perf_counter()
             selected_bytes = self._select_resident_modules(module, skip_patterns, resident_module_patterns)
             self.state.add_setup("select_resident_modules", time.perf_counter() - start, selected_bytes)
-        if use_store and self.resident_weight_budget_bytes > 0:
-            start = time.perf_counter()
-            selected_bytes = self._select_resident_linear_weights(module, skip_patterns, resident_patterns)
-            self.state.add_setup("select_resident_linear_weights", time.perf_counter() - start, selected_bytes)
 
         for module_name, submodule in module.named_modules():
             if module_name == "":
@@ -614,16 +599,7 @@ class DynamicWeightsHook(ModelHook):
                 continue
 
             if isinstance(submodule, nn.Linear):
-                if use_store and id(submodule) in self._resident_linear_weight_module_ids:
-                    self._move_resident_linear_to_device(submodule)
-                    continue
-                self._move_linear_to_runtime_devices(
-                    module_name,
-                    submodule,
-                    linear_modules_to_pin,
-                    store_weights_to_pin,
-                    use_store,
-                )
+                self._move_linear_to_runtime_devices(module_name, submodule, linear_modules_to_pin)
                 self._patch_linear(submodule)
             else:
                 self._move_small_local_tensors_to_device(submodule)
@@ -634,18 +610,12 @@ class DynamicWeightsHook(ModelHook):
             selected_linears_to_pin = self._select_linear_weights_to_pin(linear_modules_to_pin)
             pinned_bytes = self._pin_linear_weights(selected_linears_to_pin)
             self.state.add_setup("pin_linear_weights", time.perf_counter() - start, pinned_bytes)
-        if eager_pin_cpu_memory and store_weights_to_pin:
-            start = time.perf_counter()
-            pinned_bytes = self._pin_stored_linear_weights(store_weights_to_pin)
-            self.state.add_setup("pin_stored_linear_weights", time.perf_counter() - start, pinned_bytes)
 
     def _move_linear_to_runtime_devices(
         self,
         module_name: str,
         linear: nn.Linear,
         linear_modules_to_pin: list[tuple[str, nn.Linear, int]],
-        store_weights_to_pin: list[int],
-        use_store: bool,
     ) -> None:
         if linear.weight.device != self.offload_device:
             start = time.perf_counter()
@@ -657,11 +627,6 @@ class DynamicWeightsHook(ModelHook):
             bias_bytes = _tensor_size_bytes(linear.bias.data)
             linear.bias.data = linear.bias.data.to(self.execution_device)
             self.state.add_setup("linear_bias_to_device", time.perf_counter() - start, bias_bytes)
-        if use_store:
-            self._store_linear_weight(linear)
-            if self._linear_weight_store[id(linear)].device.type == "cpu" and not self._linear_weight_store[id(linear)].is_pinned():
-                store_weights_to_pin.append(id(linear))
-            return
         if linear.weight.device.type == "cpu" and not linear.weight.data.is_pinned():
             linear_modules_to_pin.append((module_name, linear, _tensor_size_bytes(linear.weight.data)))
 
@@ -721,52 +686,6 @@ class DynamicWeightsHook(ModelHook):
     def _is_descendant_of_resident_module(self, module_name: str) -> bool:
         return any(_is_module_descendant(module_name, resident_name) for resident_name in self._resident_module_names)
 
-    def _select_resident_linear_weights(
-        self,
-        module: nn.Module,
-        skip_patterns: tuple[re.Pattern[str], ...],
-        resident_patterns: tuple[re.Pattern[str], ...],
-    ) -> int:
-        candidates: list[tuple[str, nn.Linear, int]] = []
-        for module_name, submodule in module.named_modules():
-            if module_name == "" or not isinstance(submodule, nn.Linear):
-                continue
-            if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
-                continue
-            if self._is_descendant_of_resident_module(module_name):
-                continue
-            if resident_patterns and any(pattern.search(module_name) for pattern in resident_patterns):
-                continue
-            candidates.append((module_name, submodule, _tensor_size_bytes(submodule.weight.data)))
-
-        if self.resident_weight_selection == "first":
-            ordered_candidates = candidates
-        else:
-            ordered_candidates = _spread_order(candidates, self.resident_weight_budget_bytes)
-
-        selected_bytes = 0
-        for module_name, linear, weight_bytes in ordered_candidates:
-            if selected_bytes + weight_bytes > self.resident_weight_budget_bytes:
-                continue
-            self._resident_linear_weight_module_ids.add(id(linear))
-            self.state.selected_resident_linear_weights.append(module_name)
-            selected_bytes += weight_bytes
-        return selected_bytes
-
-    def _move_resident_linear_to_device(self, linear: nn.Linear) -> None:
-        start = time.perf_counter()
-        moved_bytes = 0
-        if linear.weight.device != self.execution_device:
-            weight_bytes = _tensor_size_bytes(linear.weight.data)
-            linear.weight.data = linear.weight.data.to(self.execution_device, non_blocking=True)
-            moved_bytes += weight_bytes
-        if linear.bias is not None and linear.bias.device != self.execution_device:
-            bias_bytes = _tensor_size_bytes(linear.bias.data)
-            linear.bias.data = linear.bias.data.to(self.execution_device, non_blocking=True)
-            moved_bytes += bias_bytes
-        if moved_bytes:
-            self.state.add_setup("resident_linear_weights_to_device", time.perf_counter() - start, moved_bytes)
-
     def _move_root_local_tensors_to_device(self, module: nn.Module) -> None:
         start = time.perf_counter()
         moved_bytes = 0
@@ -784,20 +703,6 @@ class DynamicWeightsHook(ModelHook):
             moved_bytes += tensor_bytes
         if moved_bytes:
             self.state.add_setup("root_tensors_to_device", time.perf_counter() - start, moved_bytes)
-
-    def _store_linear_weight(self, linear: nn.Linear) -> None:
-        if id(linear) in self._linear_weight_store:
-            return
-        original_parameter = linear._parameters["weight"]
-        self._linear_weight_store[id(linear)] = original_parameter.detach()
-        self._replaced_parameters.append((linear, "weight", original_parameter))
-        meta_weight = torch.empty_strided(
-            tuple(original_parameter.shape),
-            tuple(original_parameter.stride()),
-            device="meta",
-            dtype=original_parameter.dtype,
-        )
-        linear._parameters["weight"] = nn.Parameter(meta_weight, requires_grad=original_parameter.requires_grad)
 
     def _move_small_local_tensors_to_device(self, module: nn.Module) -> int:
         moved_bytes = 0
@@ -880,64 +785,6 @@ class DynamicWeightsHook(ModelHook):
                     break
         return pinned_bytes
 
-    def _pin_stored_linear_weights(self, store_keys: list[int]) -> int:
-        pinned_bytes = 0
-
-        def pin_key(store_key: int):
-            source = self._linear_weight_store[store_key]
-            pinned = source.pin_memory()
-            return store_key, pinned, _tensor_size_bytes(pinned)
-
-        def assign_pinned(result) -> None:
-            nonlocal pinned_bytes
-            store_key, pinned, tensor_bytes = result
-            self._linear_weight_store[store_key] = pinned
-            pinned_bytes += tensor_bytes
-
-        if self.pin_cpu_workers == 1:
-            for store_key in store_keys:
-                try:
-                    assign_pinned(pin_key(store_key))
-                except _PIN_MEMORY_ERRORS as exc:
-                    if not self.config.allow_pin_memory_fallback:
-                        raise
-                    self._disable_pin_memory("pin_stored_linear_weights_failed", exc)
-                    break
-            return pinned_bytes
-
-        store_keys_iter = iter(store_keys)
-        with ThreadPoolExecutor(max_workers=self.pin_cpu_workers) as executor:
-            futures = set()
-
-            def submit_next() -> bool:
-                try:
-                    store_key = next(store_keys_iter)
-                except StopIteration:
-                    return False
-                futures.add(executor.submit(pin_key, store_key))
-                return True
-
-            for _ in range(self.pin_cpu_workers):
-                if not submit_next():
-                    break
-
-            while futures:
-                for future in as_completed(futures):
-                    futures.remove(future)
-                    try:
-                        assign_pinned(future.result())
-                    except _PIN_MEMORY_ERRORS as exc:
-                        if not self.config.allow_pin_memory_fallback:
-                            raise
-                        self._disable_pin_memory("pin_stored_linear_weights_failed", exc)
-                        for pending in futures:
-                            pending.cancel()
-                        return pinned_bytes
-                    if not self._pin_memory_disabled:
-                        submit_next()
-                    break
-        return pinned_bytes
-
     def _disable_pin_memory(self, action: str, exc: BaseException) -> None:
         if self._pin_memory_disabled:
             return
@@ -954,10 +801,7 @@ class DynamicWeightsHook(ModelHook):
         self.state.patched_module_count += 1
 
         def dynamic_linear_forward(patched_linear, input):
-            stored_weight = self._linear_weight_store.get(id(patched_linear))
-            weight_source = stored_weight if stored_weight is not None else patched_linear.weight
-            weight_copy_name = "linear_store_weight" if stored_weight is not None else "linear_weight"
-            weight = self._to_input_device(weight_source, input, weight_copy_name)
+            weight = self._to_input_device(patched_linear.weight, input, "linear_weight")
             bias = self._to_input_device(patched_linear.bias, input, "linear_bias")
             return F.linear(input, weight, bias)
 
@@ -1000,10 +844,6 @@ class DynamicWeightsHook(ModelHook):
         else:
             pinned_tensor = pinned
             tensor_id = id(pinned)
-            for store_key, stored_tensor in tuple(self._linear_weight_store.items()):
-                if stored_tensor is tensor:
-                    self._linear_weight_store[store_key] = pinned
-                    break
 
         if tensor_id not in self._lazy_pinned_tensor_ids:
             self._lazy_pinned_tensor_ids.add(tensor_id)
