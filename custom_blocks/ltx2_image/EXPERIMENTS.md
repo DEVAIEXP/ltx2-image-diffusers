@@ -1009,3 +1009,13 @@ Follow-up Ubuntu native comparison:
 | `ubuntu_4`, standard Diffusers runner | standard offload, encode `22.1791s` | n/a | n/a | `36.6993s` | n/a | `38.0s` | `64.5s` |
 
 Insight: pinned dynamic weights on Ubuntu native strongly improve denoise (`~13s` vs standard Diffusers `~36.7s`), but the cold setup cost makes single-generation Pass 1 roughly equal to the standard runner (`37.7s` vs `38.0s`). This means dynamic weights should pay off most clearly for warm/server-style runs or multiple generations per load. The text encoder timing varied heavily across these runs (`16.9s`, `29.5s`, `32.4s`, `22.2s`), so total runtime comparisons need at least repeated samples before drawing conclusions about the encoder path.
+
+Additional Ubuntu native preset probes:
+
+| Run | Purpose | Key settings | Encode pass | Dynamic setup | Denoise | Pass 1 | Total |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `ubuntu_5` | Warm/server repeat | `warm_server`, text encoder stream off, pinned weights | `33.7s` | `18.3515s` | `13.0230s` + `12.8770s` | `49.5s` | `85.3s` |
+| `ubuntu_6` | Text encoder stream on | `one_shot_fast`, text encoder stream on, pinned weights | `16.6s` | `11.5440s` | `12.9409s` | `26.1s` | `43.7s` |
+| `ubuntu_7` | Intended low-RAM check | stream off, pinned weights, but effective resident set still matched `6 GB`/11 blocks | `24.3s` | `18.9552s` | `13.0583s` | `38.4s` | `64.9s` |
+
+Insight: on Ubuntu native, `LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM=1` works and is currently the fastest full-run path. The best run was `ubuntu_6` at `43.7s` total, with Pass 1 only `26.1s`. This is much faster than the earlier ComfyUI reference total (`72.11s`) and shows that Linux native plus pinned dynamic weights is the strongest platform so far. The intended low-RAM test needs to be repeated with explicit resident budget cleanup, because `ubuntu_7` still selected the same 11 resident modules and moved `5.5077 GB`, so it did not validate a true lower-budget profile.
