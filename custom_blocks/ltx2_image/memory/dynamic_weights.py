@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from diffusers.hooks.hooks import HookRegistry, ModelHook
 
 
+_DEFAULT_TARGET_MODULE_CLASSES = (nn.Linear, nn.Embedding)
 _DYNAMIC_WEIGHTS_HOOK = "dynamic_weights"
 _DYNAMIC_WEIGHTS_ENV_PREFIX = "DIFFUSERS_DYNAMIC_WEIGHTS_"
 _LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX = "LTX_IMAGE_DYNAMIC_WEIGHTS_"
@@ -276,7 +277,7 @@ class DynamicWeightsConfig:
 
     execution_device: str | torch.device = "cuda:0"
     offload_device: str | torch.device = "cpu"
-    target_module_classes: tuple[type[nn.Module], ...] = (nn.Linear,)
+    target_module_classes: tuple[type[nn.Module], ...] = _DEFAULT_TARGET_MODULE_CLASSES
     skip_modules_pattern: tuple[str, ...] = ()
     always_resident_modules_pattern: tuple[str, ...] = ()
     small_tensor_threshold_bytes: int = 16 * 1024
@@ -570,7 +571,7 @@ class DynamicWeightsHook(ModelHook):
         resident_patterns = tuple(re.compile(pattern) for pattern in self.config.always_resident_modules_pattern)
         resident_module_patterns = _resolve_resident_module_patterns(module, self.config)
         self.state.resolved_resident_module_patterns = [pattern.pattern for pattern in resident_module_patterns]
-        linear_modules_to_pin: list[tuple[str, nn.Linear, int]] = []
+        modules_to_pin: list[tuple[str, nn.Module, int]] = []
         eager_pin_cpu_memory = self.config.pin_cpu_memory and not self.config.lazy_pin_cpu_memory
         pin_work = None
 
@@ -614,9 +615,16 @@ class DynamicWeightsHook(ModelHook):
                 self._move_linear_to_runtime_devices(
                     module_name,
                     submodule,
-                    linear_modules_to_pin if pin_work is None else None,
+                    modules_to_pin if pin_work is None else None,
                 )
                 self._patch_linear(submodule)
+            elif isinstance(submodule, nn.Embedding):
+                self._move_embedding_to_runtime_devices(
+                    module_name,
+                    submodule,
+                    modules_to_pin if pin_work is None else None,
+                )
+                self._patch_embedding(submodule)
             else:
                 self._move_small_local_tensors_to_device(submodule)
 
@@ -624,9 +632,9 @@ class DynamicWeightsHook(ModelHook):
             start, finish_pin_work = pin_work
             pinned_bytes = finish_pin_work()
             self.state.add_setup("pin_linear_weights_overlapped", time.perf_counter() - start, pinned_bytes)
-        elif eager_pin_cpu_memory and linear_modules_to_pin:
+        elif eager_pin_cpu_memory and modules_to_pin:
             start = time.perf_counter()
-            selected_linears_to_pin = self._select_linear_weights_to_pin(linear_modules_to_pin)
+            selected_linears_to_pin = self._select_linear_weights_to_pin(modules_to_pin)
             pinned_bytes = self._pin_linear_weights(selected_linears_to_pin)
             self.state.add_setup("pin_linear_weights", time.perf_counter() - start, pinned_bytes)
 
@@ -635,10 +643,10 @@ class DynamicWeightsHook(ModelHook):
         module: nn.Module,
         skip_patterns: tuple[re.Pattern[str], ...],
         resident_patterns: tuple[re.Pattern[str], ...],
-    ) -> list[tuple[str, nn.Linear, int]]:
-        candidates: list[tuple[str, nn.Linear, int]] = []
+    ) -> list[tuple[str, nn.Module, int]]:
+        candidates: list[tuple[str, nn.Module, int]] = []
         for module_name, submodule in module.named_modules():
-            if module_name == "" or not isinstance(submodule, nn.Linear):
+            if module_name == "" or not isinstance(submodule, (nn.Linear, nn.Embedding)):
                 continue
             if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
                 continue
@@ -656,7 +664,7 @@ class DynamicWeightsHook(ModelHook):
         self,
         module_name: str,
         linear: nn.Linear,
-        linear_modules_to_pin: list[tuple[str, nn.Linear, int]] | None,
+        modules_to_pin: list[tuple[str, nn.Module, int]] | None,
     ) -> None:
         if linear.weight.device != self.offload_device:
             start = time.perf_counter()
@@ -668,10 +676,24 @@ class DynamicWeightsHook(ModelHook):
             bias_bytes = _tensor_size_bytes(linear.bias.data)
             linear.bias.data = linear.bias.data.to(self.execution_device)
             self.state.add_setup("linear_bias_to_device", time.perf_counter() - start, bias_bytes)
-        if linear_modules_to_pin is not None and linear.weight.device.type == "cpu" and not linear.weight.data.is_pinned():
-            linear_modules_to_pin.append((module_name, linear, _tensor_size_bytes(linear.weight.data)))
+        if modules_to_pin is not None and linear.weight.device.type == "cpu" and not linear.weight.data.is_pinned():
+            modules_to_pin.append((module_name, linear, _tensor_size_bytes(linear.weight.data)))
 
-    def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Linear, int]]) -> list[nn.Linear]:
+    def _move_embedding_to_runtime_devices(
+        self,
+        module_name: str,
+        embedding: nn.Embedding,
+        modules_to_pin: list[tuple[str, nn.Module, int]] | None,
+    ) -> None:
+        if embedding.weight.device != self.offload_device:
+            start = time.perf_counter()
+            weight_bytes = _tensor_size_bytes(embedding.weight.data)
+            embedding.weight.data = embedding.weight.data.to(self.offload_device)
+            self.state.add_setup("embedding_weights_to_offload", time.perf_counter() - start, weight_bytes)
+        if modules_to_pin is not None and embedding.weight.device.type == "cpu" and not embedding.weight.data.is_pinned():
+            modules_to_pin.append((module_name, embedding, _tensor_size_bytes(embedding.weight.data)))
+
+    def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Module, int]]) -> list[nn.Module]:
         if self.pin_weight_budget_bytes <= 0:
             self.state.selected_pinned_linear_weights = [module_name for module_name, _, _ in candidates]
             return [linear for _, linear, _ in candidates]
@@ -680,7 +702,7 @@ class DynamicWeightsHook(ModelHook):
         if self.pin_weight_selection == "spread":
             ordered_candidates = _spread_order(candidates, self.pin_weight_budget_bytes)
 
-        selected_linears: list[nn.Linear] = []
+        selected_linears: list[nn.Module] = []
         selected_bytes = 0
         selected_names: list[str] = []
         for module_name, linear, weight_bytes in ordered_candidates:
@@ -769,7 +791,7 @@ class DynamicWeightsHook(ModelHook):
             moved_bytes += tensor_bytes
         return moved_bytes
 
-    def _pin_linear_weights(self, linears: list[nn.Linear]) -> int:
+    def _pin_linear_weights(self, linears: list[nn.Module]) -> int:
         pinned_bytes = 0
 
         def pin_linear(linear: nn.Linear):
@@ -826,7 +848,7 @@ class DynamicWeightsHook(ModelHook):
                     break
         return pinned_bytes
 
-    def _start_pin_linear_weights(self, linears: list[nn.Linear]):
+    def _start_pin_linear_weights(self, linears: list[nn.Module]):
         start = time.perf_counter()
         executor = ThreadPoolExecutor(max_workers=self.pin_cpu_workers)
         linears_iter = iter(linears)
@@ -897,6 +919,24 @@ class DynamicWeightsHook(ModelHook):
             return F.linear(input, weight, bias)
 
         linear.forward = dynamic_linear_forward.__get__(linear, linear.__class__)
+
+    def _patch_embedding(self, embedding: nn.Embedding) -> None:
+        self._patched_modules.append((embedding, embedding.forward))
+        self.state.patched_module_count += 1
+
+        def dynamic_embedding_forward(patched_embedding, input):
+            weight = self._to_input_device(patched_embedding.weight, input, "embedding_weight")
+            return F.embedding(
+                input,
+                weight,
+                patched_embedding.padding_idx,
+                patched_embedding.max_norm,
+                patched_embedding.norm_type,
+                patched_embedding.scale_grad_by_freq,
+                patched_embedding.sparse,
+            )
+
+        embedding.forward = dynamic_embedding_forward.__get__(embedding, embedding.__class__)
 
     def _to_input_device(self, tensor: torch.Tensor | None, input: torch.Tensor, name: str) -> torch.Tensor | None:
         if tensor is None:
@@ -1013,7 +1053,7 @@ def load_dynamic_weights_settings_from_env(
     *,
     execution_device: str | torch.device = "cuda:0",
     offload_device: str | torch.device = "cpu",
-    target_module_classes: tuple[type[nn.Module], ...] = (nn.Linear,),
+    target_module_classes: tuple[type[nn.Module], ...] = _DEFAULT_TARGET_MODULE_CLASSES,
     skip_modules_pattern: tuple[str, ...] = (),
     always_resident_modules_pattern: tuple[str, ...] | None = None,
     running_on_wsl: bool | None = None,

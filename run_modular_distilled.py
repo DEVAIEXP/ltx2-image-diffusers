@@ -114,6 +114,7 @@ def parse_bool_preset_env(name: str, default: str = "0") -> bool:
 
 AUTO_CPU_OFFLOAD = parse_bool_env("DIFFUSERS_RUNNER_AUTO_CPU_OFFLOAD")
 TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
+TEXT_ENCODER_DYNAMIC_WEIGHTS = parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS")
 TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD")
 TRANSFORMER_MEMORY_MANAGER = preset_env("DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER", "off").lower()
 DYNAMIC_WEIGHTS_CONFIG = DYNAMIC_WEIGHTS_SETTINGS.config
@@ -437,6 +438,7 @@ def main():
         "pag_applied_layers": PAG_APPLIED_LAYERS if PAG_ENABLED else None,
         "dtype": str(DTYPE),
         "text_encoder_low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE,
+        "text_encoder_dynamic_weights": TEXT_ENCODER_DYNAMIC_WEIGHTS,
         "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
         "running_on_wsl": RUNNING_ON_WSL,
         "reset_dynamic_memory_after_run": RESET_DYNAMIC_MEMORY_AFTER_RUN,
@@ -490,7 +492,15 @@ def main():
         record_event("load_text_encoder", time.time() - event_t0, source=MODEL_PATH)
 
         event_t0 = time.time()
-        if TEXT_ENCODER_GROUP_OFFLOAD:
+        text_encoder_dynamic_weights_hook = None
+        if TEXT_ENCODER_DYNAMIC_WEIGHTS:
+            text_encoder_dynamic_weights_hook = apply_dynamic_weights(text_encoder, DYNAMIC_WEIGHTS_CONFIG)
+            record_event(
+                "setup_text_encoder_dynamic_weights",
+                time.time() - event_t0,
+                **build_dynamic_weights_event_payload(DYNAMIC_WEIGHTS_SETTINGS, text_encoder_dynamic_weights_hook.state),
+            )
+        elif TEXT_ENCODER_GROUP_OFFLOAD:
             apply_model_group_offload(text_encoder, prefix="text_encoder")
             record_event(
                 "setup_text_encoder_group_offload",
@@ -524,6 +534,11 @@ def main():
 
         prompt_embeds = prompt_state["prompt_embeds"].to(OFFLOAD_DEVICE)
         prompt_attention_mask = prompt_state["prompt_attention_mask"].to(OFFLOAD_DEVICE)
+        if text_encoder_dynamic_weights_hook is not None:
+            run_metrics["text_encoder_dynamic_weights_runtime_summary"] = text_encoder_dynamic_weights_hook.state.as_dict()
+            if DYNAMIC_WEIGHTS_SHOW_PROFILE:
+                text_encoder_dynamic_weights_hook.print_profile_summary()
+            remove_dynamic_weights(text_encoder)
         del prompt_pipe, text_encoder, tokenizer
         flush()
 

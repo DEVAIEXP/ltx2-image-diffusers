@@ -1108,3 +1108,16 @@ $env:DIFFUSERS_DYNAMIC_WEIGHTS_OVERLAP_PIN_SETUP="1"
 ```
 
 This starts eager pinning of streamed linear weights while the manager moves resident modules and small tensors to the execution device. It is disabled by default and should be tested only against the current Windows baseline. A successful run should keep denoise near `14-15s` while reducing `build_dynamic_weights_plan` below the current `~31s` baseline.
+
+First Windows result: no win. `build_dynamic_weights_plan` was `32.0385s` and denoise stayed healthy at `14.5994s`, so the overlap probe should remain disabled by default.
+
+## Text Encoder Dynamic Weights Probe
+
+The dynamic weights manager now understands both `nn.Linear` and `nn.Embedding`, which makes it possible to test the same generic runtime against text encoders. This is still opt-in:
+
+```powershell
+$env:DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS="1"
+$env:DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD="0"
+```
+
+The target comparison is the Windows text encoder baseline, where `encode_prompt_call` is still around `80-85s` with Diffusers group offload. This probe is successful only if the full Pass 0 time drops enough to offset any dynamic setup cost added before prompt encoding.
