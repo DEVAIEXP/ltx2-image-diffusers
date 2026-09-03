@@ -925,7 +925,7 @@ class DynamicWeightsHook(ModelHook):
         self.state.patched_module_count += 1
 
         def dynamic_embedding_forward(patched_embedding, input):
-            weight = self._to_input_device(patched_embedding.weight, input, "embedding_weight")
+            weight = self._to_input_device(patched_embedding.weight, input, "embedding_weight", cast_to_input_dtype=False)
             return F.embedding(
                 input,
                 weight,
@@ -938,14 +938,22 @@ class DynamicWeightsHook(ModelHook):
 
         embedding.forward = dynamic_embedding_forward.__get__(embedding, embedding.__class__)
 
-    def _to_input_device(self, tensor: torch.Tensor | None, input: torch.Tensor, name: str) -> torch.Tensor | None:
+    def _to_input_device(
+        self,
+        tensor: torch.Tensor | None,
+        input: torch.Tensor,
+        name: str,
+        *,
+        cast_to_input_dtype: bool = True,
+    ) -> torch.Tensor | None:
         if tensor is None:
             return None
-        if tensor.device == input.device and tensor.dtype == input.dtype:
+        if tensor.device == input.device and (not cast_to_input_dtype or tensor.dtype == input.dtype):
             return tensor
         tensor = self._lazy_pin_tensor(tensor, name)
         start = time.perf_counter()
-        moved = tensor.to(device=input.device, dtype=input.dtype, non_blocking=True)
+        dtype = input.dtype if cast_to_input_dtype else tensor.dtype
+        moved = tensor.to(device=input.device, dtype=dtype, non_blocking=True)
         self.state.add_copy(name, time.perf_counter() - start, _tensor_size_bytes(moved))
         return moved
 
