@@ -999,3 +999,13 @@ WSL decode follow-up: with pinned dynamic weights disabled, the run completed th
 WSL real-prompt baseline: text encoder group offload works with `LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM=0`; with stream enabled it previously hit pinned-memory/driver problems. Real encode took `25.8941s` (`Pass 0: 30.1s`, peak RAM `23.50 GB`, peak VRAM `3.81 GB`). Full run completed in `71.6s`: Pass 1 `39.5s`, VAE Pass 2 `1.6s`, save `0.2s`. This is now the best WSL full-run reference and is close to the earlier ComfyUI total prompt execution reference of `72.11s`, although the distribution is different.
 
 Ubuntu native baseline: using `one_shot_fast` without Windows standby purge, native Linux accepted eager pinned dynamic weights. Real encode took `16.8579s` (`Pass 0: 20.2s`, peak VRAM `3.80 GB`). Dynamic setup was much faster than Windows (`pin_linear_weights: 13.4585s / 18.5181 GB`, resident budget move `4.7624s / 5.5077 GB`), and denoise was slightly faster than the Windows pinned baseline (`13.0216s`, copy time `0.0521s`). Full run completed in `60.8s` with VAE Pass 2 `1.7s`. This confirms the pinned-memory failure is WSL-specific in the current test matrix, not a general Linux issue.
+
+Follow-up Ubuntu native comparison:
+
+| Run | Text encoder | Dynamic pin | Dynamic setup | Denoise | Copy time | Pass 1 | Total |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ubuntu_2`, dynamic compat-style | group offload stream off, encode `29.4723s` | no | `5.0159s` | `33.1291s` | `32.0323s` | `44.0s` | `81.3s` |
+| `ubuntu_3`, dynamic pinned | group offload stream off, encode `32.3742s` | yes | `18.9910s` | `13.1480s` | `0.0634s` | `37.7s` | `79.5s` |
+| `ubuntu_4`, standard Diffusers runner | standard offload, encode `22.1791s` | n/a | n/a | `36.6993s` | n/a | `38.0s` | `64.5s` |
+
+Insight: pinned dynamic weights on Ubuntu native strongly improve denoise (`~13s` vs standard Diffusers `~36.7s`), but the cold setup cost makes single-generation Pass 1 roughly equal to the standard runner (`37.7s` vs `38.0s`). This means dynamic weights should pay off most clearly for warm/server-style runs or multiple generations per load. The text encoder timing varied heavily across these runs (`16.9s`, `29.5s`, `32.4s`, `22.2s`), so total runtime comparisons need at least repeated samples before drawing conclusions about the encoder path.
