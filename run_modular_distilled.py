@@ -27,7 +27,6 @@ from custom_blocks.ltx2_image.memory import (
     DynamicWeightsSettings,
     apply_dynamic_weights,
     dynamic_weights_env_names,
-    dynamic_weights_preset_env_value,
     from_pretrained_with_dynamic_weights,
     is_wsl_environment,
     remove_dynamic_weights,
@@ -70,17 +69,11 @@ DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.effective_preset
 
 
 def preset_env(name: str, default: str = "") -> str:
-    return dynamic_weights_preset_env_value(
-        name,
-        default,
-        requested_preset=REQUESTED_DYNAMIC_WEIGHTS_PRESET,
-        effective_preset=DYNAMIC_WEIGHTS_PRESET,
-        running_on_wsl=RUNNING_ON_WSL,
-    )
+    return DYNAMIC_WEIGHTS_SETTINGS.preset_value(name, default)
 
 
 def parse_bool_preset_env(name: str, default: str = "0") -> bool:
-    return preset_env(name, default).strip().lower() in {"1", "true", "yes", "on"}
+    return DYNAMIC_WEIGHTS_SETTINGS.preset_bool(name, default)
 
 AUTO_CPU_OFFLOAD = parse_bool_env("LTX_IMAGE_AUTO_CPU_OFFLOAD")
 TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD", "1")
@@ -405,8 +398,6 @@ def main():
         "seed": seed,
         "num_inference_steps": NUM_INFERENCE_STEPS,
         "generation_repeats": GENERATION_REPEATS,
-        "dynamic_weights_requested_preset": REQUESTED_DYNAMIC_WEIGHTS_PRESET or None,
-        "dynamic_weights_effective_preset": DYNAMIC_WEIGHTS_PRESET or None,
         "guidance_scale": GUIDANCE_SCALE,
         "guidance_rescale": GUIDANCE_RESCALE,
         "vae_decode_timestep": DECODE_TIMESTEP,
@@ -424,22 +415,7 @@ def main():
         "purge_windows_standby_after_run": PURGE_WINDOWS_STANDBY_AFTER_RUN,
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
         "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
-        "dynamic_weights_execution_mode": DYNAMIC_WEIGHTS_EXECUTION_MODE,
-        "dynamic_weights_pin_cpu_memory": DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
-        "dynamic_weights_effective_pin_cpu_memory": DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
-        "dynamic_weights_lazy_pin_cpu_memory": DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
-        "dynamic_weights_allow_pin_memory_fallback": DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
-        "dynamic_weights_disable_pin_on_wsl": DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL,
-        "dynamic_weights_pin_cpu_workers": DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
-        "dynamic_weights_pin_weight_budget_gb": DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
-        "dynamic_weights_pin_weight_selection": DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
-        "dynamic_weights_small_tensor_threshold_kb": DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB,
-        "dynamic_weights_resident_weight_budget_gb": DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
-        "dynamic_weights_resident_weight_selection": DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION,
-        "dynamic_weights_resident_module_budget_gb": DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
-        "dynamic_weights_resident_module_patterns": DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS,
-        "dynamic_weights_resident_module_selection": DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION,
-        "dynamic_weights_show_profile": DYNAMIC_WEIGHTS_SHOW_PROFILE,
+        **DYNAMIC_WEIGHTS_SETTINGS.as_metrics(),
         "pre_vae_cleanup_repeats": PRE_VAE_CLEANUP_REPEATS,
         "attention_backend": ATTENTION_BACKEND,
         "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,

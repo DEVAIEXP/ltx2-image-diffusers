@@ -310,6 +310,42 @@ class DynamicWeightsSettings:
     def execution_mode(self) -> str:
         return self.config.execution_mode
 
+    def preset_value(self, name: str, default: str = "", environ: Mapping[str, str] | None = None) -> str:
+        return dynamic_weights_preset_env_value(
+            name,
+            default,
+            requested_preset=self.requested_preset,
+            effective_preset=self.effective_preset,
+            running_on_wsl=self.running_on_wsl,
+            environ=environ,
+        )
+
+    def preset_bool(self, name: str, default: str = "0", environ: Mapping[str, str] | None = None) -> bool:
+        return _parse_bool_value(self.preset_value(name, default, environ))
+
+    def as_metrics(self) -> dict[str, Any]:
+        config = self.config
+        return {
+            "dynamic_weights_requested_preset": self.requested_preset or None,
+            "dynamic_weights_effective_preset": self.effective_preset or None,
+            "dynamic_weights_execution_mode": config.execution_mode,
+            "dynamic_weights_pin_cpu_memory": self.requested_pin_cpu_memory,
+            "dynamic_weights_effective_pin_cpu_memory": self.effective_pin_cpu_memory,
+            "dynamic_weights_lazy_pin_cpu_memory": config.lazy_pin_cpu_memory,
+            "dynamic_weights_allow_pin_memory_fallback": config.allow_pin_memory_fallback,
+            "dynamic_weights_disable_pin_on_wsl": self.disable_pin_on_wsl,
+            "dynamic_weights_pin_cpu_workers": config.pin_cpu_workers,
+            "dynamic_weights_pin_weight_budget_gb": config.pin_weight_budget_gb,
+            "dynamic_weights_pin_weight_selection": config.pin_weight_selection,
+            "dynamic_weights_small_tensor_threshold_kb": config.small_tensor_threshold_bytes // 1024,
+            "dynamic_weights_resident_weight_budget_gb": config.resident_weight_budget_gb,
+            "dynamic_weights_resident_weight_selection": config.resident_weight_selection,
+            "dynamic_weights_resident_module_budget_gb": config.resident_module_budget_gb,
+            "dynamic_weights_resident_module_patterns": config.resident_module_patterns,
+            "dynamic_weights_resident_module_selection": config.resident_module_selection,
+            "dynamic_weights_show_profile": config.show_profile,
+        }
+
     @classmethod
     def from_env(cls, **kwargs: Any) -> "DynamicWeightsSettings":
         return load_dynamic_weights_settings_from_env(**kwargs)
