@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+import os
+from pathlib import Path
 import re
 import time
 from typing import Any
@@ -15,6 +17,174 @@ from diffusers.hooks.hooks import HookRegistry, ModelHook
 
 _DYNAMIC_WEIGHTS_HOOK = "dynamic_weights"
 _PIN_MEMORY_ERRORS = (RuntimeError, getattr(torch, "AcceleratorError", RuntimeError))
+
+
+def is_wsl_environment() -> bool:
+    if os.name == "nt":
+        return False
+    try:
+        release = os.uname().release.lower()
+    except AttributeError:
+        release = ""
+    if "microsoft" in release or "wsl" in release:
+        return True
+    try:
+        version = Path("/proc/version").read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "microsoft" in version or "wsl" in version
+
+
+DYNAMIC_WEIGHTS_PRESETS: dict[str, dict[str, str]] = {
+    "off": {
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "plan",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN": "0",
+    },
+    "windows_fast": {
+        "LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD": "1",
+        "LTX_IMAGE_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
+        "LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM": "1",
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+        "LTX_IMAGE_PRE_VAE_CLEANUP_REPEATS": "1",
+    },
+    "linux_native_fast": {
+        "LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD": "1",
+        "LTX_IMAGE_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
+        "LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM": "1",
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+        "LTX_IMAGE_PRE_VAE_CLEANUP_REPEATS": "1",
+    },
+    "wsl_compat": {
+        "LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD": "1",
+        "LTX_IMAGE_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
+        "LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM": "0",
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+        "LTX_IMAGE_PRE_VAE_CLEANUP_REPEATS": "3",
+    },
+    "one_shot_fast": {
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "warm_server": {
+        "LTX_IMAGE_GENERATION_REPEATS": "2",
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "low_ram": {
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "2",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "3",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "compat": {
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "3",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "long_steps": {
+        "LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER": "off",
+        "LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "LTX_IMAGE_ATTENTION_BACKEND": "native",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+}
+
+
+def resolve_dynamic_weights_preset(requested_preset: str, *, running_on_wsl: bool | None = None) -> str:
+    requested_preset = requested_preset.strip().lower()
+    if requested_preset != "auto":
+        if requested_preset and requested_preset not in DYNAMIC_WEIGHTS_PRESETS:
+            valid_presets = ", ".join(["auto", *sorted(DYNAMIC_WEIGHTS_PRESETS)])
+            raise ValueError(
+                f"Invalid LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET={requested_preset!r}. "
+                f"Valid values: {valid_presets}"
+            )
+        return requested_preset
+
+    effective_running_on_wsl = is_wsl_environment() if running_on_wsl is None else running_on_wsl
+    if effective_running_on_wsl:
+        return "wsl_compat"
+    if os.name == "nt":
+        return "windows_fast"
+    return "linux_native_fast"
 
 
 @dataclass(frozen=True)
@@ -66,6 +236,7 @@ class DynamicWeightsState:
     patched_module_count: int = 0
     selected_resident_modules: list[str] = field(default_factory=list)
     selected_resident_linear_weights: list[str] = field(default_factory=list)
+    resolved_resident_module_patterns: list[str] = field(default_factory=list)
 
     def add_setup(self, action: str, seconds: float, byte_count: int = 0) -> None:
         self.setup_seconds_by_action[action] = self.setup_seconds_by_action.get(action, 0.0) + seconds
@@ -101,6 +272,7 @@ class DynamicWeightsState:
             },
             "selected_resident_modules": self.selected_resident_modules,
             "selected_resident_linear_weights": self.selected_resident_linear_weights,
+            "resolved_resident_module_patterns": self.resolved_resident_module_patterns,
             "entries": [
                 {
                     "module_name": entry.module_name,
@@ -216,13 +388,15 @@ class DynamicWeightsHook(ModelHook):
     def _prepare_linear_runtime(self, module: nn.Module, *, use_store: bool) -> None:
         skip_patterns = tuple(re.compile(pattern) for pattern in self.config.skip_modules_pattern)
         resident_patterns = tuple(re.compile(pattern) for pattern in self.config.always_resident_modules_pattern)
+        resident_module_patterns = _resolve_resident_module_patterns(module, self.config)
+        self.state.resolved_resident_module_patterns = [pattern.pattern for pattern in resident_module_patterns]
         linear_modules_to_pin: list[nn.Linear] = []
         store_weights_to_pin: list[int] = []
 
         self._move_root_local_tensors_to_device(module)
-        if self.resident_module_budget_bytes > 0 and self.config.resident_module_patterns:
+        if self.resident_module_budget_bytes > 0 and resident_module_patterns:
             start = time.perf_counter()
-            selected_bytes = self._select_resident_modules(module, skip_patterns)
+            selected_bytes = self._select_resident_modules(module, skip_patterns, resident_module_patterns)
             self.state.add_setup("select_resident_modules", time.perf_counter() - start, selected_bytes)
         if use_store and self.resident_weight_budget_bytes > 0:
             start = time.perf_counter()
@@ -301,8 +475,8 @@ class DynamicWeightsHook(ModelHook):
         self,
         module: nn.Module,
         skip_patterns: tuple[re.Pattern[str], ...],
+        module_patterns: tuple[re.Pattern[str], ...],
     ) -> int:
-        module_patterns = tuple(re.compile(pattern) for pattern in self.config.resident_module_patterns)
         candidates: list[tuple[str, nn.Module, int]] = []
         for module_name, submodule in module.named_modules():
             if module_name == "":
@@ -638,6 +812,14 @@ class DynamicWeightsHook(ModelHook):
         )
 
         selected_modules = summary["selected_resident_modules"]
+        resolved_patterns = summary["resolved_resident_module_patterns"]
+        if resolved_patterns:
+            print(
+                "  [dynamic-weights-profile] "
+                f"resolved_resident_module_patterns={resolved_patterns}",
+                flush=True,
+            )
+
         if selected_modules:
             print(
                 "  [dynamic-weights-profile] "
@@ -737,6 +919,51 @@ def _iter_local_tensors(module: nn.Module):
         yield name, buffer.data
 
 
+def _resolve_resident_module_patterns(
+    module: nn.Module,
+    config: DynamicWeightsConfig,
+) -> tuple[re.Pattern[str], ...]:
+    raw_patterns = tuple(pattern.strip() for pattern in config.resident_module_patterns if pattern.strip())
+    explicit_patterns = tuple(pattern for pattern in raw_patterns if pattern.lower() != "auto")
+    compiled_patterns = [re.compile(pattern) for pattern in explicit_patterns]
+    if not any(pattern.lower() == "auto" for pattern in raw_patterns):
+        return tuple(compiled_patterns)
+
+    inferred_patterns = _infer_repeated_resident_module_patterns(module, config)
+    return tuple([*compiled_patterns, *inferred_patterns])
+
+
+def _infer_repeated_resident_module_patterns(
+    module: nn.Module,
+    config: DynamicWeightsConfig,
+) -> tuple[re.Pattern[str], ...]:
+    skip_patterns = tuple(re.compile(pattern) for pattern in config.skip_modules_pattern)
+    repeated_module_pattern = re.compile(r"^(.+)\.(\d+)$")
+    groups: dict[str, list[tuple[str, int]]] = {}
+
+    for module_name, submodule in module.named_modules():
+        match = repeated_module_pattern.match(module_name)
+        if match is None:
+            continue
+        if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
+            continue
+        target_bytes = _target_module_size_bytes(submodule, config.target_module_classes)
+        if target_bytes <= 0:
+            continue
+        groups.setdefault(match.group(1), []).append((module_name, target_bytes))
+
+    candidates = [
+        (prefix, members, sum(member_bytes for _, member_bytes in members))
+        for prefix, members in groups.items()
+        if len(members) >= 2
+    ]
+    if not candidates:
+        return ()
+
+    prefix, _, _ = max(candidates, key=lambda item: (item[2], len(item[1])))
+    return (re.compile(rf"^{re.escape(prefix)}\.\d+$"),)
+
+
 def _classify_tensor(tensor: torch.Tensor, module_resident: bool, small_tensor_threshold_bytes: int) -> str:
     if module_resident:
         return "resident_module"
@@ -748,6 +975,16 @@ def _classify_tensor(tensor: torch.Tensor, module_resident: bool, small_tensor_t
 def _module_size_bytes(module: nn.Module) -> int:
     size = sum(_tensor_size_bytes(parameter.data) for parameter in module.parameters(recurse=True))
     size += sum(_tensor_size_bytes(buffer.data) for buffer in module.buffers(recurse=True))
+    return size
+
+
+def _target_module_size_bytes(module: nn.Module, target_module_classes: tuple[type[nn.Module], ...]) -> int:
+    size = 0
+    for submodule in module.modules():
+        if not isinstance(submodule, target_module_classes):
+            continue
+        size += sum(_tensor_size_bytes(parameter.data) for parameter in submodule.parameters(recurse=False))
+        size += sum(_tensor_size_bytes(buffer.data) for buffer in submodule.buffers(recurse=False))
     return size
 
 
