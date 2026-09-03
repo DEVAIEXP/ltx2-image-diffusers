@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import re
+import threading
 import time
 from typing import Any, Mapping
 
@@ -283,6 +284,7 @@ class DynamicWeightsConfig:
     pin_cpu_memory: bool = False
     lazy_pin_cpu_memory: bool = False
     allow_pin_memory_fallback: bool = True
+    overlap_pin_setup: bool = False
     pin_cpu_workers: int = 1
     pin_weight_budget_gb: float = 0.0
     pin_weight_selection: str = "spread"
@@ -336,6 +338,7 @@ class DynamicWeightsSettings:
             "dynamic_weights_effective_pin_cpu_memory": self.effective_pin_cpu_memory,
             "dynamic_weights_lazy_pin_cpu_memory": config.lazy_pin_cpu_memory,
             "dynamic_weights_allow_pin_memory_fallback": config.allow_pin_memory_fallback,
+            "dynamic_weights_overlap_pin_setup": config.overlap_pin_setup,
             "dynamic_weights_disable_pin_on_wsl": self.disable_pin_on_wsl,
             "dynamic_weights_pin_cpu_workers": config.pin_cpu_workers,
             "dynamic_weights_pin_weight_budget_gb": config.pin_weight_budget_gb,
@@ -472,6 +475,7 @@ class DynamicWeightsHook(ModelHook):
         self._patched_modules: list[tuple[nn.Module, object]] = []
         self._lazy_pinned_tensor_ids: set[int] = set()
         self._pin_memory_disabled = False
+        self._pin_lock = threading.Lock()
         self._resident_module_names: set[str] = set()
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
@@ -567,12 +571,20 @@ class DynamicWeightsHook(ModelHook):
         resident_module_patterns = _resolve_resident_module_patterns(module, self.config)
         self.state.resolved_resident_module_patterns = [pattern.pattern for pattern in resident_module_patterns]
         linear_modules_to_pin: list[tuple[str, nn.Linear, int]] = []
+        eager_pin_cpu_memory = self.config.pin_cpu_memory and not self.config.lazy_pin_cpu_memory
+        pin_work = None
 
         self._move_root_local_tensors_to_device(module)
         if self.resident_module_budget_bytes > 0 and resident_module_patterns:
             start = time.perf_counter()
             selected_bytes = self._select_resident_modules(module, skip_patterns, resident_module_patterns)
             self.state.add_setup("select_resident_modules", time.perf_counter() - start, selected_bytes)
+
+        if eager_pin_cpu_memory and self.config.overlap_pin_setup and self.pin_cpu_workers > 1:
+            candidates = self._collect_linear_modules_to_pin(module, skip_patterns, resident_patterns)
+            selected_linears_to_pin = self._select_linear_weights_to_pin(candidates)
+            if selected_linears_to_pin:
+                pin_work = self._start_pin_linear_weights(selected_linears_to_pin)
 
         for module_name, submodule in module.named_modules():
             if module_name == "":
@@ -599,23 +611,52 @@ class DynamicWeightsHook(ModelHook):
                 continue
 
             if isinstance(submodule, nn.Linear):
-                self._move_linear_to_runtime_devices(module_name, submodule, linear_modules_to_pin)
+                self._move_linear_to_runtime_devices(
+                    module_name,
+                    submodule,
+                    linear_modules_to_pin if pin_work is None else None,
+                )
                 self._patch_linear(submodule)
             else:
                 self._move_small_local_tensors_to_device(submodule)
 
-        eager_pin_cpu_memory = self.config.pin_cpu_memory and not self.config.lazy_pin_cpu_memory
-        if eager_pin_cpu_memory and linear_modules_to_pin:
+        if pin_work is not None:
+            start, finish_pin_work = pin_work
+            pinned_bytes = finish_pin_work()
+            self.state.add_setup("pin_linear_weights_overlapped", time.perf_counter() - start, pinned_bytes)
+        elif eager_pin_cpu_memory and linear_modules_to_pin:
             start = time.perf_counter()
             selected_linears_to_pin = self._select_linear_weights_to_pin(linear_modules_to_pin)
             pinned_bytes = self._pin_linear_weights(selected_linears_to_pin)
             self.state.add_setup("pin_linear_weights", time.perf_counter() - start, pinned_bytes)
 
+    def _collect_linear_modules_to_pin(
+        self,
+        module: nn.Module,
+        skip_patterns: tuple[re.Pattern[str], ...],
+        resident_patterns: tuple[re.Pattern[str], ...],
+    ) -> list[tuple[str, nn.Linear, int]]:
+        candidates: list[tuple[str, nn.Linear, int]] = []
+        for module_name, submodule in module.named_modules():
+            if module_name == "" or not isinstance(submodule, nn.Linear):
+                continue
+            if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
+                continue
+            if self._is_descendant_of_resident_module(module_name):
+                continue
+            if module_name in self._resident_module_names:
+                continue
+            if resident_patterns and any(pattern.search(module_name) for pattern in resident_patterns):
+                continue
+            if submodule.weight.device.type == "cpu" and not submodule.weight.data.is_pinned():
+                candidates.append((module_name, submodule, _tensor_size_bytes(submodule.weight.data)))
+        return candidates
+
     def _move_linear_to_runtime_devices(
         self,
         module_name: str,
         linear: nn.Linear,
-        linear_modules_to_pin: list[tuple[str, nn.Linear, int]],
+        linear_modules_to_pin: list[tuple[str, nn.Linear, int]] | None,
     ) -> None:
         if linear.weight.device != self.offload_device:
             start = time.perf_counter()
@@ -627,7 +668,7 @@ class DynamicWeightsHook(ModelHook):
             bias_bytes = _tensor_size_bytes(linear.bias.data)
             linear.bias.data = linear.bias.data.to(self.execution_device)
             self.state.add_setup("linear_bias_to_device", time.perf_counter() - start, bias_bytes)
-        if linear.weight.device.type == "cpu" and not linear.weight.data.is_pinned():
+        if linear_modules_to_pin is not None and linear.weight.device.type == "cpu" and not linear.weight.data.is_pinned():
             linear_modules_to_pin.append((module_name, linear, _tensor_size_bytes(linear.weight.data)))
 
     def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Linear, int]]) -> list[nn.Linear]:
@@ -784,6 +825,56 @@ class DynamicWeightsHook(ModelHook):
                         submit_next()
                     break
         return pinned_bytes
+
+    def _start_pin_linear_weights(self, linears: list[nn.Linear]):
+        start = time.perf_counter()
+        executor = ThreadPoolExecutor(max_workers=self.pin_cpu_workers)
+        linears_iter = iter(linears)
+        futures = set()
+        pinned_bytes = 0
+
+        def pin_and_assign(linear: nn.Linear) -> int:
+            pinned = linear.weight.data.pin_memory()
+            tensor_bytes = _tensor_size_bytes(pinned)
+            with self._pin_lock:
+                linear.weight.data = pinned
+            return tensor_bytes
+
+        def submit_next() -> bool:
+            try:
+                linear = next(linears_iter)
+            except StopIteration:
+                return False
+            futures.add(executor.submit(pin_and_assign, linear))
+            return True
+
+        for _ in range(self.pin_cpu_workers):
+            if not submit_next():
+                break
+
+        def finish() -> int:
+            nonlocal pinned_bytes
+            try:
+                while futures:
+                    for future in as_completed(futures):
+                        futures.remove(future)
+                        try:
+                            pinned_bytes += future.result()
+                        except _PIN_MEMORY_ERRORS as exc:
+                            if not self.config.allow_pin_memory_fallback:
+                                raise
+                            self._disable_pin_memory("pin_linear_weights_failed", exc)
+                            for pending in futures:
+                                pending.cancel()
+                            return pinned_bytes
+                        if not self._pin_memory_disabled:
+                            submit_next()
+                        break
+                return pinned_bytes
+            finally:
+                executor.shutdown(wait=True, cancel_futures=True)
+
+        return start, finish
 
     def _disable_pin_memory(self, action: str, exc: BaseException) -> None:
         if self._pin_memory_disabled:
@@ -956,6 +1047,7 @@ def load_dynamic_weights_settings_from_env(
     requested_pin_cpu_memory = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
     lazy_pin_cpu_memory = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY")
     allow_pin_memory_fallback = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK", "1")
+    overlap_pin_setup = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_OVERLAP_PIN_SETUP", "0")
     disable_pin_on_wsl = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL", "1")
     effective_pin_cpu_memory = requested_pin_cpu_memory and not (is_wsl and disable_pin_on_wsl)
 
@@ -975,6 +1067,7 @@ def load_dynamic_weights_settings_from_env(
         pin_cpu_memory=effective_pin_cpu_memory,
         lazy_pin_cpu_memory=lazy_pin_cpu_memory,
         allow_pin_memory_fallback=allow_pin_memory_fallback,
+        overlap_pin_setup=overlap_pin_setup,
         pin_cpu_workers=int(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4")),
         pin_weight_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB", "0.0")),
         pin_weight_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION", "spread").lower(),

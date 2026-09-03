@@ -1088,3 +1088,23 @@ Runner-level metric output now uses generic `DIFFUSERS_RUNNER_*` aliases, with o
 - `DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE=1`: additionally print the compact `[dynamic-weights] setup=...` line during setup.
 
 New benchmark commands should prefer `DIFFUSERS_DYNAMIC_WEIGHTS_*` for the manager and `DIFFUSERS_RUNNER_*` for script/runtime controls. Historical command blocks above have been migrated to the generic names where possible; legacy `LTX_IMAGE_*` aliases remain supported in the runner.
+
+## Current Windows Baseline
+
+Latest Windows real-prompt baseline after the generic environment rename and compact metrics defaults:
+
+| Run | Encode pass | Dynamic setup | Denoise | Avg step | Pass 1 | Peak VRAM | Peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Windows auto, standby purge before run and before transformer | `84.9s` | `31.3680s` | `14.5250s` | `1.6361s/it` | `56.6s` | `6.73 GB` | `27.36 GB` |
+
+Insight: the denoise phase is back in the best observed range for Windows. The remaining cold-start target is dynamic weights setup, especially eager pinned CPU linear weights plus resident module placement. Partial pin budgets are currently not useful for 8-step Windows runs because they save setup time but make runtime copies much slower.
+
+## Overlapped Pin Setup Probe
+
+The manager now has an opt-in setup overlap probe:
+
+```powershell
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_OVERLAP_PIN_SETUP="1"
+```
+
+This starts eager pinning of streamed linear weights while the manager moves resident modules and small tensors to the execution device. It is disabled by default and should be tested only against the current Windows baseline. A successful run should keep denoise near `14-15s` while reducing `build_dynamic_weights_plan` below the current `~31s` baseline.
