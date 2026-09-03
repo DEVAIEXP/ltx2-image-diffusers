@@ -63,7 +63,7 @@ def parse_bool_env(name: str, default: str = "0") -> bool:
 
 
 def parse_metrics_level() -> int:
-    value = env_value("LTX_IMAGE_METRICS_LEVEL", "0").strip()
+    value = env_value("DIFFUSERS_RUNNER_METRICS_LEVEL", "0").strip()
     try:
         level = int(value)
     except ValueError as exc:
@@ -80,14 +80,14 @@ def parse_metrics_level() -> int:
 
 
 RUNNING_ON_WSL = is_wsl_environment()
-DEVICE = env_value("LTX_IMAGE_DEVICE", "cuda:0")
+DEVICE = env_value("DIFFUSERS_RUNNER_DEVICE", "cuda:0")
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_modular"
-MODEL_PATH = env_value("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
+MODEL_PATH = env_value("DIFFUSERS_RUNNER_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
-MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("LTX_IMAGE_LOW_CPU_MEM_USAGE", "1")
+MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE", "1")
 DYNAMIC_WEIGHTS_SETTINGS = DynamicWeightsSettings.from_env(
     execution_device=DEVICE,
     offload_device=OFFLOAD_DEVICE,
@@ -102,68 +102,72 @@ def preset_env(name: str, default: str = "") -> str:
     for env_name in runner_env_names(name):
         if env_name in os.environ:
             return os.environ[env_name]
-    return DYNAMIC_WEIGHTS_SETTINGS.preset_value(name, default)
+    for env_name in runner_env_names(name):
+        value = DYNAMIC_WEIGHTS_SETTINGS.preset_value(env_name)
+        if value != "":
+            return value
+    return default
 
 
 def parse_bool_preset_env(name: str, default: str = "0") -> bool:
-    return DYNAMIC_WEIGHTS_SETTINGS.preset_bool(name, default)
+    return preset_env(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
-AUTO_CPU_OFFLOAD = parse_bool_env("LTX_IMAGE_AUTO_CPU_OFFLOAD")
-TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD", "1")
-TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD")
-TRANSFORMER_MEMORY_MANAGER = preset_env("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "off").lower()
+AUTO_CPU_OFFLOAD = parse_bool_env("DIFFUSERS_RUNNER_AUTO_CPU_OFFLOAD")
+TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
+TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD")
+TRANSFORMER_MEMORY_MANAGER = preset_env("DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER", "off").lower()
 DYNAMIC_WEIGHTS_CONFIG = DYNAMIC_WEIGHTS_SETTINGS.config
 DYNAMIC_WEIGHTS_EXECUTION_MODE = DYNAMIC_WEIGHTS_CONFIG.execution_mode
 DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.requested_pin_cpu_memory
 DYNAMIC_WEIGHTS_SHOW_PROFILE = DYNAMIC_WEIGHTS_CONFIG.show_profile
 DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.effective_pin_cpu_memory
-PRE_VAE_CLEANUP_REPEATS = int(preset_env("LTX_IMAGE_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
-RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
-PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
-PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
-PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_AFTER_RUN")
+PRE_VAE_CLEANUP_REPEATS = int(preset_env("DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
+RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("DIFFUSERS_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN")
+PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
+PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
+PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_RUN")
 METRICS_LEVEL = parse_metrics_level()
-SHOW_METRICS = METRICS_LEVEL >= 1 or parse_bool_env("LTX_IMAGE_SHOW_METRICS")
-SAVE_METRICS = METRICS_LEVEL >= 2 or parse_bool_env("LTX_IMAGE_SAVE_METRICS")
-ATTENTION_BACKEND = preset_env("LTX_IMAGE_ATTENTION_BACKEND", "native").lower()
+SHOW_METRICS = METRICS_LEVEL >= 1 or parse_bool_env("DIFFUSERS_RUNNER_SHOW_METRICS")
+SAVE_METRICS = METRICS_LEVEL >= 2 or parse_bool_env("DIFFUSERS_RUNNER_SAVE_METRICS")
+ATTENTION_BACKEND = preset_env("DIFFUSERS_RUNNER_ATTENTION_BACKEND", "native").lower()
 FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
 DROP_TRIVIAL_ATTENTION_MASK = (
-    parse_bool_env("LTX_IMAGE_DROP_TRIVIAL_ATTENTION_MASK")
+    parse_bool_env("DIFFUSERS_RUNNER_DROP_TRIVIAL_ATTENTION_MASK")
     or ATTENTION_BACKEND in FLASH_COMPATIBLE_ATTENTION_BACKENDS
 )
 GROUP_OFFLOAD_CONFIG = {
     "mode": "components_manager_auto_cpu_offload" if AUTO_CPU_OFFLOAD else "disabled",
     "device": DEVICE,
     "text_encoder_group_offload": TEXT_ENCODER_GROUP_OFFLOAD,
-    "text_encoder_offload_type": preset_env("LTX_IMAGE_TEXT_ENCODER_OFFLOAD_TYPE", "leaf_level"),
-    "text_encoder_use_stream": parse_bool_preset_env("LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM", "1"),
-    "text_encoder_num_blocks_per_group": int(preset_env("LTX_IMAGE_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
+    "text_encoder_offload_type": preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE", "leaf_level"),
+    "text_encoder_use_stream": parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM", "1"),
+    "text_encoder_num_blocks_per_group": int(preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
     "transformer_group_offload": TRANSFORMER_GROUP_OFFLOAD,
-    "transformer_offload_type": env_value("LTX_IMAGE_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
-    "transformer_use_stream": parse_bool_env("LTX_IMAGE_TRANSFORMER_OFFLOAD_STREAM", "1"),
-    "transformer_num_blocks_per_group": int(env_value("LTX_IMAGE_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
+    "transformer_offload_type": env_value("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
+    "transformer_use_stream": parse_bool_env("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_STREAM", "1"),
+    "transformer_num_blocks_per_group": int(env_value("DIFFUSERS_RUNNER_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
 }
 
-WIDTH = int(env_value("LTX_IMAGE_WIDTH", "1280"))
-HEIGHT = int(env_value("LTX_IMAGE_HEIGHT", "704"))
-SEED = int(env_value("LTX_IMAGE_SEED", "43"))
-NUM_INFERENCE_STEPS = int(env_value("LTX_IMAGE_STEPS", "8"))
-GUIDANCE_SCALE = float(env_value("LTX_IMAGE_GUIDANCE_SCALE", "1.0"))
-GUIDANCE_RESCALE = float(env_value("LTX_IMAGE_GUIDANCE_RESCALE", "0.7"))
-DECODE_TIMESTEP = float(env_value("LTX_IMAGE_DECODE_TIMESTEP", "0.0"))
-DECODE_NOISE_SCALE_ENV = env_value("LTX_IMAGE_DECODE_NOISE_SCALE")
+WIDTH = int(env_value("DIFFUSERS_RUNNER_WIDTH", "1280"))
+HEIGHT = int(env_value("DIFFUSERS_RUNNER_HEIGHT", "704"))
+SEED = int(env_value("DIFFUSERS_RUNNER_SEED", "43"))
+NUM_INFERENCE_STEPS = int(env_value("DIFFUSERS_RUNNER_STEPS", "8"))
+GUIDANCE_SCALE = float(env_value("DIFFUSERS_RUNNER_GUIDANCE_SCALE", "1.0"))
+GUIDANCE_RESCALE = float(env_value("DIFFUSERS_RUNNER_GUIDANCE_RESCALE", "0.7"))
+DECODE_TIMESTEP = float(env_value("DIFFUSERS_RUNNER_DECODE_TIMESTEP", "0.0"))
+DECODE_NOISE_SCALE_ENV = env_value("DIFFUSERS_RUNNER_DECODE_NOISE_SCALE")
 DECODE_NOISE_SCALE = None if DECODE_NOISE_SCALE_ENV in (None, "") else float(DECODE_NOISE_SCALE_ENV)
-PAG_ENABLED = parse_bool_env("LTX_IMAGE_PAG_ENABLED")
-PAG_SCALE = float(env_value("LTX_IMAGE_PAG_SCALE", "0.2"))
-PAG_APPLIED_LAYERS = [int(x) for x in env_value("LTX_IMAGE_PAG_LAYERS", "28").split(",") if x]
-FAKE_PROMPT_EMBEDS = parse_bool_env("LTX_IMAGE_FAKE_PROMPT")
-GENERATION_REPEATS = max(1, int(preset_env("LTX_IMAGE_GENERATION_REPEATS", "1")))
+PAG_ENABLED = parse_bool_env("DIFFUSERS_RUNNER_PAG_ENABLED")
+PAG_SCALE = float(env_value("DIFFUSERS_RUNNER_PAG_SCALE", "0.2"))
+PAG_APPLIED_LAYERS = [int(x) for x in env_value("DIFFUSERS_RUNNER_PAG_LAYERS", "28").split(",") if x]
+FAKE_PROMPT_EMBEDS = parse_bool_env("DIFFUSERS_RUNNER_FAKE_PROMPT")
+GENERATION_REPEATS = max(1, int(preset_env("DIFFUSERS_RUNNER_GENERATION_REPEATS", "1")))
 
 prompt = env_value(
-    "LTX_IMAGE_PROMPT",
+    "DIFFUSERS_RUNNER_PROMPT",
     "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy.",
 )
-negative_prompt = env_value("LTX_IMAGE_NEGATIVE_PROMPT", "")
+negative_prompt = env_value("DIFFUSERS_RUNNER_NEGATIVE_PROMPT", "")
 
 
 def build_run_slug(seed):
@@ -229,7 +233,7 @@ def install_trivial_mask_flash_wrapper():
         def wrapped_backend_fn(*args, _backend_fn=backend_fn, _backend=backend, **kwargs):
             attn_mask = kwargs.get("attn_mask")
             if _is_trivial_zero_attention_mask(attn_mask):
-                if env_value("LTX_IMAGE_LOG_ATTENTION_MASK", "0") == "1":
+                if env_value("DIFFUSERS_RUNNER_LOG_ATTENTION_MASK", "0") == "1":
                     print(f"  [attention_mask] dropping trivial mask inside backend {_backend.value}", flush=True)
                 kwargs["attn_mask"] = None
             return _backend_fn(*args, **kwargs)

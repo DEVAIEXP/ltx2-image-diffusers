@@ -35,17 +35,17 @@ Known setup from the current experiments:
 | ComfyUI BF16 | not directly isolated | staged dynamically | `~26.7s` | total prompt `63.0s` | not PyTorch-comparable | not logged | `8/8` at `3.34s/it`; no flash-attn or xformers installed. |
 | ComfyUI quantized | not directly isolated | staged dynamically | `~10.9s` | total prompt `45.0s` | not PyTorch-comparable | not logged | `8/8` at `1.36s/it`. |
 
-## Current Best Diffusers-Side Command
+## Historical Manual-Manager Command
 
-Use this as the current best experimental baseline:
+The command below is preserved only as history from the retired manual-manager phase:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_linear"
-$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE="1"
-$env:LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES="0"
-$env:LTX_IMAGE_ATTENTION_BACKEND="native"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_linear"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MANAGER_PROFILE="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES="0"
+$env:DIFFUSERS_RUNNER_ATTENTION_BACKEND="native"
 python run_modular_distilled.py
 ```
 
@@ -56,6 +56,31 @@ Expected behavior from the confirmed runs:
 - `torch_alloc` during denoise around `0.80 GiB`
 - `Pass 1 total` around `211-223s`
 - `Peak RAM` around `33 GB`
+
+## Current Dynamic-Weights Command
+
+Use generic environment names for new benchmark runs:
+
+```powershell
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PRESET="auto"
+$env:DIFFUSERS_RUNNER_WIDTH="1280"
+$env:DIFFUSERS_RUNNER_HEIGHT="704"
+$env:DIFFUSERS_RUNNER_STEPS="8"
+$env:DIFFUSERS_RUNNER_SEED="43"
+$env:DIFFUSERS_RUNNER_GENERATION_REPEATS="1"
+$env:DIFFUSERS_RUNNER_METRICS_LEVEL="1"
+$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
+$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
+python run_modular_distilled.py
+```
+
+Enable deeper diagnostics only when needed:
+
+```powershell
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE="1"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE="1"
+$env:DIFFUSERS_RUNNER_METRICS_LEVEL="2"
+```
 
 ## Attention Backend Findings
 
@@ -140,18 +165,18 @@ This is effectively tied with `manual_linear + pinned CPU`. The profile still re
 
 This confirms that eliminating repeated transfers for resident blocks improves denoise time until memory pressure starts to dominate. The curve bent hard at `16` hot blocks: copies dropped to `128.1568 GB`, but denoise regressed to `201.2456s`. The current sweet spot is `12` hot blocks for this machine/resolution.
 
-An automatic hot-block budget selector was added after the explicit hot-block tests. Explicit `LTX_IMAGE_TRANSFORMER_HOT_BLOCKS` still wins; when it is unset, `LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB` selects every `LTX_IMAGE_TRANSFORMER_HOT_BLOCK_STRIDE` block until the memory budget is consumed.
+An automatic hot-block budget selector was added after the explicit hot-block tests. Explicit `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS` still wins; when it is unset, `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB` selects every `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_STRIDE` block until the memory budget is consumed.
 
 The first budget run used:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
-$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCKS=""
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_STRIDE="3"
-$env:LTX_IMAGE_ATTENTION_BACKEND="native"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS=""
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_STRIDE="3"
+$env:DIFFUSERS_RUNNER_ATTENTION_BACKEND="native"
 ```
 
 Result:
@@ -264,16 +289,16 @@ The `manual_hot_blocks` path was updated so streamed blocks keep tiny tensors re
 Test configuration:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
-$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCKS=""
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_STRIDE="3"
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_OFFSET="0"
-$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="direct"
-$env:LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
-$env:LTX_IMAGE_ATTENTION_BACKEND="native"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS=""
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_STRIDE="3"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_OFFSET="0"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="direct"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:DIFFUSERS_RUNNER_ATTENTION_BACKEND="native"
 ```
 
 Result:
@@ -301,8 +326,8 @@ A `lazy_pin_cpu_memory` experiment tried to avoid the eager `pin_cpu_blocks` set
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="0"
-$env:LTX_IMAGE_TRANSFORMER_LAZY_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="0"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_LAZY_PIN_CPU_MEMORY="1"
 ```
 
 Result:
@@ -321,9 +346,9 @@ A `streamed_copy_mode=host_buffered` experiment tried to create persistent CPU p
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="0"
-$env:LTX_IMAGE_TRANSFORMER_LAZY_PIN_CPU_MEMORY="0"
-$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="host_buffered"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="0"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_LAZY_PIN_CPU_MEMORY="0"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="host_buffered"
 ```
 
 Result:
@@ -342,9 +367,9 @@ A `hot_linear_weight_budget_gb` experiment tried to keep selected `Linear.weight
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_HOT_LINEAR_WEIGHT_BUDGET_GB="1"
-$env:LTX_IMAGE_TRANSFORMER_HOT_LINEAR_WEIGHT_STRIDE="3"
-$env:LTX_IMAGE_TRANSFORMER_HOT_LINEAR_WEIGHT_OFFSET="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_LINEAR_WEIGHT_BUDGET_GB="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_LINEAR_WEIGHT_STRIDE="3"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_LINEAR_WEIGHT_OFFSET="1"
 ```
 
 Result:
@@ -363,8 +388,8 @@ A `streamed_copy_mode=buffered` run was repeated after keeping streamed small te
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="buffered"
-$env:LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="buffered"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
 ```
 
 Result:
@@ -378,12 +403,12 @@ Insight: buffering is no longer catastrophic once tiny tensors stay resident, bu
 
 ## Parallel CPU Pinning
 
-The CPU pinning setup was parallelized with `LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS`. This targets the largest remaining setup cost in the best `manual_hot_blocks` path: pinning about `18.5 GB` of CPU transformer block tensors before denoise.
+The CPU pinning setup was parallelized with `DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS`. This targets the largest remaining setup cost in the best `manual_hot_blocks` path: pinning about `18.5 GB` of CPU transformer block tensors before denoise.
 
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS="4"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="4"
 ```
 
 Result:
@@ -403,8 +428,8 @@ Layer-level profiling was added to identify whether the denoise gap is dominated
 Configuration difference from the best baseline:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_PROFILE_LAYERS="1"
-$env:LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PROFILE_LAYERS="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PROFILE_SYNC_LAYERS="1"
 ```
 
 Result:
@@ -422,8 +447,8 @@ A `manual_block_staged` experiment tried to stage every streamed block's linear 
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_block_staged"
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="0"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_block_staged"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="0"
 ```
 
 Result:
@@ -442,14 +467,14 @@ The latest stable `manual_hot_blocks` run used the current best configuration wi
 Configuration:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
-$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS="2"
-$env:LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
-$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="direct"
-$env:LTX_IMAGE_ATTENTION_BACKEND="native"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="2"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="direct"
+$env:DIFFUSERS_RUNNER_ATTENTION_BACKEND="native"
 ```
 
 Result:
@@ -473,14 +498,14 @@ Insight: this confirms the current best path is setup-bound plus streamed-block-
 
 ## Profile-Guided Hot Block Candidates
 
-`LTX_IMAGE_TRANSFORMER_HOT_BLOCK_CANDIDATES` was added so a profile-derived block priority list can be budgeted safely. Unlike explicit `LTX_IMAGE_TRANSFORMER_HOT_BLOCKS`, candidates are selected in order only until `LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB` is reached.
+`DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_CANDIDATES` was added so a profile-derived block priority list can be budgeted safely. Unlike explicit `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS`, candidates are selected in order only until `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB` is reached.
 
 Configuration difference from the best baseline:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCKS=""
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_CANDIDATES="36,2,29,32,12,19,9,22,16,28,4,1,7,13,25,31,35,38,40,43,44,47"
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS=""
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_CANDIDATES="36,2,29,32,12,19,9,22,16,28,4,1,7,13,25,31,35,38,40,43,44,47"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
 ```
 
 Result:
@@ -517,7 +542,7 @@ To keep this experiment portable to a future Diffusers-style implementation, new
 A planner-only module now exists behind:
 
 ```powershell
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN="1"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PLAN="1"
 ```
 
 This builds a generic `nn.Linear` weight plan and records module count, total planned weight size, and placement buckets. It does not change the forward path yet.
@@ -553,13 +578,13 @@ Windows memory state appears to materially affect repeatability. After boot, the
 Configuration stayed on the same best baseline:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS="2"
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
-$env:LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
-$env:LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE="direct"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="2"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="direct"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PLAN="1"
 ```
 
 Result after clearing standby cache:
@@ -583,8 +608,8 @@ Question: whether `low_cpu_mem_usage` contributes to Windows standby/cache growt
 Code change:
 
 ```powershell
-$env:LTX_IMAGE_LOW_CPU_MEM_USAGE="0"              # applies to transformer/connectors/VAE only
-$env:LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN="1" # optional Python/CUDA cleanup at script end
+$env:DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="0"              # applies to transformer/connectors/VAE only
+$env:DIFFUSERS_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN="1" # optional Python/CUDA cleanup at script end
 ```
 
 The text encoder intentionally remains fixed at `low_cpu_mem_usage=True` so the A/B test isolates the image-side components. The runner now records `text_encoder_low_cpu_mem_usage`, `model_low_cpu_mem_usage`, and `reset_dynamic_memory_after_run` in the metrics JSON.
@@ -597,20 +622,20 @@ Interpretation before testing:
 
 Recommended protocol:
 
-1. Run the current baseline with `LTX_IMAGE_LOW_CPU_MEM_USAGE="1"` and note setup, denoise, RAM cache/standby, and pass total.
+1. Run the current baseline with `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="1"` and note setup, denoise, RAM cache/standby, and pass total.
 2. Clear Windows standby cache externally if you want a cold comparable run.
-3. Run with `LTX_IMAGE_LOW_CPU_MEM_USAGE="0"` using the same env vars and compare setup/pin time, denoise time, peak RAM, and standby cache growth.
-4. Repeat with `LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN="1"` and check whether the next run degrades less without external cache clearing.
+3. Run with `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="0"` using the same env vars and compare setup/pin time, denoise time, peak RAM, and standby cache growth.
+4. Repeat with `DIFFUSERS_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN="1"` and check whether the next run degrades less without external cache clearing.
 
-Update: Diffusers rejects `low_cpu_mem_usage=False` together with `device_map="cpu"` during `from_pretrained`. The runner now keeps `device_map="cpu"` only when `LTX_IMAGE_LOW_CPU_MEM_USAGE="1"`. When testing `LTX_IMAGE_LOW_CPU_MEM_USAGE="0"`, transformer loading uses the regular CPU loading path before the custom manager is attached. Treat this as a loading-path A/B, not as a perfectly isolated boolean change.
+Update: Diffusers rejects `low_cpu_mem_usage=False` together with `device_map="cpu"` during `from_pretrained`. The runner now keeps `device_map="cpu"` only when `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="1"`. When testing `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="0"`, transformer loading uses the regular CPU loading path before the custom manager is attached. Treat this as a loading-path A/B, not as a perfectly isolated boolean change.
 
 ## Windows Standby Purge Helper
 
 The runner now has an optional Windows-only benchmark helper that calls `NtSetSystemInformation(SystemMemoryListInformation=80, MemoryPurgeStandbyList=4)` through Python `ctypes`. It enables `SeProfileSingleProcessPrivilege` on the current process token first, so the Python process must run from an elevated/admin terminal.
 
 ```powershell
-$env:LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
-$env:LTX_IMAGE_PURGE_WINDOWS_STANDBY_AFTER_RUN="1"
+$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
+$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_RUN="1"
 ```
 
 Smoke test result from an elevated terminal:
@@ -626,10 +651,10 @@ Use `BEFORE_RUN=1` for cold benchmark control. Use `AFTER_RUN=1` to test whether
 A second Windows standby purge point was added after prompt/connectors cleanup and immediately before transformer loading:
 
 ```powershell
-$env:LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
+$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
 ```
 
-Observed comparison with the same baseline and `LTX_IMAGE_LOW_CPU_MEM_USAGE="1"`:
+Observed comparison with the same baseline and `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="1"`:
 
 | Purge placement | Denoise | Step avg | Torch alloc/reserved |
 | --- | ---: | ---: | ---: |
@@ -643,8 +668,8 @@ Insight: standby/cache pressure can build during the prompt/connectors stage bef
 A new optional hot-block selection policy was added for the dynamic manager:
 
 ```powershell
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_SELECTION="stride" # default, previous behavior
-$env:LTX_IMAGE_TRANSFORMER_HOT_BLOCK_SELECTION="spread" # experimental
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_SELECTION="stride" # default, previous behavior
+$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_SELECTION="spread" # experimental
 ```
 
 `stride` preserves the current baseline: candidates are visited by `hot_block_stride` and selection stops when the VRAM budget is exhausted. With a `6 GB` block budget this produced the current best stable pattern:
@@ -670,7 +695,7 @@ Insight: distributed residency improved the denoise loop but setup regressed bec
 
 `_pin_cpu_blocks` now pins and assigns tensors through a bounded worker queue instead of collecting all source tensor references and pinned results before assignment. This keeps the same pinned tensor set, but should reduce temporary host-memory pressure during setup.
 
-Test with the same stable baseline and `LTX_IMAGE_TRANSFORMER_HOT_BLOCK_SELECTION="spread"`.
+Test with the same stable baseline and `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_SELECTION="spread"`.
 
 ### Spread + Bounded Pinning Result
 
@@ -696,7 +721,7 @@ The redundant `.to()` guard was neutral in the stable spread baseline:
 | `spread` + bounded pinning | `40.2046s` | `31.4450s` | `8.0990s` | `34.6251s` | `4.3215s/it` | `91.9s` | `6.71 GB` | `27.65 GB` |
 | + skip redundant block moves | `38.8747s` | `30.1105s` | `8.0700s` | `35.6465s` | `4.4229s/it` | `90.5s` | `6.68 GB` | `27.65 GB` |
 
-Insight: `blocks_to_target_devices` did not materially change, so the remaining setup problem is still CPU pinning. The next controlled A/B should keep the same two-purge spread baseline and vary only `LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS`.
+Insight: `blocks_to_target_devices` did not materially change, so the remaining setup problem is still CPU pinning. The next controlled A/B should keep the same two-purge spread baseline and vary only `DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS`.
 
 ### Pin CPU Workers Result
 
@@ -707,7 +732,7 @@ With bounded pin assignment, increasing pin workers from `2` to `4` improved set
 | `2` | `38.8747s` | `30.1105s` | `35.6465s` | `4.4229s/it` | `90.5s` | `6.68 GB` | `27.65 GB` | `0.3428s` |
 | `4` | `32.3166s` | `23.5359s` | `34.8546s` | `4.3236s/it` | `83.8s` | `6.68 GB` | `27.65 GB` | `0.1083s` |
 
-Insight: pinning parallelism is now productive with the bounded queue. Next A/B should test `LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS="8"` under the same two-purge spread baseline.
+Insight: pinning parallelism is now productive with the bounded queue. Next A/B should test `DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="8"` under the same two-purge spread baseline.
 
 ### Pin CPU Workers 8 Result
 
@@ -736,11 +761,11 @@ Insight: `5 GB` is useful as a lower-VRAM profile, but not as the fastest profil
 The `dynamic_weights` module now has an experimental execution mode:
 
 ```powershell
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_runtime"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS="4"
-$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="off"
-$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_runtime"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS="4"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="off"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
 ```
 
 This is the first real dynamic-weight execution path, separate from the LTX-specific block manager. It patches `nn.Linear` modules generically, keeps configured resident modules on the execution device, keeps small non-linear local tensors on the execution device, and streams large linear weights from CPU to the input device during forward.
@@ -766,11 +791,11 @@ Insight: `4` workers remains the best balanced setting. Higher worker counts can
 The `dynamic_weights` module now has a second execution mode:
 
 ```powershell
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_store_runtime"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS="4"
-$env:LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER="off"
-$env:LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_store_runtime"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS="4"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="off"
+$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
 ```
 
 This mode moves large `nn.Linear.weight` tensors into an internal runtime store and replaces the active module parameter with a `meta` placeholder. The patched linear forward reads from the store and copies the weight to the input device when needed.
@@ -792,8 +817,8 @@ Insight: patching `576` linear modules and streaming all large weights is too sl
 `linear_store_runtime` now supports a generic resident weight budget:
 
 ```powershell
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="6"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION="spread"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="6"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION="spread"
 ```
 
 This keeps a spread of large `nn.Linear.weight` tensors resident on the execution device while the remaining linear weights stay in the internal store with `meta` placeholders in the active modules. This is still model-agnostic: selection is based on module order and byte budget, not LTX block names.
@@ -815,10 +840,10 @@ Insight: per-linear residency is not coherent enough for this transformer. It re
 `linear_store_runtime` now supports a generic resident module budget:
 
 ```powershell
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="0"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="6"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="0"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="6"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
 ```
 
 This keeps whole matching modules resident on the execution device and skips patching their descendants. For LTX this lets the portable dynamic weights runtime treat `transformer_blocks.N` as the budget unit without hardcoding LTX-specific names in the manager.
@@ -838,11 +863,11 @@ Insight: module residency is structurally closer to `manual_hot_blocks`, but the
 `resident_module_budget_gb` now also works with `linear_runtime`. This tests generic module-level residency without the store/meta indirection:
 
 ```powershell
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_runtime"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="0"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="6"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_runtime"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="0"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="6"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
 ```
 
 Smoke test result: a CUDA sequential model with block-like submodules successfully ran with one resident block and remaining linears patched through regular CPU parameters.
@@ -864,7 +889,7 @@ Follow-up profiling showed the selected resident modules matched the fastest man
   linear_weight: calls=3552 seconds=4.5617 gb=148.1445
 ```
 
-Insight: the module selection is not the problem. One remaining difference from the manual manager is that non-linear block-local parameters, such as modulation tables used through inline `.to(temb.device)` calls in the block forward, were neither pinned nor made resident by the generic dynamic runtime. The runner now exposes `LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB` and defaults it to `1024` for dynamic weights so these small/medium local tensors can stay resident instead of being copied implicitly during every block forward.
+Insight: the module selection is not the problem. One remaining difference from the manual manager is that non-linear block-local parameters, such as modulation tables used through inline `.to(temb.device)` calls in the block forward, were neither pinned nor made resident by the generic dynamic runtime. The runner now exposes `DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB` and defaults it to `1024` for dynamic weights so these small/medium local tensors can stay resident instead of being copied implicitly during every block forward.
 
 Result after increasing the dynamic small tensor resident threshold to `1024 KB`:
 
@@ -894,13 +919,13 @@ A control run with `linear_runtime`, `6 GB` resident module budget, `1024 KB` sm
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
 | `linear_runtime` + module budget + no pin | `9.0407s` | `121.8672s` | first step `44.7585s`, later `10-13s/it` | `118.7173s` | `142.1s` | `6.79 GB` | `28.22 GB` |
 
-Insight: pageable CPU copies are the wrong tradeoff. The next test adds `LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY=1`, which should avoid the eager `pin_linear_weights` setup cost while pinning each streamed CPU weight on first use so later copies can use the faster pinned path.
+Insight: pageable CPU copies are the wrong tradeoff. The next test adds `DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY=1`, which should avoid the eager `pin_linear_weights` setup cost while pinning each streamed CPU weight on first use so later copies can use the faster pinned path.
 
 Test command delta:
 
 ```powershell
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
-$env:LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY="1"
 ```
 
 If this works, `build_dynamic_weights_plan` should stay closer to the no-pin run while `dynamic-weights-profile` reports `lazy_pin_linear_weight` under setup runtime and copy time should drop after the first use of each weight.
@@ -918,7 +943,7 @@ Insight: lazy pin is technically working, but for an 8-step image run it moves t
 The runner now supports repeated generation with a single loaded/configured transformer:
 
 ```powershell
-$env:LTX_IMAGE_GENERATION_REPEATS="2"
+$env:DIFFUSERS_RUNNER_GENERATION_REPEATS="2"
 ```
 
 This keeps the default single-run path unchanged when unset. With repeats enabled, the runner rebuilds latents and runs denoise multiple times before VAE decode, saving the last latent/image. This is intended to separate cold setup cost from warm execution cost and to compare more fairly against server-style systems such as ComfyUI.
@@ -957,7 +982,7 @@ Windows-specific note: standby cache state can dominate benchmark variance. On t
 
 ### Dynamic Weights Presets
 
-The runner now supports `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET` as a convenience layer over the existing environment variables. Explicit environment variables still override preset values. Presets intentionally do not enable Windows standby purge so they remain portable to Linux/WSL.
+The runner now supports `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET` as a convenience layer over the existing environment variables. Explicit environment variables still override preset values. Presets intentionally do not enable Windows standby purge so they remain portable to Linux/WSL. The legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET` name remains supported for old commands.
 
 | Preset | Intended use | Main resolved settings |
 | --- | --- | --- |
@@ -968,16 +993,16 @@ The runner now supports `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET` as a convenience laye
 | `compat` | Highest portability baseline for driver/OS-sensitive machines | `linear_runtime`, no pinned CPU memory, `3 GB` resident module budget |
 | `long_steps` | Experimental profile for many steps or persistent reuse | `linear_runtime`, lazy pin enabled, `6 GB` resident module budget |
 
-WSL/Linux test note: run the same preset without `LTX_IMAGE_PURGE_WINDOWS_STANDBY_*`. This will tell us whether the strong warm result is mostly from generic pinned-memory/module-residency behavior or from Windows WDDM/shared-memory behavior. Key comparison fields are `build_dynamic_weights_plan`, repeated denoise times, process RAM, and VRAM.
+WSL/Linux test note: run the same preset without `DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_*`. This will tell us whether the strong warm result is mostly from generic pinned-memory/module-residency behavior or from Windows WDDM/shared-memory behavior. Key comparison fields are `build_dynamic_weights_plan`, repeated denoise times, process RAM, and VRAM.
 
 First WSL isolation found two portability issues before denoise:
 
 - Text encoder group offload failed while calling Diffusers `tensor.pin_memory()` (`CUDA error: out of memory`).
 - With fake prompt enabled, the transformer reached dynamic weights setup but failed on our eager `linear.weight.data.pin_memory()` path.
 
-The dynamic weights hook now has `allow_pin_memory_fallback`, exposed as `LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK` and enabled by presets. If large pinned memory allocation fails, the hook logs `pin_linear_weights_failed` or `pin_stored_linear_weights_failed`, disables further pin attempts, and continues with pageable CPU tensors when the CUDA context remains healthy.
+The dynamic weights hook now has `allow_pin_memory_fallback`, exposed as `DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK` and enabled by presets. If large pinned memory allocation fails, the hook logs `pin_linear_weights_failed`, disables further pin attempts, and continues with pageable CPU tensors when the CUDA context remains healthy.
 
-Follow-up WSL result: catching `torch.AcceleratorError` after a failed large `pin_memory()` was not enough. Denoise completed, but VAE decode later failed with `CUDA driver error: device not ready`, indicating that the failed pin attempt can poison the CUDA context. The runner now detects WSL and disables dynamic-weights pinned CPU memory by default via `LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=1`. Set it to `0` only for explicit pinning experiments.
+Follow-up WSL result: catching `torch.AcceleratorError` after a failed large `pin_memory()` was not enough. Denoise completed, but VAE decode later failed with `CUDA driver error: device not ready`, indicating that the failed pin attempt can poison the CUDA context. The runner now detects WSL and disables dynamic-weights pinned CPU memory by default via `DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=1`. Set it to `0` only for explicit pinning experiments.
 
 ### Windows Baseline For WSL Comparison
 
@@ -996,7 +1021,7 @@ Step profile: first step `0.6680s`, then mostly `~1.78-2.30s`. This remains the 
 
 WSL decode follow-up: with pinned dynamic weights disabled, the run completed through VAE decode (`load_vae_to_cuda: 0.9268s`, `vae_decode_modular_call: 0.6174s`, Pass 2 `1.7s`) and saved the image. Total fake-prompt runtime was `52.2s`. This confirms the previous VAE `device not ready` failure was tied to the failed pinned-memory path or memory pressure around it, not to VAE decode itself.
 
-WSL real-prompt baseline: text encoder group offload works with `LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM=0`; with stream enabled it previously hit pinned-memory/driver problems. Real encode took `25.8941s` (`Pass 0: 30.1s`, peak RAM `23.50 GB`, peak VRAM `3.81 GB`). Full run completed in `71.6s`: Pass 1 `39.5s`, VAE Pass 2 `1.6s`, save `0.2s`. This is now the best WSL full-run reference and is close to the earlier ComfyUI total prompt execution reference of `72.11s`, although the distribution is different.
+WSL real-prompt baseline: text encoder group offload works with `DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM=0`; with stream enabled it previously hit pinned-memory/driver problems. Real encode took `25.8941s` (`Pass 0: 30.1s`, peak RAM `23.50 GB`, peak VRAM `3.81 GB`). Full run completed in `71.6s`: Pass 1 `39.5s`, VAE Pass 2 `1.6s`, save `0.2s`. This is now the best WSL full-run reference and is close to the earlier ComfyUI total prompt execution reference of `72.11s`, although the distribution is different.
 
 Ubuntu native baseline: using `one_shot_fast` without Windows standby purge, native Linux accepted eager pinned dynamic weights. Real encode took `16.8579s` (`Pass 0: 20.2s`, peak VRAM `3.80 GB`). Dynamic setup was much faster than Windows (`pin_linear_weights: 13.4585s / 18.5181 GB`, resident budget move `4.7624s / 5.5077 GB`), and denoise was slightly faster than the Windows pinned baseline (`13.0216s`, copy time `0.0521s`). Full run completed in `60.8s` with VAE Pass 2 `1.7s`. This confirms the pinned-memory failure is WSL-specific in the current test matrix, not a general Linux issue.
 
@@ -1018,7 +1043,7 @@ Additional Ubuntu native preset probes:
 | `ubuntu_6` | Text encoder stream on | `one_shot_fast`, text encoder stream on, pinned weights | `16.6s` | `11.5440s` | `12.9409s` | `26.1s` | `43.7s` |
 | `ubuntu_7` | Intended low-RAM check | stream off, pinned weights, but effective resident set still matched `6 GB`/11 blocks | `24.3s` | `18.9552s` | `13.0583s` | `38.4s` | `64.9s` |
 
-Insight: on Ubuntu native, `LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM=1` works and is currently the fastest full-run path. The best run was `ubuntu_6` at `43.7s` total, with Pass 1 only `26.1s`. This is much faster than the earlier ComfyUI reference total (`72.11s`) and shows that Linux native plus pinned dynamic weights is the strongest platform so far. The intended low-RAM test needs to be repeated with explicit resident budget cleanup, because `ubuntu_7` still selected the same 11 resident modules and moved `5.5077 GB`, so it did not validate a true lower-budget profile.
+Insight: on Ubuntu native, `DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM=1` works and is currently the fastest full-run path. The best run was `ubuntu_6` at `43.7s` total, with Pass 1 only `26.1s`. This is much faster than the earlier ComfyUI reference total (`72.11s`) and shows that Linux native plus pinned dynamic weights is the strongest platform so far. The intended low-RAM test needs to be repeated with explicit resident budget cleanup, because `ubuntu_7` still selected the same 11 resident modules and moved `5.5077 GB`, so it did not validate a true lower-budget profile.
 
 Architecture note: dynamic weights presets now live with the `dynamic_weights` manager rather than in the runner. The runner resolves `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET=auto` through that manager and then passes explicit parameters to `DynamicWeightsConfig`. Resident module presets use `auto`, which lets the manager infer repeated module groups from the PyTorch module graph instead of hardcoding LTX-specific names. This keeps the script thin and makes the policy easier to port toward a Diffusers-native design later. The legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET` alias remains valid for old commands.
 
@@ -1040,7 +1065,7 @@ Insight: partial pinning is not a good short-run tradeoff on Windows. It saved o
 
 ## Generic Dynamic Weights Naming
 
-The dynamic weights runtime now accepts generic `DIFFUSERS_DYNAMIC_WEIGHTS_*` environment aliases in addition to the legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_*` names. Presets are expanded internally by the manager, and the runner consults the generic alias first while keeping legacy variables valid for existing benchmark commands.
+The dynamic weights runtime now accepts generic `DIFFUSERS_DYNAMIC_WEIGHTS_*` environment names in addition to the legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_*` aliases. Presets are expanded internally by the manager, and the runner consults `DIFFUSERS_RUNNER_*` first for script controls while keeping legacy `LTX_IMAGE_*` variables valid for existing benchmark commands.
 
 This is the first migration step toward a model-agnostic Diffusers-style loader/runtime. LTX-specific names remain only where the current runner, model classes, or historical benchmark records are still explicitly tied to the LTX image experiment.
 
@@ -1062,4 +1087,4 @@ Runner-level metric output now uses generic `DIFFUSERS_RUNNER_*` aliases, with o
 - `DIFFUSERS_RUNNER_SAVE_METRICS=1`: save metrics JSON even when the metrics level is `0` or `1`.
 - `DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE=1`: additionally print the compact `[dynamic-weights] setup=...` line during setup.
 
-New benchmark commands should prefer `DIFFUSERS_DYNAMIC_WEIGHTS_*` for the manager and `DIFFUSERS_RUNNER_*` for script/runtime controls. Historical `LTX_IMAGE_*` entries above are preserved as the exact commands used during those experiments.
+New benchmark commands should prefer `DIFFUSERS_DYNAMIC_WEIGHTS_*` for the manager and `DIFFUSERS_RUNNER_*` for script/runtime controls. Historical command blocks above have been migrated to the generic names where possible; legacy `LTX_IMAGE_*` aliases remain supported in the runner.
