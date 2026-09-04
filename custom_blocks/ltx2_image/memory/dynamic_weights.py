@@ -28,6 +28,8 @@ _AUTO_BUDGET_DISABLED = "off"
 _AUTO_BUDGET_BALANCED = "balanced"
 _DYNAMIC_WEIGHTS_PLAN_CACHE: dict[tuple[Any, ...], "DynamicWeightsState"] = {}
 _DYNAMIC_WEIGHTS_PLAN_CACHE_LOCK = threading.Lock()
+_DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE: dict[tuple[Any, ...], torch.Tensor] = {}
+_DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE_LOCK = threading.Lock()
 
 
 def generic_dynamic_weights_env_name(name: str) -> str:
@@ -324,6 +326,8 @@ class DynamicWeightsConfig:
     overlap_pin_setup: bool = False
     pin_cpu_workers: int = 1
     cache_plan: bool = True
+    cache_pinned_weights: bool = False
+    pinned_weight_cache_namespace: str = ""
     auto_budget_policy: str = _AUTO_BUDGET_DISABLED
     max_resident_module_budget_gb: float = 6.0
     max_pin_weight_budget_gb: float = 0.0
@@ -384,6 +388,8 @@ class DynamicWeightsSettings:
             "dynamic_weights_disable_pin_on_wsl": self.disable_pin_on_wsl,
             "dynamic_weights_pin_cpu_workers": config.pin_cpu_workers,
             "dynamic_weights_cache_plan": config.cache_plan,
+            "dynamic_weights_cache_pinned_weights": config.cache_pinned_weights,
+            "dynamic_weights_pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
             "dynamic_weights_auto_budget_policy": config.auto_budget_policy,
             "dynamic_weights_max_resident_module_budget_gb": config.max_resident_module_budget_gb,
             "dynamic_weights_max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
@@ -420,6 +426,8 @@ def build_dynamic_weights_event_payload(
         "lazy_pin_cpu_memory": config.lazy_pin_cpu_memory,
         "allow_pin_memory_fallback": config.allow_pin_memory_fallback,
         "cache_plan": config.cache_plan,
+        "cache_pinned_weights": config.cache_pinned_weights,
+        "pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
         "auto_budget_policy": config.auto_budget_policy,
         "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
         "max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
@@ -543,6 +551,7 @@ class DynamicWeightsHook(ModelHook):
         self._pin_memory_disabled = False
         self._pin_lock = threading.Lock()
         self._resident_module_names: set[str] = set()
+        self._pinned_weight_cache_namespace = ""
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
@@ -567,6 +576,10 @@ class DynamicWeightsHook(ModelHook):
             raise ValueError("DynamicWeightsConfig.resident_module_selection must be 'first', 'spread', or 'largest'")
 
     def initialize_hook(self, module: nn.Module) -> nn.Module:
+        self._pinned_weight_cache_namespace = (
+            self.config.pinned_weight_cache_namespace.strip()
+            or f"{module.__class__.__module__}.{module.__class__.__qualname__}"
+        )
         self.state = build_dynamic_weight_plan(module, self.config)
         if self.execution_mode not in {"plan", "linear_runtime"}:
             raise ValueError("DynamicWeightsConfig.execution_mode must be 'plan' or 'linear_runtime'")
@@ -771,7 +784,7 @@ class DynamicWeightsHook(ModelHook):
         if modules_to_pin is not None and embedding.weight.device.type == "cpu" and not embedding.weight.data.is_pinned():
             modules_to_pin.append((module_name, embedding, _tensor_size_bytes(embedding.weight.data)))
 
-    def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Module, int]]) -> list[nn.Module]:
+    def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Module, int]]) -> list[tuple[str, nn.Module]]:
         candidate_bytes = sum(weight_bytes for _, _, weight_bytes in candidates)
         pin_weight_budget_bytes = self.pin_weight_budget_bytes
         if pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio > 0:
@@ -784,7 +797,7 @@ class DynamicWeightsHook(ModelHook):
         self.state.planner_decisions["resolved_pin_weight_budget_gb"] = round(pin_weight_budget_bytes / 1024**3, 4)
         if pin_weight_budget_bytes <= 0:
             self.state.selected_pinned_linear_weights = [module_name for module_name, _, _ in candidates]
-            return [linear for _, linear, _ in candidates]
+            return [(module_name, linear) for module_name, linear, _ in candidates]
 
         ordered_candidates = candidates
         if self.pin_weight_selection == "spread":
@@ -792,13 +805,13 @@ class DynamicWeightsHook(ModelHook):
         elif self.pin_weight_selection == "largest":
             ordered_candidates = _largest_first_order(candidates)
 
-        selected_linears: list[nn.Module] = []
+        selected_linears: list[tuple[str, nn.Module]] = []
         selected_bytes = 0
         selected_names: list[str] = []
         for module_name, linear, weight_bytes in ordered_candidates:
             if selected_bytes + weight_bytes > pin_weight_budget_bytes:
                 continue
-            selected_linears.append(linear)
+            selected_linears.append((module_name, linear))
             selected_names.append(module_name)
             selected_bytes += weight_bytes
 
@@ -937,23 +950,29 @@ class DynamicWeightsHook(ModelHook):
             moved_bytes += tensor_bytes
         return moved_bytes
 
-    def _pin_linear_weights(self, linears: list[nn.Module]) -> int:
+    def _pin_linear_weights(self, linears: list[tuple[str, nn.Module]]) -> int:
         pinned_bytes = 0
 
-        def pin_linear(linear: nn.Linear):
+        def pin_linear(module_name: str, linear: nn.Linear):
+            cached = self._get_cached_pinned_weight(module_name, linear.weight.data)
+            if cached is not None:
+                return linear, cached, _tensor_size_bytes(cached), True
             pinned = linear.weight.data.pin_memory()
-            return linear, pinned, _tensor_size_bytes(pinned)
+            pinned = self._store_cached_pinned_weight(module_name, pinned)
+            return linear, pinned, _tensor_size_bytes(pinned), False
 
         def assign_pinned(result) -> None:
             nonlocal pinned_bytes
-            linear, pinned, tensor_bytes = result
+            linear, pinned, tensor_bytes, cache_hit = result
             linear.weight.data = pinned
             pinned_bytes += tensor_bytes
+            if cache_hit:
+                self.state.add_setup("pinned_weight_cache_hit", 0.0, tensor_bytes)
 
         if self.pin_cpu_workers == 1:
-            for linear in linears:
+            for module_name, linear in linears:
                 try:
-                    assign_pinned(pin_linear(linear))
+                    assign_pinned(pin_linear(module_name, linear))
                 except _PIN_MEMORY_ERRORS as exc:
                     if not self.config.allow_pin_memory_fallback:
                         raise
@@ -967,10 +986,10 @@ class DynamicWeightsHook(ModelHook):
 
             def submit_next() -> bool:
                 try:
-                    linear = next(linears_iter)
+                    module_name, linear = next(linears_iter)
                 except StopIteration:
                     return False
-                futures.add(executor.submit(pin_linear, linear))
+                futures.add(executor.submit(pin_linear, module_name, linear))
                 return True
 
             for _ in range(self.pin_cpu_workers):
@@ -994,26 +1013,32 @@ class DynamicWeightsHook(ModelHook):
                     break
         return pinned_bytes
 
-    def _start_pin_linear_weights(self, linears: list[nn.Module]):
+    def _start_pin_linear_weights(self, linears: list[tuple[str, nn.Module]]):
         start = time.perf_counter()
         executor = ThreadPoolExecutor(max_workers=self.pin_cpu_workers)
         linears_iter = iter(linears)
         futures = set()
         pinned_bytes = 0
 
-        def pin_and_assign(linear: nn.Linear) -> int:
+        def pin_and_assign(module_name: str, linear: nn.Linear) -> tuple[int, bool]:
+            cached = self._get_cached_pinned_weight(module_name, linear.weight.data)
+            if cached is not None:
+                with self._pin_lock:
+                    linear.weight.data = cached
+                return _tensor_size_bytes(cached), True
             pinned = linear.weight.data.pin_memory()
+            pinned = self._store_cached_pinned_weight(module_name, pinned)
             tensor_bytes = _tensor_size_bytes(pinned)
             with self._pin_lock:
                 linear.weight.data = pinned
-            return tensor_bytes
+            return tensor_bytes, False
 
         def submit_next() -> bool:
             try:
-                linear = next(linears_iter)
+                module_name, linear = next(linears_iter)
             except StopIteration:
                 return False
-            futures.add(executor.submit(pin_and_assign, linear))
+            futures.add(executor.submit(pin_and_assign, module_name, linear))
             return True
 
         for _ in range(self.pin_cpu_workers):
@@ -1027,7 +1052,10 @@ class DynamicWeightsHook(ModelHook):
                     for future in as_completed(futures):
                         futures.remove(future)
                         try:
-                            pinned_bytes += future.result()
+                            tensor_bytes, cache_hit = future.result()
+                            pinned_bytes += tensor_bytes
+                            if cache_hit:
+                                self.state.add_setup("pinned_weight_cache_hit", 0.0, tensor_bytes)
                         except _PIN_MEMORY_ERRORS as exc:
                             if not self.config.allow_pin_memory_fallback:
                                 raise
@@ -1043,6 +1071,37 @@ class DynamicWeightsHook(ModelHook):
                 executor.shutdown(wait=True, cancel_futures=True)
 
         return start, finish
+
+    def _get_cached_pinned_weight(self, module_name: str, tensor: torch.Tensor) -> torch.Tensor | None:
+        if not self.config.cache_pinned_weights:
+            return None
+        cache_key = self._pinned_weight_cache_key(module_name, tensor)
+        with _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE_LOCK:
+            cached = _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE.get(cache_key)
+        if cached is None:
+            return None
+        if cached.shape != tensor.shape or cached.dtype != tensor.dtype:
+            return None
+        return cached
+
+    def _store_cached_pinned_weight(self, module_name: str, tensor: torch.Tensor) -> torch.Tensor:
+        if not self.config.cache_pinned_weights or not tensor.is_pinned():
+            return tensor
+        cache_key = self._pinned_weight_cache_key(module_name, tensor)
+        with _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE_LOCK:
+            cached = _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE.setdefault(cache_key, tensor)
+        return cached
+
+    def _pinned_weight_cache_key(self, module_name: str, tensor: torch.Tensor) -> tuple[Any, ...]:
+        return (
+            "v1",
+            self._pinned_weight_cache_namespace,
+            module_name,
+            tuple(tensor.shape),
+            str(tensor.dtype),
+            tensor.numel(),
+            tensor.element_size(),
+        )
 
     def _disable_pin_memory(self, action: str, exc: BaseException) -> None:
         if self._pin_memory_disabled:
@@ -1272,6 +1331,8 @@ def load_dynamic_weights_settings_from_env(
         overlap_pin_setup=overlap_pin_setup,
         pin_cpu_workers=int(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4")),
         cache_plan=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PLAN", "1"),
+        cache_pinned_weights=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PINNED_WEIGHTS", "0"),
+        pinned_weight_cache_namespace=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PINNED_WEIGHT_CACHE_NAMESPACE", ""),
         auto_budget_policy=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY", "off").lower(),
         max_resident_module_budget_gb=float(
             preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB", "6.0")
@@ -1355,6 +1416,11 @@ def get_dynamic_weights_state(module: nn.Module) -> DynamicWeightsState | None:
 def clear_dynamic_weights_plan_cache() -> None:
     with _DYNAMIC_WEIGHTS_PLAN_CACHE_LOCK:
         _DYNAMIC_WEIGHTS_PLAN_CACHE.clear()
+
+
+def clear_dynamic_weights_pinned_tensor_cache() -> None:
+    with _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE_LOCK:
+        _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE.clear()
 
 
 def build_dynamic_weight_plan(module: nn.Module, config: DynamicWeightsConfig) -> DynamicWeightsState:
