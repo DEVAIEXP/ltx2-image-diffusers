@@ -937,19 +937,26 @@ class DynamicWeightsHook(ModelHook):
 
     def _pin_linear_weights(self, linears: list[tuple[str, nn.Module]]) -> int:
         pinned_bytes = 0
+        assignment_lock = threading.Lock()
 
-        def pin_linear(module_name: str, linear: nn.Linear):
-            cached = self._get_cached_pinned_weight(module_name, linear.weight.data)
+        def pin_linear(module_name: str, linear: nn.Module) -> tuple[int, bool]:
+            weight = linear.weight.data
+            cached = self._get_cached_pinned_weight(module_name, weight)
             if cached is not None:
-                return linear, cached, _tensor_size_bytes(cached), True
-            pinned = linear.weight.data.pin_memory()
+                pinned = cached
+                cache_hit = True
+            else:
+                pinned = weight.pin_memory()
+                cache_hit = False
             pinned = self._store_cached_pinned_weight(module_name, pinned)
-            return linear, pinned, _tensor_size_bytes(pinned), False
+            tensor_bytes = _tensor_size_bytes(pinned)
+            with assignment_lock:
+                linear.weight.data = pinned
+            return tensor_bytes, cache_hit
 
-        def assign_pinned(result) -> None:
+        def record_pinned(result: tuple[int, bool]) -> None:
             nonlocal pinned_bytes
-            linear, pinned, tensor_bytes, cache_hit = result
-            linear.weight.data = pinned
+            tensor_bytes, cache_hit = result
             pinned_bytes += tensor_bytes
             if cache_hit:
                 self.state.add_setup("pinned_weight_cache_hit", 0.0, tensor_bytes)
@@ -957,7 +964,7 @@ class DynamicWeightsHook(ModelHook):
         if self.pin_cpu_workers == 1:
             for module_name, linear in linears:
                 try:
-                    assign_pinned(pin_linear(module_name, linear))
+                    record_pinned(pin_linear(module_name, linear))
                 except _PIN_MEMORY_ERRORS as exc:
                     if not self.config.allow_pin_memory_fallback:
                         raise
@@ -985,7 +992,7 @@ class DynamicWeightsHook(ModelHook):
                 for future in as_completed(futures):
                     futures.remove(future)
                     try:
-                        assign_pinned(future.result())
+                        record_pinned(future.result())
                     except _PIN_MEMORY_ERRORS as exc:
                         if not self.config.allow_pin_memory_fallback:
                             raise
