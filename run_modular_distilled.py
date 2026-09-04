@@ -582,6 +582,8 @@ def main():
             if DYNAMIC_WEIGHTS_SHOW_PROFILE:
                 text_encoder_dynamic_weights_hook.print_profile_summary()
             remove_dynamic_weights(text_encoder)
+            text_encoder_dynamic_weights_hook = None
+            del text_encoder_dynamic_weights_config
         del prompt_state
         del prompt_pipe, text_encoder, tokenizer
         flush()
