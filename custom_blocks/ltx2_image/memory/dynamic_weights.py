@@ -30,6 +30,8 @@ _DYNAMIC_WEIGHTS_PLAN_CACHE: dict[tuple[Any, ...], "DynamicWeightsState"] = {}
 _DYNAMIC_WEIGHTS_PLAN_CACHE_LOCK = threading.Lock()
 _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE: dict[tuple[Any, ...], torch.Tensor] = {}
 _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE_LOCK = threading.Lock()
+_DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE: dict[tuple[Any, ...], torch.Tensor] = {}
+_DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE_LOCK = threading.Lock()
 
 
 def generic_dynamic_weights_env_name(name: str) -> str:
@@ -328,6 +330,8 @@ class DynamicWeightsConfig:
     cache_plan: bool = True
     cache_pinned_weights: bool = False
     pinned_weight_cache_namespace: str = ""
+    cache_resident_device_tensors: bool = False
+    resident_device_cache_namespace: str = ""
     auto_budget_policy: str = _AUTO_BUDGET_DISABLED
     max_resident_module_budget_gb: float = 6.0
     max_pin_weight_budget_gb: float = 0.0
@@ -390,6 +394,8 @@ class DynamicWeightsSettings:
             "dynamic_weights_cache_plan": config.cache_plan,
             "dynamic_weights_cache_pinned_weights": config.cache_pinned_weights,
             "dynamic_weights_pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
+            "dynamic_weights_cache_resident_device_tensors": config.cache_resident_device_tensors,
+            "dynamic_weights_resident_device_cache_namespace": config.resident_device_cache_namespace or None,
             "dynamic_weights_auto_budget_policy": config.auto_budget_policy,
             "dynamic_weights_max_resident_module_budget_gb": config.max_resident_module_budget_gb,
             "dynamic_weights_max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
@@ -428,6 +434,8 @@ def build_dynamic_weights_event_payload(
         "cache_plan": config.cache_plan,
         "cache_pinned_weights": config.cache_pinned_weights,
         "pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
+        "cache_resident_device_tensors": config.cache_resident_device_tensors,
+        "resident_device_cache_namespace": config.resident_device_cache_namespace or None,
         "auto_budget_policy": config.auto_budget_policy,
         "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
         "max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
@@ -552,6 +560,7 @@ class DynamicWeightsHook(ModelHook):
         self._pin_lock = threading.Lock()
         self._resident_module_names: set[str] = set()
         self._pinned_weight_cache_namespace = ""
+        self._resident_device_cache_namespace = ""
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
@@ -579,6 +588,10 @@ class DynamicWeightsHook(ModelHook):
         self._pinned_weight_cache_namespace = (
             self.config.pinned_weight_cache_namespace.strip()
             or f"{module.__class__.__module__}.{module.__class__.__qualname__}"
+        )
+        self._resident_device_cache_namespace = (
+            self.config.resident_device_cache_namespace.strip()
+            or self._pinned_weight_cache_namespace
         )
         self.state = build_dynamic_weight_plan(module, self.config)
         if self.execution_mode not in {"plan", "linear_runtime"}:
@@ -687,8 +700,7 @@ class DynamicWeightsHook(ModelHook):
                 continue
             if module_name in self._resident_module_names:
                 start = time.perf_counter()
-                before = _module_size_bytes(submodule)
-                submodule.to(self.execution_device)
+                before = self._move_resident_module_to_execution_device(module_name, submodule)
                 self.state.add_setup("resident_budget_modules_to_device", time.perf_counter() - start, before)
                 continue
 
@@ -697,8 +709,7 @@ class DynamicWeightsHook(ModelHook):
             )
             if is_resident_module:
                 start = time.perf_counter()
-                before = _module_size_bytes(submodule)
-                submodule.to(self.execution_device)
+                before = self._move_resident_module_to_execution_device(module_name, submodule)
                 self.state.add_setup("resident_modules_to_device", time.perf_counter() - start, before)
                 continue
 
@@ -908,6 +919,38 @@ class DynamicWeightsHook(ModelHook):
     def _is_descendant_of_resident_module(self, module_name: str) -> bool:
         return any(_is_module_descendant(module_name, resident_name) for resident_name in self._resident_module_names)
 
+    def _move_resident_module_to_execution_device(self, module_name: str, module: nn.Module) -> int:
+        if not self.config.cache_resident_device_tensors:
+            module_bytes = _module_size_bytes(module)
+            module.to(self.execution_device)
+            return module_bytes
+
+        moved_bytes = 0
+        for tensor_name, parameter in module.named_parameters(recurse=True):
+            tensor_bytes = _tensor_size_bytes(parameter.data)
+            moved_bytes += tensor_bytes
+            cached = self._get_cached_resident_device_tensor(module_name, tensor_name, parameter.data)
+            if cached is not None:
+                parameter.data = cached
+                self.state.add_setup("resident_device_cache_hit", 0.0, tensor_bytes)
+                continue
+            if parameter.device != self.execution_device:
+                parameter.data = parameter.data.to(self.execution_device)
+            parameter.data = self._store_cached_resident_device_tensor(module_name, tensor_name, parameter.data)
+
+        for tensor_name, buffer in module.named_buffers(recurse=True):
+            tensor_bytes = _tensor_size_bytes(buffer.data)
+            moved_bytes += tensor_bytes
+            cached = self._get_cached_resident_device_tensor(module_name, tensor_name, buffer.data)
+            if cached is not None:
+                buffer.data = cached
+                self.state.add_setup("resident_device_cache_hit", 0.0, tensor_bytes)
+                continue
+            if buffer.device != self.execution_device:
+                buffer.data = buffer.data.to(self.execution_device)
+            buffer.data = self._store_cached_resident_device_tensor(module_name, tensor_name, buffer.data)
+        return moved_bytes
+
     def _move_root_local_tensors_to_device(self, module: nn.Module) -> None:
         start = time.perf_counter()
         moved_bytes = 0
@@ -1097,6 +1140,48 @@ class DynamicWeightsHook(ModelHook):
             "v1",
             self._pinned_weight_cache_namespace,
             module_name,
+            tuple(tensor.shape),
+            str(tensor.dtype),
+            tensor.numel(),
+            tensor.element_size(),
+        )
+
+    def _get_cached_resident_device_tensor(
+        self,
+        module_name: str,
+        tensor_name: str,
+        tensor: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if not self.config.cache_resident_device_tensors:
+            return None
+        cache_key = self._resident_device_cache_key(module_name, tensor_name, tensor)
+        with _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE_LOCK:
+            cached = _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE.get(cache_key)
+        if cached is None:
+            return None
+        if cached.device != self.execution_device or cached.shape != tensor.shape or cached.dtype != tensor.dtype:
+            return None
+        return cached
+
+    def _store_cached_resident_device_tensor(
+        self,
+        module_name: str,
+        tensor_name: str,
+        tensor: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.config.cache_resident_device_tensors or tensor.device != self.execution_device:
+            return tensor
+        cache_key = self._resident_device_cache_key(module_name, tensor_name, tensor)
+        with _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE_LOCK:
+            cached = _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE.setdefault(cache_key, tensor)
+        return cached
+
+    def _resident_device_cache_key(self, module_name: str, tensor_name: str, tensor: torch.Tensor) -> tuple[Any, ...]:
+        return (
+            "v1",
+            self._resident_device_cache_namespace,
+            module_name,
+            tensor_name,
             tuple(tensor.shape),
             str(tensor.dtype),
             tensor.numel(),
@@ -1333,6 +1418,8 @@ def load_dynamic_weights_settings_from_env(
         cache_plan=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PLAN", "1"),
         cache_pinned_weights=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PINNED_WEIGHTS", "0"),
         pinned_weight_cache_namespace=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PINNED_WEIGHT_CACHE_NAMESPACE", ""),
+        cache_resident_device_tensors=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_RESIDENT_DEVICE_TENSORS", "0"),
+        resident_device_cache_namespace=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_DEVICE_CACHE_NAMESPACE", ""),
         auto_budget_policy=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY", "off").lower(),
         max_resident_module_budget_gb=float(
             preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB", "6.0")
@@ -1421,6 +1508,11 @@ def clear_dynamic_weights_plan_cache() -> None:
 def clear_dynamic_weights_pinned_tensor_cache() -> None:
     with _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE_LOCK:
         _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE.clear()
+
+
+def clear_dynamic_weights_resident_device_tensor_cache() -> None:
+    with _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE_LOCK:
+        _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE.clear()
 
 
 def build_dynamic_weight_plan(module: nn.Module, config: DynamicWeightsConfig) -> DynamicWeightsState:
