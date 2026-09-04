@@ -24,14 +24,13 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
     LTX2ImagePrepareLatentsStep,
 )
 from custom_blocks.ltx2_image.memory import (
-    DYNAMIC_WEIGHTS_PRESETS,
-    DynamicWeightsConfig,
     apply_dynamic_weights,
     dynamic_weights_env_names,
+    dynamic_weights_preset_env_value,
     from_pretrained_with_dynamic_weights,
     is_wsl_environment,
+    load_dynamic_weights_settings_from_env,
     remove_dynamic_weights,
-    resolve_dynamic_weights_preset,
 )
 from custom_blocks.ltx2_image.memory_manager import LTX2DynamicBlockManager
 from inference_utils import RunTracker, flush
@@ -71,39 +70,31 @@ MODEL_TAG = "distilled_modular"
 MODEL_PATH = os.environ.get("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
 MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("LTX_IMAGE_LOW_CPU_MEM_USAGE", "1")
-REQUESTED_DYNAMIC_WEIGHTS_PRESET = env_value("LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET", "").strip().lower()
-DYNAMIC_WEIGHTS_PRESET = resolve_dynamic_weights_preset(REQUESTED_DYNAMIC_WEIGHTS_PRESET, running_on_wsl=RUNNING_ON_WSL)
+DYNAMIC_WEIGHTS_SETTINGS = load_dynamic_weights_settings_from_env(
+    execution_device=DEVICE,
+    offload_device=OFFLOAD_DEVICE,
+    target_module_classes=(torch.nn.Linear,),
+    always_resident_modules_pattern=(
+        r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
+    ),
+    running_on_wsl=RUNNING_ON_WSL,
+)
+REQUESTED_DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.requested_preset
+DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.effective_preset
 
 
 def preset_env(name: str, default: str = "") -> str:
-    for env_name in dynamic_weights_env_names(name):
-        if env_name in os.environ:
-            return os.environ[env_name]
-    if not DYNAMIC_WEIGHTS_PRESET:
-        return default
-    preset_values = DYNAMIC_WEIGHTS_PRESETS[DYNAMIC_WEIGHTS_PRESET]
-    for env_name in dynamic_weights_env_names(name):
-        if env_name in preset_values:
-            return preset_values[env_name]
-    return preset_values.get(name, default)
+    return dynamic_weights_preset_env_value(
+        name,
+        default,
+        requested_preset=REQUESTED_DYNAMIC_WEIGHTS_PRESET,
+        effective_preset=DYNAMIC_WEIGHTS_PRESET,
+        running_on_wsl=RUNNING_ON_WSL,
+    )
 
 
 def parse_bool_preset_env(name: str, default: str = "0") -> bool:
     return preset_env(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def parse_int_list_preset_env(name: str) -> tuple[int, ...]:
-    value = preset_env(name, "").strip()
-    if not value:
-        return ()
-    return tuple(int(item.strip()) for item in value.split(",") if item.strip())
-
-
-def parse_pattern_list_preset_env(name: str) -> tuple[str, ...]:
-    value = preset_env(name, "").strip()
-    if not value:
-        return ()
-    return tuple(item.strip() for item in value.split(";") if item.strip())
 
 AUTO_CPU_OFFLOAD = parse_bool_env("LTX_IMAGE_AUTO_CPU_OFFLOAD")
 TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD", "1")
@@ -136,25 +127,24 @@ TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = parse_bool_env("LTX_IMAGE_TRANSFORMER_
 TRANSFORMER_MANAGER_PROFILE_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFILE_LAYERS")
 TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS")
 TRANSFORMER_MANAGER_PROFILE_FULL = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL")
-DYNAMIC_WEIGHTS_PLAN = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN")
-DYNAMIC_WEIGHTS_EXECUTION_MODE = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
-DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
-DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY")
-DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK", "1")
-DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL", "1")
-DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4"))
-DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB = float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB", "0.0"))
-DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION", "spread").lower()
-DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB = int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024"))
-DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0"))
-DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION", "spread").lower()
-DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0"))
-DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS = parse_pattern_list_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS")
-DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower()
-DYNAMIC_WEIGHTS_VERBOSE = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1")
-DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_PIN_CPU_MEMORY and not (
-    RUNNING_ON_WSL and DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL
-)
+DYNAMIC_WEIGHTS_CONFIG = DYNAMIC_WEIGHTS_SETTINGS.config
+DYNAMIC_WEIGHTS_PLAN = DYNAMIC_WEIGHTS_SETTINGS.plan
+DYNAMIC_WEIGHTS_EXECUTION_MODE = DYNAMIC_WEIGHTS_CONFIG.execution_mode
+DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.requested_pin_cpu_memory
+DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_CONFIG.lazy_pin_cpu_memory
+DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK = DYNAMIC_WEIGHTS_CONFIG.allow_pin_memory_fallback
+DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL = DYNAMIC_WEIGHTS_SETTINGS.disable_pin_on_wsl
+DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = DYNAMIC_WEIGHTS_CONFIG.pin_cpu_workers
+DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB = DYNAMIC_WEIGHTS_CONFIG.pin_weight_budget_gb
+DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION = DYNAMIC_WEIGHTS_CONFIG.pin_weight_selection
+DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB = DYNAMIC_WEIGHTS_CONFIG.small_tensor_threshold_bytes // 1024
+DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = DYNAMIC_WEIGHTS_CONFIG.resident_weight_budget_gb
+DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION = DYNAMIC_WEIGHTS_CONFIG.resident_weight_selection
+DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = DYNAMIC_WEIGHTS_CONFIG.resident_module_budget_gb
+DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS = DYNAMIC_WEIGHTS_CONFIG.resident_module_patterns
+DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION = DYNAMIC_WEIGHTS_CONFIG.resident_module_selection
+DYNAMIC_WEIGHTS_VERBOSE = DYNAMIC_WEIGHTS_CONFIG.verbose
+DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.effective_pin_cpu_memory
 PRE_VAE_CLEANUP_REPEATS = int(preset_env("LTX_IMAGE_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("LTX_IMAGE_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
@@ -633,31 +623,8 @@ def main():
         "low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
     }
 
-    dynamic_weights_enabled = DYNAMIC_WEIGHTS_PLAN or DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan"
-    dynamic_weights_config = None
-    if dynamic_weights_enabled:
-        dynamic_weights_config = DynamicWeightsConfig(
-            execution_device=DEVICE,
-            offload_device=OFFLOAD_DEVICE,
-            target_module_classes=(torch.nn.Linear,),
-            always_resident_modules_pattern=(
-                r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
-            ),
-            small_tensor_threshold_bytes=DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB * 1024,
-            execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
-            pin_cpu_memory=DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
-            lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
-            allow_pin_memory_fallback=DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
-            pin_cpu_workers=DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
-            pin_weight_budget_gb=DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
-            pin_weight_selection=DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
-            resident_weight_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
-            resident_weight_selection=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION,
-            resident_module_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
-            resident_module_patterns=DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS,
-            resident_module_selection=DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION,
-            verbose=DYNAMIC_WEIGHTS_VERBOSE,
-        )
+    dynamic_weights_enabled = DYNAMIC_WEIGHTS_SETTINGS.enabled
+    dynamic_weights_config = DYNAMIC_WEIGHTS_CONFIG if dynamic_weights_enabled else None
     if PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER:
         purge_windows_standby_cache_event(record_event, "purge_windows_standby_before_transformer")
 

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 import torch.nn as nn
@@ -39,6 +39,14 @@ def dynamic_weights_env_names(name: str) -> tuple[str, ...]:
     if generic_name == legacy_name:
         return (name,)
     return (generic_name, legacy_name)
+
+
+def dynamic_weights_env_value(name: str, default: str = "", environ: Mapping[str, str] | None = None) -> str:
+    env = os.environ if environ is None else environ
+    for env_name in dynamic_weights_env_names(name):
+        if env_name in env:
+            return env[env_name]
+    return env.get(name, default)
 
 
 def _expand_dynamic_weights_preset_aliases(presets: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -223,6 +231,41 @@ def resolve_dynamic_weights_preset(requested_preset: str, *, running_on_wsl: boo
     return "linux_native_fast"
 
 
+def dynamic_weights_preset_env_value(
+    name: str,
+    default: str = "",
+    *,
+    requested_preset: str = "",
+    effective_preset: str | None = None,
+    running_on_wsl: bool | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    env = os.environ if environ is None else environ
+    for env_name in dynamic_weights_env_names(name):
+        if env_name in env:
+            return env[env_name]
+
+    preset_name = effective_preset
+    if preset_name is None:
+        preset_name = resolve_dynamic_weights_preset(requested_preset, running_on_wsl=running_on_wsl)
+    if not preset_name:
+        return default
+
+    preset_values = DYNAMIC_WEIGHTS_PRESETS[preset_name]
+    for env_name in dynamic_weights_env_names(name):
+        if env_name in preset_values:
+            return preset_values[env_name]
+    return preset_values.get(name, default)
+
+
+def _parse_bool_value(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_pattern_list_value(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(";") if item.strip())
+
+
 @dataclass(frozen=True)
 class DynamicWeightsConfig:
     """Configuration for the experimental dynamic weight planner/runtime."""
@@ -246,6 +289,25 @@ class DynamicWeightsConfig:
     resident_module_patterns: tuple[str, ...] = ()
     resident_module_selection: str = "spread"
     verbose: bool = False
+
+
+@dataclass(frozen=True)
+class DynamicWeightsSettings:
+    """Environment-derived dynamic weights settings plus the resolved runtime config."""
+
+    requested_preset: str
+    effective_preset: str
+    enabled: bool
+    plan: bool
+    config: DynamicWeightsConfig
+    requested_pin_cpu_memory: bool
+    effective_pin_cpu_memory: bool
+    disable_pin_on_wsl: bool
+    running_on_wsl: bool
+
+    @property
+    def execution_mode(self) -> str:
+        return self.config.execution_mode
 
 
 @dataclass(frozen=True)
@@ -941,6 +1003,76 @@ class DynamicWeightsHook(ModelHook):
                     f"    {name}: calls={item['calls']} seconds={item['seconds']:.4f} gb={item['gb']:.4f}",
                     flush=True,
                 )
+
+
+def load_dynamic_weights_settings_from_env(
+    *,
+    execution_device: str | torch.device = "cuda:0",
+    offload_device: str | torch.device = "cpu",
+    target_module_classes: tuple[type[nn.Module], ...] = (nn.Linear,),
+    skip_modules_pattern: tuple[str, ...] = (),
+    always_resident_modules_pattern: tuple[str, ...] = (),
+    running_on_wsl: bool | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> DynamicWeightsSettings:
+    env = os.environ if environ is None else environ
+    is_wsl = is_wsl_environment() if running_on_wsl is None else running_on_wsl
+    requested_preset = dynamic_weights_env_value("LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET", "", env).strip().lower()
+    effective_preset = resolve_dynamic_weights_preset(requested_preset, running_on_wsl=is_wsl)
+
+    def preset_env(name: str, default: str = "") -> str:
+        return dynamic_weights_preset_env_value(
+            name,
+            default,
+            requested_preset=requested_preset,
+            effective_preset=effective_preset,
+            running_on_wsl=is_wsl,
+            environ=env,
+        )
+
+    def preset_bool(name: str, default: str = "0") -> bool:
+        return _parse_bool_value(preset_env(name, default))
+
+    plan = preset_bool("LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN")
+    execution_mode = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
+    requested_pin_cpu_memory = preset_bool("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
+    lazy_pin_cpu_memory = preset_bool("LTX_IMAGE_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY")
+    allow_pin_memory_fallback = preset_bool("LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK", "1")
+    disable_pin_on_wsl = preset_bool("LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL", "1")
+    effective_pin_cpu_memory = requested_pin_cpu_memory and not (is_wsl and disable_pin_on_wsl)
+
+    config = DynamicWeightsConfig(
+        execution_device=execution_device,
+        offload_device=offload_device,
+        target_module_classes=target_module_classes,
+        skip_modules_pattern=skip_modules_pattern,
+        always_resident_modules_pattern=always_resident_modules_pattern,
+        small_tensor_threshold_bytes=int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024")) * 1024,
+        execution_mode=execution_mode,
+        pin_cpu_memory=effective_pin_cpu_memory,
+        lazy_pin_cpu_memory=lazy_pin_cpu_memory,
+        allow_pin_memory_fallback=allow_pin_memory_fallback,
+        pin_cpu_workers=int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4")),
+        pin_weight_budget_gb=float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB", "0.0")),
+        pin_weight_selection=preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION", "spread").lower(),
+        resident_weight_budget_gb=float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0")),
+        resident_weight_selection=preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION", "spread").lower(),
+        resident_module_budget_gb=float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0")),
+        resident_module_patterns=_parse_pattern_list_value(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS", "")),
+        resident_module_selection=preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower(),
+        verbose=preset_bool("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1"),
+    )
+    return DynamicWeightsSettings(
+        requested_preset=requested_preset,
+        effective_preset=effective_preset,
+        enabled=plan or execution_mode != "plan",
+        plan=plan,
+        config=config,
+        requested_pin_cpu_memory=requested_pin_cpu_memory,
+        effective_pin_cpu_memory=effective_pin_cpu_memory,
+        disable_pin_on_wsl=disable_pin_on_wsl,
+        running_on_wsl=is_wsl,
+    )
 
 
 def apply_dynamic_weights(module: nn.Module, config: DynamicWeightsConfig | None = None) -> DynamicWeightsHook:
