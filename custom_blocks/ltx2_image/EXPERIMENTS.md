@@ -1037,3 +1037,9 @@ Windows pin budget probe:
 | Pin budget probe | `12 GB` | `316` | `18.4572s` / `11.9868 GB` | `126.2842s` | `167.1s` | `121.7972s` / `148.1445 GB` | `40.13 GB` |
 
 Insight: partial pinning is not a good short-run tradeoff on Windows. It saved only about `4.3s` of pin setup versus full pinning, but the unpinned streamed weights pushed runtime copy time from roughly sub-second/low-single-second to `121.7972s`. For 8-step runs the preset should keep either full eager pinning or no pinning for compatibility; pin budgets may only be worth revisiting with smarter per-weight profiling or a persistent warm process.
+
+## Generic Dynamic Weights Naming
+
+The dynamic weights runtime now accepts generic `DIFFUSERS_DYNAMIC_WEIGHTS_*` environment aliases in addition to the legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_*` names. Presets are expanded internally by the manager, and the runner consults the generic alias first while keeping legacy variables valid for existing benchmark commands.
+
+This is the first migration step toward a model-agnostic Diffusers-style loader/runtime. LTX-specific names remain only where the current runner, model classes, or historical benchmark records are still explicitly tied to the LTX image experiment.

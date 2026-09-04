@@ -16,7 +16,40 @@ from diffusers.hooks.hooks import HookRegistry, ModelHook
 
 
 _DYNAMIC_WEIGHTS_HOOK = "dynamic_weights"
+_DYNAMIC_WEIGHTS_ENV_PREFIX = "DIFFUSERS_DYNAMIC_WEIGHTS_"
+_LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX = "LTX_IMAGE_DYNAMIC_WEIGHTS_"
 _PIN_MEMORY_ERRORS = (RuntimeError, getattr(torch, "AcceleratorError", RuntimeError))
+
+
+def generic_dynamic_weights_env_name(name: str) -> str:
+    if name.startswith(_LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX):
+        return _DYNAMIC_WEIGHTS_ENV_PREFIX + name[len(_LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX) :]
+    return name
+
+
+def legacy_dynamic_weights_env_name(name: str) -> str:
+    if name.startswith(_DYNAMIC_WEIGHTS_ENV_PREFIX):
+        return _LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX + name[len(_DYNAMIC_WEIGHTS_ENV_PREFIX) :]
+    return name
+
+
+def dynamic_weights_env_names(name: str) -> tuple[str, ...]:
+    generic_name = generic_dynamic_weights_env_name(name)
+    legacy_name = legacy_dynamic_weights_env_name(name)
+    if generic_name == legacy_name:
+        return (name,)
+    return (generic_name, legacy_name)
+
+
+def _expand_dynamic_weights_preset_aliases(presets: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    expanded_presets: dict[str, dict[str, str]] = {}
+    for preset_name, values in presets.items():
+        expanded_values = dict(values)
+        for env_name, value in values.items():
+            for alias in dynamic_weights_env_names(env_name):
+                expanded_values.setdefault(alias, value)
+        expanded_presets[preset_name] = expanded_values
+    return expanded_presets
 
 
 def is_wsl_environment() -> bool:
@@ -35,7 +68,7 @@ def is_wsl_environment() -> bool:
     return "microsoft" in version or "wsl" in version
 
 
-DYNAMIC_WEIGHTS_PRESETS: dict[str, dict[str, str]] = {
+_DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
     "off": {
         "LTX_IMAGE_DYNAMIC_WEIGHTS_EXECUTION_MODE": "plan",
         "LTX_IMAGE_DYNAMIC_WEIGHTS_PLAN": "0",
@@ -168,13 +201,16 @@ DYNAMIC_WEIGHTS_PRESETS: dict[str, dict[str, str]] = {
 }
 
 
+DYNAMIC_WEIGHTS_PRESETS = _expand_dynamic_weights_preset_aliases(_DYNAMIC_WEIGHTS_PRESET_VALUES)
+
+
 def resolve_dynamic_weights_preset(requested_preset: str, *, running_on_wsl: bool | None = None) -> str:
     requested_preset = requested_preset.strip().lower()
     if requested_preset != "auto":
         if requested_preset and requested_preset not in DYNAMIC_WEIGHTS_PRESETS:
             valid_presets = ", ".join(["auto", *sorted(DYNAMIC_WEIGHTS_PRESETS)])
             raise ValueError(
-                f"Invalid LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET={requested_preset!r}. "
+                f"Invalid DIFFUSERS_DYNAMIC_WEIGHTS_PRESET/LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET={requested_preset!r}. "
                 f"Valid values: {valid_presets}"
             )
         return requested_preset

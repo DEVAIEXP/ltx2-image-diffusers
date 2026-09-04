@@ -27,6 +27,7 @@ from custom_blocks.ltx2_image.memory import (
     DYNAMIC_WEIGHTS_PRESETS,
     DynamicWeightsConfig,
     apply_dynamic_weights,
+    dynamic_weights_env_names,
     is_wsl_environment,
     remove_dynamic_weights,
     resolve_dynamic_weights_preset,
@@ -50,8 +51,15 @@ def parse_pattern_list_env(name: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(";") if item.strip())
 
 
+def env_value(name: str, default: str = "") -> str:
+    for env_name in dynamic_weights_env_names(name):
+        if env_name in os.environ:
+            return os.environ[env_name]
+    return os.environ.get(name, default)
+
+
 def parse_bool_env(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+    return env_value(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 RUNNING_ON_WSL = is_wsl_environment()
@@ -63,16 +71,21 @@ MODEL_TAG = "distilled_modular"
 MODEL_PATH = os.environ.get("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
 MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("LTX_IMAGE_LOW_CPU_MEM_USAGE", "1")
-REQUESTED_DYNAMIC_WEIGHTS_PRESET = os.environ.get("LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET", "").strip().lower()
+REQUESTED_DYNAMIC_WEIGHTS_PRESET = env_value("LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET", "").strip().lower()
 DYNAMIC_WEIGHTS_PRESET = resolve_dynamic_weights_preset(REQUESTED_DYNAMIC_WEIGHTS_PRESET, running_on_wsl=RUNNING_ON_WSL)
 
 
 def preset_env(name: str, default: str = "") -> str:
-    if name in os.environ:
-        return os.environ[name]
+    for env_name in dynamic_weights_env_names(name):
+        if env_name in os.environ:
+            return os.environ[env_name]
     if not DYNAMIC_WEIGHTS_PRESET:
         return default
-    return DYNAMIC_WEIGHTS_PRESETS[DYNAMIC_WEIGHTS_PRESET].get(name, default)
+    preset_values = DYNAMIC_WEIGHTS_PRESETS[DYNAMIC_WEIGHTS_PRESET]
+    for env_name in dynamic_weights_env_names(name):
+        if env_name in preset_values:
+            return preset_values[env_name]
+    return preset_values.get(name, default)
 
 
 def parse_bool_preset_env(name: str, default: str = "0") -> bool:
