@@ -477,6 +477,7 @@ class DynamicWeightsState:
             total_bytes=self.total_bytes,
             bytes_by_placement=dict(self.bytes_by_placement),
             resolved_resident_module_patterns=list(self.resolved_resident_module_patterns),
+            planner_decisions=dict(self.planner_decisions),
         )
 
     def add_setup(self, action: str, seconds: float, byte_count: int = 0) -> None:
@@ -639,8 +640,13 @@ class DynamicWeightsHook(ModelHook):
     def _prepare_linear_runtime(self, module: nn.Module) -> None:
         skip_patterns = tuple(re.compile(pattern) for pattern in self.config.skip_modules_pattern)
         resident_patterns = tuple(re.compile(pattern) for pattern in self.config.always_resident_modules_pattern)
-        resident_module_patterns = _resolve_resident_module_patterns(module, self.config)
-        self.state.resolved_resident_module_patterns = [pattern.pattern for pattern in resident_module_patterns]
+        if self.state.resolved_resident_module_patterns:
+            resident_module_patterns = tuple(
+                re.compile(pattern) for pattern in self.state.resolved_resident_module_patterns
+            )
+        else:
+            resident_module_patterns = _resolve_resident_module_patterns(module, self.config)
+            self.state.resolved_resident_module_patterns = [pattern.pattern for pattern in resident_module_patterns]
         modules_to_pin: list[tuple[str, nn.Module, int]] = []
         eager_pin_cpu_memory = self.config.pin_cpu_memory and not self.config.lazy_pin_cpu_memory
         pin_work = None
@@ -1346,7 +1352,36 @@ def get_dynamic_weights_state(module: nn.Module) -> DynamicWeightsState | None:
     return hook.state
 
 
+def clear_dynamic_weights_plan_cache() -> None:
+    with _DYNAMIC_WEIGHTS_PLAN_CACHE_LOCK:
+        _DYNAMIC_WEIGHTS_PLAN_CACHE.clear()
+
+
 def build_dynamic_weight_plan(module: nn.Module, config: DynamicWeightsConfig) -> DynamicWeightsState:
+    if not config.cache_plan:
+        state = _build_dynamic_weight_plan_uncached(module, config)
+        state.planner_decisions["plan_cache"] = "disabled"
+        return state
+
+    cache_key = _dynamic_weight_plan_cache_key(module, config)
+    with _DYNAMIC_WEIGHTS_PLAN_CACHE_LOCK:
+        cached_state = _DYNAMIC_WEIGHTS_PLAN_CACHE.get(cache_key)
+    if cached_state is not None:
+        state = cached_state.clone_for_runtime()
+        state.planner_decisions["plan_cache"] = "hit"
+        return state
+
+    state = _build_dynamic_weight_plan_uncached(module, config)
+    state.resolved_resident_module_patterns = [
+        pattern.pattern for pattern in _resolve_resident_module_patterns(module, config)
+    ]
+    state.planner_decisions["plan_cache"] = "miss"
+    with _DYNAMIC_WEIGHTS_PLAN_CACHE_LOCK:
+        _DYNAMIC_WEIGHTS_PLAN_CACHE[cache_key] = state.clone_for_runtime()
+    return state
+
+
+def _build_dynamic_weight_plan_uncached(module: nn.Module, config: DynamicWeightsConfig) -> DynamicWeightsState:
     state = DynamicWeightsState()
     skip_patterns = tuple(re.compile(pattern) for pattern in config.skip_modules_pattern)
     resident_patterns = tuple(re.compile(pattern) for pattern in config.always_resident_modules_pattern)
@@ -1378,6 +1413,54 @@ def build_dynamic_weight_plan(module: nn.Module, config: DynamicWeightsConfig) -
             state.bytes_by_placement[placement] = state.bytes_by_placement.get(placement, 0) + entry.bytes
 
     return state
+
+
+def _dynamic_weight_plan_cache_key(module: nn.Module, config: DynamicWeightsConfig) -> tuple[Any, ...]:
+    return (
+        module.__class__.__module__,
+        module.__class__.__qualname__,
+        tuple(cls.__module__ + "." + cls.__qualname__ for cls in config.target_module_classes),
+        tuple(config.skip_modules_pattern),
+        tuple(config.always_resident_modules_pattern),
+        tuple(config.resident_module_patterns),
+        int(config.small_tensor_threshold_bytes),
+        _dynamic_weight_plan_structure_signature(module, config),
+    )
+
+
+def _dynamic_weight_plan_structure_signature(
+    module: nn.Module,
+    config: DynamicWeightsConfig,
+) -> tuple[tuple[Any, ...], ...]:
+    skip_patterns = tuple(re.compile(pattern) for pattern in config.skip_modules_pattern)
+    signature: list[tuple[Any, ...]] = []
+    for module_name, submodule in module.named_modules():
+        if module_name == "":
+            continue
+        if skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns):
+            continue
+        if not isinstance(submodule, config.target_module_classes):
+            continue
+        tensor_signature = tuple(
+            (
+                tensor_name,
+                tuple(tensor.shape),
+                str(tensor.dtype),
+                str(tensor.device),
+                tensor.numel(),
+                tensor.element_size(),
+            )
+            for tensor_name, tensor in _iter_local_tensors(submodule)
+        )
+        signature.append(
+            (
+                module_name,
+                submodule.__class__.__module__,
+                submodule.__class__.__qualname__,
+                tensor_signature,
+            )
+        )
+    return tuple(signature)
 
 
 def _iter_local_tensors(module: nn.Module):
