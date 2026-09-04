@@ -109,7 +109,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SAFETENSORS_BACKEND": "mmap",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
         "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "1",
     },
@@ -128,7 +127,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SAFETENSORS_BACKEND": "mmap",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
         "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "1",
     },
@@ -148,7 +146,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SAFETENSORS_BACKEND": "mmap",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
         "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "3",
     },
@@ -326,7 +323,7 @@ class DynamicWeightsConfig:
     resident_module_budget_gb: float = 0.0
     resident_module_patterns: tuple[str, ...] = ()
     resident_module_selection: str = "spread"
-    safetensors_backend: str = ""
+    load_safetensors_backend: str = ""
     verbose: bool = False
     show_profile: bool = True
 
@@ -386,7 +383,7 @@ class DynamicWeightsSettings:
             "dynamic_weights_resident_module_budget_gb": config.resident_module_budget_gb,
             "dynamic_weights_resident_module_patterns": config.resident_module_patterns,
             "dynamic_weights_resident_module_selection": config.resident_module_selection,
-            "dynamic_weights_safetensors_backend": config.safetensors_backend or None,
+            "dynamic_weights_load_safetensors_backend": config.load_safetensors_backend or None,
             "dynamic_weights_show_profile": config.show_profile,
         }
 
@@ -412,7 +409,7 @@ def build_dynamic_weights_event_payload(
         "cache_plan": config.cache_plan,
         "cache_pinned_weights": config.cache_pinned_weights,
         "pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
-        "safetensors_backend": config.safetensors_backend or None,
+        "load_safetensors_backend": config.load_safetensors_backend or None,
         "auto_budget_policy": config.auto_budget_policy,
         "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
         "max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
@@ -1205,6 +1202,9 @@ def load_dynamic_weights_settings_from_env(
     allow_pin_memory_fallback = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK", "1")
     disable_pin_on_wsl = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL", "1")
     effective_pin_cpu_memory = requested_pin_cpu_memory and not (is_wsl and disable_pin_on_wsl)
+    load_safetensors_backend = preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_LOAD_SAFETENSORS_BACKEND", "").strip().lower()
+    if not load_safetensors_backend:
+        load_safetensors_backend = preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_SAFETENSORS_BACKEND", "").strip().lower()
 
     config = DynamicWeightsConfig(
         execution_device=execution_device,
@@ -1236,7 +1236,7 @@ def load_dynamic_weights_settings_from_env(
         resident_module_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0")),
         resident_module_patterns=_parse_pattern_list_value(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS", "")),
         resident_module_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower(),
-        safetensors_backend=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_SAFETENSORS_BACKEND", "").strip().lower(),
+        load_safetensors_backend=load_safetensors_backend,
         verbose=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE", "0"),
         show_profile=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE", "0"),
     )
@@ -1271,7 +1271,7 @@ def _temporary_safetensors_backend(backend: str):
         yield
         return
     if backend not in {"mmap", "pread"}:
-        raise ValueError("DynamicWeightsConfig.safetensors_backend must be '', 'mmap', or 'pread'")
+        raise ValueError("DynamicWeightsConfig.load_safetensors_backend must be '', 'mmap', or 'pread'")
 
     try:
         import safetensors
@@ -1336,7 +1336,7 @@ def from_pretrained_with_dynamic_weights(
         model_loader = AutoModel
     from_pretrained = getattr(model_loader, "from_pretrained", model_loader)
     config = dynamic_weights_config or DynamicWeightsConfig()
-    with _temporary_safetensors_backend(config.safetensors_backend):
+    with _temporary_safetensors_backend(config.load_safetensors_backend):
         module = from_pretrained(pretrained_model_name_or_path, **from_pretrained_kwargs)
     if not apply_dynamic:
         return DynamicWeightsLoadResult(module=module)
