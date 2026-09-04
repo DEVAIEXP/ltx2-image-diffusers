@@ -1157,3 +1157,96 @@ After explicitly releasing the text encoder dynamic hook/config before `flush()`
 | Text encoder dynamic, no pinned CPU memory, `3 GB` resident module budget, hook reference released before cleanup | `3.8299s` | `46.2332s` | `55.9s` | `29.8898s` | `14.3782s` | `52.2s` | `6.32 GB` | `25.33 GB` | Transformer returned to the healthy Windows baseline. |
 
 Insight: the cleanup order matters. The text encoder dynamic path is still not faster than desired because prompt encoding spends `45.4250s` copying `20.8677 GB`, but releasing the hook before cleanup prevents the next transformer pass from inheriting the previous bad memory state. This makes text encoder dynamic weights a viable opt-in probe again, with the next target being reducing text-encoder runtime copy cost rather than fixing transformer contamination.
+
+## ComfyUI Text Encoder Dynamic VRAM Probe
+
+A local ComfyUI instrumentation patch was used to print `dynamic_vram_layer` lines for `LTXAVTEModel_` during `CLIPTextEncode`. The first capped capture used `COMFY_DYNAMIC_VRAM_LAYER_BENCH=1` and `COMFY_DYNAMIC_VRAM_LAYER_BENCH_LIMIT=300`.
+
+Observed from the captured lines:
+
+| Field | Value |
+| --- | ---: |
+| Printed dynamic layer events | `300` |
+| Event type | `300` `prefetch_fault`, `0` `prefetch_resident` within the printed cap |
+| Module types | `299` `Linear`, `1` `ScaledEmbedding` |
+| Visible module size total | `20078.0 MB` |
+| Visible prefetch time total | `15.1769s` |
+| Visible layers | `gemma3_12b.transformer.model.layers.0` through `.42` |
+| `weights-loaded` signatures | `27` |
+| plain `weights` signatures | `273` |
+
+Largest visible module was `gemma3_12b.transformer.model.embed_tokens`, about `1920.4688 MB`, loaded through `weights-loaded` with a valid VBAR signature in `1.3092s`. Regular attention projections were small (`15-30 MB`) and MLP projections were about `112.5 MB`; most MLP projection prefetches took around `0.08s`.
+
+Insight: ComfyUI is not making the text encoder fast by avoiding the large encoder layers. It is operating at linear/embedding granularity and relying on VBAR fault/prefetch behavior, with some tensors already represented as `weights-loaded` when a VBAR signature exists. Our current text-encoder dynamic path is broadly at the same granularity, but its runtime copy accounting is much higher on Windows (`~45s / 20.9 GB` in the latest probe), so the next comparison should focus on how ComfyUI avoids repeated or slow host-to-device transfers after the first VBAR fault.
+
+## Text Encoder Full Pin Probe
+
+Windows probe with text encoder dynamic weights, `vision_tower` skipped, pinned CPU memory enabled for the text encoder, and standby purge after prompt encoding:
+
+| Mode | Text setup | Encode call | Pass 0 | Transformer setup | Transformer denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Text encoder dynamic, pinned CPU memory, `3 GB` resident module budget, standby purge after text encoder and before transformer | `30.5638s` | `12.9208s` | `54.1s` | `47.1080s` | `15.6117s` | `76.6s` | `6.82 GB` | `45.23 GB` | Encoder call became fast, transformer runtime stayed healthy, but setup costs are too high. |
+
+Insight: pinned text-encoder dynamic weights moves the prompt encode call from the previous `~80s` baseline down to `~13s`, matching the direction suggested by the ComfyUI probe. However, full text-encoder pinning costs about `27s` during setup and appears to make the following transformer setup less stable/expensive (`47s` vs the current `~31s` transformer baseline). This proves the text encoder path can be accelerated, but it needs a narrower policy than full pinning: likely pin only embeddings and/or the largest MLP weights that dominate runtime copies, while keeping enough memory headroom for the transformer setup.
+
+Follow-up Windows text encoder partial pin probe:
+
+| Mode | Text setup | Encode call | Pass 0 | Transformer setup | Transformer denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Text encoder dynamic, pinned CPU memory, `8 GB` pinned weight budget, `largest` pin selection, `3 GB` resident module budget | `8.6413s` | `57.6773s` | `73.5s` | `35.0762s` | `15.0604s` | `60.3s` | `6.96 GB` | `32.84 GB` | Setup improved, but encode runtime became too slow. |
+
+Insight: partial pinning by largest weights is not enough at `8 GB`. It selected only `43` pinned weights, including `model.language_model.embed_tokens`, `lm_head`, and early MLP projections, but the unpinned remainder still forced `55.6019s` of runtime copies across `20.8677 GB`. The transformer remained healthy, so the problem is now purely text-encoder setup/runtime tradeoff. For short prompts/runs, Diffusers group offload may remain preferable unless full or near-full pinning can be setup faster.
+
+Second partial pin probe:
+
+| Mode | Text setup | Encode call | Pass 0 | Transformer setup | Transformer denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Text encoder dynamic, pinned CPU memory, `16 GB` pinned weight budget, `largest` pin selection, `3 GB` resident module budget | `19.9521s` | `41.4448s` | `70.8s` | `44.6919s` | `15.3801s` | `73.0s` | `6.89 GB` | `41.94 GB` | Better than the `8 GB` partial pin, but still worse than full pin and not competitive. |
+
+Insight: the text encoder shows a sharp threshold behavior. Pinning `8 GB` selected `43` weights and left `55.6s` of runtime copies; pinning `16 GB` selected `115` weights and still left `37.3s` of runtime copies. Full pinning selected `289` weights and reduced runtime copy time to near zero. A fixed GB budget is therefore a weak control for this component. The manager now supports `DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO` plus the runner-specific `DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO` so experiments can budget by a fraction of streamable candidate weight size instead of an absolute amount.
+
+## Text Encoder Ratio Pin Probe
+
+Windows probe using proportional text-encoder pinned weight budget with `largest` selection, plus standby purge after text encoder and before transformer:
+
+| Mode | Text setup | Encode call | Pass 0 | Transformer setup | Transformer denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Text encoder dynamic, pinned CPU memory, ratio budget, `largest` pin selection, `3 GB` resident module budget | `31.9777s` | `20.4136s` | `63.1s` | `50.9911s` | `15.5048s` | `82.0s` | `6.91 GB` | `46.11 GB` | Encode improved, but setup and downstream transformer setup are still too expensive. |
+
+Details: the text encoder pinned `217` linear/embedding weights, with `19.8129 GB` in pinned linear weights and `2.9226 GB` in resident budget modules. Runtime copy remained `14.8410s / 20.8677 GB`, so the ratio did reduce encode cost versus the `8 GB` and `16 GB` partial probes, but not enough to beat the current group-offload baseline once setup is included.
+
+Insight: dynamic budget by component size is the right control surface, but text encoder acceleration needs a smarter selection policy than "largest first" alone. Near-full pinning reduces runtime copy sharply, while partial pinning leaves many repeated runtime transfers. For Windows one-shot runs, keep the transformer dynamic path as the recommended baseline and treat text encoder dynamic weights as a tuning probe until setup can be reduced or the pinned subset can be selected by actual runtime reuse/cost rather than raw tensor size.
+
+## Dynamic Weights Load Planner V1
+
+The manager now has an opt-in planner-style budget policy:
+
+```powershell
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY="balanced"
+```
+
+or through:
+
+```powershell
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PRESET="planner_balanced"
+```
+
+The stable presets keep `AUTO_BUDGET_POLICY=off` so current Windows/WSL/Linux baselines do not move by accident. `planner_balanced` clears the fixed resident-module budget and lets the manager derive budgets from the actual loaded component:
+
+| Decision | V1 behavior |
+| --- | --- |
+| Resident module budget | `25%` of matching resident module candidates, capped by `DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB`, default `6 GB` |
+| Pin weight budget | `100%` when streamable candidates are `<=8 GB`, `85%` when `<=16 GB`, otherwise `75%`; optionally capped by `DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB` |
+| Selection | Still uses the configured `first`, `spread`, or `largest` ordering |
+
+The profile now records `planner_decisions`, including candidate size and resolved budgets, so each run explains why the manager selected a given memory shape. This is intentionally conservative: it is a first load-planner layer above the existing runtime, not a low-level VBAR clone. The next refinement should replace raw size heuristics with observed runtime cost/reuse from the previous profile.
+
+First Windows `planner_balanced` transformer probe:
+
+| Mode | Planner resident budget | Planner pin budget | Transformer setup | Denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `planner_balanced`, text encoder not using group offload in this run | `6.0 GB` | `18.0176 GB` from `0.75` ratio | `40.9420s` | `65.1249s` | `115.1s` | `6.51 GB` | `44.20 GB` | Not viable. |
+
+Planner details: candidate streamable weights were `24.0234 GB`; after `6 GB` resident-module budget, the runtime pinned `432` weights instead of the full `444`. That small unpinned tail caused `63.4582s` of repeated runtime copies across `148.1445 GB`.
+
+Insight: for heavily reused transformer weights, "almost full pin" can be much worse than full pin. The manager now snaps the pin budget to full when the resolved budget covers at least `95%` of the remaining candidates, avoiding an expensive unpinned tail.

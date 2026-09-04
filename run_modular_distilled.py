@@ -134,6 +134,30 @@ TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
     "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB",
     "3.0",
 )
+TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
+    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB",
+    "0.0",
+)
+TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO = parse_float_preset_env(
+    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO",
+    "0.0",
+)
+TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION = preset_env(
+    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION",
+    DYNAMIC_WEIGHTS_SETTINGS.config.pin_weight_selection,
+).lower()
+TEXT_ENCODER_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY = preset_env(
+    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY",
+    DYNAMIC_WEIGHTS_SETTINGS.config.auto_budget_policy,
+).lower()
+TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
+    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB",
+    str(DYNAMIC_WEIGHTS_SETTINGS.config.max_resident_module_budget_gb),
+)
+TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
+    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB",
+    str(DYNAMIC_WEIGHTS_SETTINGS.config.max_pin_weight_budget_gb),
+)
 TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES = parse_pattern_list_env(
     "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULE_PATTERNS",
     r"(^|\.)vision_tower(\.|$)",
@@ -465,6 +489,12 @@ def main():
         "text_encoder_dynamic_weights": TEXT_ENCODER_DYNAMIC_WEIGHTS,
         "text_encoder_dynamic_weights_pin_cpu_memory": TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
         "text_encoder_dynamic_weights_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
+        "text_encoder_dynamic_weights_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
+        "text_encoder_dynamic_weights_pin_weight_budget_ratio": TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO,
+        "text_encoder_dynamic_weights_pin_weight_selection": TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
+        "text_encoder_dynamic_weights_auto_budget_policy": TEXT_ENCODER_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY,
+        "text_encoder_dynamic_weights_max_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB,
+        "text_encoder_dynamic_weights_max_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB,
         "text_encoder_dynamic_weights_skip_modules": TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES,
         "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
         "running_on_wsl": RUNNING_ON_WSL,
@@ -495,6 +525,23 @@ def main():
             print(f"Using dynamic weights preset: {DYNAMIC_WEIGHTS_PRESET}", flush=True)
     if DYNAMIC_WEIGHTS_PIN_CPU_MEMORY and not DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY:
         print("  [dynamic-weights] disabling pinned CPU memory on WSL; set DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0 (or legacy LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0) to force it.", flush=True)
+    text_encoder_route = (
+        "dynamic_weights"
+        if TEXT_ENCODER_DYNAMIC_WEIGHTS
+        else "group_offload"
+        if TEXT_ENCODER_GROUP_OFFLOAD
+        else "cuda_to"
+    )
+    transformer_route = "dynamic_weights" if DYNAMIC_WEIGHTS_SETTINGS.enabled else "standard"
+    print(
+        "  [runner] "
+        f"text_encoder_route={text_encoder_route} "
+        f"text_encoder_group_offload={TEXT_ENCODER_GROUP_OFFLOAD} "
+        f"text_encoder_dynamic_weights={TEXT_ENCODER_DYNAMIC_WEIGHTS} "
+        f"transformer_route={transformer_route} "
+        f"preset={DYNAMIC_WEIGHTS_PRESET or 'none'}",
+        flush=True,
+    )
 
     tracker = RunTracker(DEVICE, run_metrics, interval=0.1, show_metrics=SHOW_METRICS)
     record_event = tracker.record_event
@@ -527,6 +574,12 @@ def main():
                 pin_cpu_memory=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
                 lazy_pin_cpu_memory=False,
                 overlap_pin_setup=False,
+                pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
+                pin_weight_budget_ratio=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO,
+                pin_weight_selection=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
+                auto_budget_policy=TEXT_ENCODER_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY,
+                max_resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB,
+                max_pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB,
                 resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
                 skip_modules_pattern=(
                     *DYNAMIC_WEIGHTS_CONFIG.skip_modules_pattern,

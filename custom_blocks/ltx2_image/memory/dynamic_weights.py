@@ -24,6 +24,10 @@ _PIN_MEMORY_ERRORS = (RuntimeError, getattr(torch, "AcceleratorError", RuntimeEr
 _DEFAULT_ALWAYS_RESIDENT_MODULE_PATTERNS = (
     r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
 )
+_AUTO_BUDGET_DISABLED = "off"
+_AUTO_BUDGET_BALANCED = "balanced"
+_DYNAMIC_WEIGHTS_PLAN_CACHE: dict[tuple[Any, ...], "DynamicWeightsState"] = {}
+_DYNAMIC_WEIGHTS_PLAN_CACHE_LOCK = threading.Lock()
 
 
 def generic_dynamic_weights_env_name(name: str) -> str:
@@ -98,6 +102,7 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
@@ -116,6 +121,7 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
@@ -135,6 +141,7 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "1",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
@@ -150,7 +157,32 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "planner_balanced": {
+        "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
+        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
+        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "1",
+        "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS": "0",
+        "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
+        "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
+        "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "balanced",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB": "6",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB": "0",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB": "0",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO": "0",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION": "spread",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
@@ -165,6 +197,7 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
@@ -179,6 +212,7 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "2",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "3",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
@@ -192,6 +226,7 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "3",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
@@ -206,6 +241,7 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
@@ -287,7 +323,12 @@ class DynamicWeightsConfig:
     allow_pin_memory_fallback: bool = True
     overlap_pin_setup: bool = False
     pin_cpu_workers: int = 1
+    cache_plan: bool = True
+    auto_budget_policy: str = _AUTO_BUDGET_DISABLED
+    max_resident_module_budget_gb: float = 6.0
+    max_pin_weight_budget_gb: float = 0.0
     pin_weight_budget_gb: float = 0.0
+    pin_weight_budget_ratio: float = 0.0
     pin_weight_selection: str = "spread"
     resident_weight_budget_gb: float = 0.0
     resident_weight_selection: str = "spread"
@@ -342,7 +383,12 @@ class DynamicWeightsSettings:
             "dynamic_weights_overlap_pin_setup": config.overlap_pin_setup,
             "dynamic_weights_disable_pin_on_wsl": self.disable_pin_on_wsl,
             "dynamic_weights_pin_cpu_workers": config.pin_cpu_workers,
+            "dynamic_weights_cache_plan": config.cache_plan,
+            "dynamic_weights_auto_budget_policy": config.auto_budget_policy,
+            "dynamic_weights_max_resident_module_budget_gb": config.max_resident_module_budget_gb,
+            "dynamic_weights_max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
             "dynamic_weights_pin_weight_budget_gb": config.pin_weight_budget_gb,
+            "dynamic_weights_pin_weight_budget_ratio": config.pin_weight_budget_ratio,
             "dynamic_weights_pin_weight_selection": config.pin_weight_selection,
             "dynamic_weights_small_tensor_threshold_kb": config.small_tensor_threshold_bytes // 1024,
             "dynamic_weights_resident_weight_budget_gb": config.resident_weight_budget_gb,
@@ -373,10 +419,16 @@ def build_dynamic_weights_event_payload(
         "pin_cpu_memory": settings.effective_pin_cpu_memory,
         "lazy_pin_cpu_memory": config.lazy_pin_cpu_memory,
         "allow_pin_memory_fallback": config.allow_pin_memory_fallback,
+        "cache_plan": config.cache_plan,
+        "auto_budget_policy": config.auto_budget_policy,
+        "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
+        "max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
         "pin_weight_budget_gb": config.pin_weight_budget_gb,
+        "pin_weight_budget_ratio": config.pin_weight_budget_ratio,
         "pin_weight_selection": config.pin_weight_selection,
         "patched_module_count": summary["patched_module_count"],
         "resolved_resident_module_patterns": summary["resolved_resident_module_patterns"],
+        "planner_decisions": summary["planner_decisions"],
         "setup_runtime": summary["setup_runtime"],
     }
 
@@ -416,6 +468,16 @@ class DynamicWeightsState:
     selected_resident_linear_weights: list[str] = field(default_factory=list)
     selected_pinned_linear_weights: list[str] = field(default_factory=list)
     resolved_resident_module_patterns: list[str] = field(default_factory=list)
+    planner_decisions: dict[str, Any] = field(default_factory=dict)
+
+    def clone_for_runtime(self) -> "DynamicWeightsState":
+        return DynamicWeightsState(
+            entries=list(self.entries),
+            module_count=self.module_count,
+            total_bytes=self.total_bytes,
+            bytes_by_placement=dict(self.bytes_by_placement),
+            resolved_resident_module_patterns=list(self.resolved_resident_module_patterns),
+        )
 
     def add_setup(self, action: str, seconds: float, byte_count: int = 0) -> None:
         self.setup_seconds_by_action[action] = self.setup_seconds_by_action.get(action, 0.0) + seconds
@@ -453,6 +515,7 @@ class DynamicWeightsState:
             "selected_resident_linear_weights": self.selected_resident_linear_weights,
             "selected_pinned_linear_weights": self.selected_pinned_linear_weights,
             "resolved_resident_module_patterns": self.resolved_resident_module_patterns,
+            "planner_decisions": self.planner_decisions,
             "entries": [
                 {
                     "module_name": entry.module_name,
@@ -483,18 +546,24 @@ class DynamicWeightsHook(ModelHook):
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
         self.pin_cpu_workers = max(1, int(config.pin_cpu_workers))
+        self.auto_budget_policy = config.auto_budget_policy.lower()
+        if self.auto_budget_policy not in {_AUTO_BUDGET_DISABLED, _AUTO_BUDGET_BALANCED}:
+            raise ValueError("DynamicWeightsConfig.auto_budget_policy must be 'off' or 'balanced'")
+        self.max_resident_module_budget_bytes = int(max(0.0, float(config.max_resident_module_budget_gb)) * 1024**3)
+        self.max_pin_weight_budget_bytes = int(max(0.0, float(config.max_pin_weight_budget_gb)) * 1024**3)
         self.pin_weight_budget_bytes = int(max(0.0, float(config.pin_weight_budget_gb)) * 1024**3)
         self.pin_weight_selection = config.pin_weight_selection.lower()
-        if self.pin_weight_selection not in {"first", "spread"}:
-            raise ValueError("DynamicWeightsConfig.pin_weight_selection must be 'first' or 'spread'")
+        if self.pin_weight_selection not in {"first", "spread", "largest"}:
+            raise ValueError("DynamicWeightsConfig.pin_weight_selection must be 'first', 'spread', or 'largest'")
+        self.pin_weight_budget_ratio = max(0.0, min(1.0, float(config.pin_weight_budget_ratio)))
         self.resident_weight_budget_bytes = int(max(0.0, float(config.resident_weight_budget_gb)) * 1024**3)
         self.resident_module_budget_bytes = int(max(0.0, float(config.resident_module_budget_gb)) * 1024**3)
         self.resident_weight_selection = config.resident_weight_selection.lower()
-        if self.resident_weight_selection not in {"first", "spread"}:
-            raise ValueError("DynamicWeightsConfig.resident_weight_selection must be 'first' or 'spread'")
+        if self.resident_weight_selection not in {"first", "spread", "largest"}:
+            raise ValueError("DynamicWeightsConfig.resident_weight_selection must be 'first', 'spread', or 'largest'")
         self.resident_module_selection = config.resident_module_selection.lower()
-        if self.resident_module_selection not in {"first", "spread"}:
-            raise ValueError("DynamicWeightsConfig.resident_module_selection must be 'first' or 'spread'")
+        if self.resident_module_selection not in {"first", "spread", "largest"}:
+            raise ValueError("DynamicWeightsConfig.resident_module_selection must be 'first', 'spread', or 'largest'")
 
     def initialize_hook(self, module: nn.Module) -> nn.Module:
         self.state = build_dynamic_weight_plan(module, self.config)
@@ -575,6 +644,8 @@ class DynamicWeightsHook(ModelHook):
         modules_to_pin: list[tuple[str, nn.Module, int]] = []
         eager_pin_cpu_memory = self.config.pin_cpu_memory and not self.config.lazy_pin_cpu_memory
         pin_work = None
+
+        self._apply_auto_budget_policy(module, skip_patterns, resident_patterns, resident_module_patterns)
 
         self._move_root_local_tensors_to_device(module)
         if self.resident_module_budget_bytes > 0 and resident_module_patterns:
@@ -695,19 +766,31 @@ class DynamicWeightsHook(ModelHook):
             modules_to_pin.append((module_name, embedding, _tensor_size_bytes(embedding.weight.data)))
 
     def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Module, int]]) -> list[nn.Module]:
-        if self.pin_weight_budget_bytes <= 0:
+        candidate_bytes = sum(weight_bytes for _, _, weight_bytes in candidates)
+        pin_weight_budget_bytes = self.pin_weight_budget_bytes
+        if pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio > 0:
+            pin_weight_budget_bytes = int(candidate_bytes * self.pin_weight_budget_ratio)
+        if pin_weight_budget_bytes > 0 and self.max_pin_weight_budget_bytes > 0:
+            pin_weight_budget_bytes = min(pin_weight_budget_bytes, self.max_pin_weight_budget_bytes)
+        if candidate_bytes > 0 and pin_weight_budget_bytes >= int(candidate_bytes * 0.95):
+            pin_weight_budget_bytes = 0
+            self.state.planner_decisions["pin_weight_budget_snap_to_full"] = True
+        self.state.planner_decisions["resolved_pin_weight_budget_gb"] = round(pin_weight_budget_bytes / 1024**3, 4)
+        if pin_weight_budget_bytes <= 0:
             self.state.selected_pinned_linear_weights = [module_name for module_name, _, _ in candidates]
             return [linear for _, linear, _ in candidates]
 
         ordered_candidates = candidates
         if self.pin_weight_selection == "spread":
-            ordered_candidates = _spread_order(candidates, self.pin_weight_budget_bytes)
+            ordered_candidates = _spread_order(candidates, pin_weight_budget_bytes)
+        elif self.pin_weight_selection == "largest":
+            ordered_candidates = _largest_first_order(candidates)
 
         selected_linears: list[nn.Module] = []
         selected_bytes = 0
         selected_names: list[str] = []
         for module_name, linear, weight_bytes in ordered_candidates:
-            if selected_bytes + weight_bytes > self.pin_weight_budget_bytes:
+            if selected_bytes + weight_bytes > pin_weight_budget_bytes:
                 continue
             selected_linears.append(linear)
             selected_names.append(module_name)
@@ -715,6 +798,60 @@ class DynamicWeightsHook(ModelHook):
 
         self.state.selected_pinned_linear_weights = selected_names
         return selected_linears
+
+    def _apply_auto_budget_policy(
+        self,
+        module: nn.Module,
+        skip_patterns: tuple[re.Pattern[str], ...],
+        resident_patterns: tuple[re.Pattern[str], ...],
+        resident_module_patterns: tuple[re.Pattern[str], ...],
+    ) -> None:
+        if self.auto_budget_policy == _AUTO_BUDGET_DISABLED:
+            return
+
+        candidate_weight_bytes = sum(
+            weight_bytes
+            for _, _, weight_bytes in self._collect_linear_modules_to_pin(module, skip_patterns, resident_patterns)
+        )
+        candidate_module_bytes = 0
+        if resident_module_patterns:
+            candidate_module_bytes = sum(
+                module_bytes
+                for module_name, submodule in module.named_modules()
+                if module_name
+                and not (skip_patterns and any(pattern.search(module_name) for pattern in skip_patterns))
+                and any(pattern.search(module_name) for pattern in resident_module_patterns)
+                for module_bytes in (_module_size_bytes(submodule),)
+            )
+
+        self.state.planner_decisions.update(
+            {
+                "auto_budget_policy": self.auto_budget_policy,
+                "candidate_weight_gb": round(candidate_weight_bytes / 1024**3, 4),
+                "candidate_resident_module_gb": round(candidate_module_bytes / 1024**3, 4),
+            }
+        )
+
+        if self.resident_module_budget_bytes <= 0 and candidate_module_bytes > 0:
+            budget = int(candidate_module_bytes * 0.25)
+            if self.max_resident_module_budget_bytes > 0:
+                budget = min(budget, self.max_resident_module_budget_bytes)
+            self.resident_module_budget_bytes = budget
+            self.state.planner_decisions["auto_resident_module_budget_gb"] = round(budget / 1024**3, 4)
+
+        if self.pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio <= 0 and candidate_weight_bytes > 0:
+            if candidate_weight_bytes <= 8 * 1024**3:
+                ratio = 1.0
+            elif candidate_weight_bytes <= 16 * 1024**3:
+                ratio = 0.85
+            else:
+                ratio = 0.75
+            budget = int(candidate_weight_bytes * ratio)
+            if self.max_pin_weight_budget_bytes > 0:
+                budget = min(budget, self.max_pin_weight_budget_bytes)
+            self.pin_weight_budget_bytes = budget
+            self.state.planner_decisions["auto_pin_weight_budget_gb"] = round(budget / 1024**3, 4)
+            self.state.planner_decisions["auto_pin_weight_budget_ratio"] = ratio
 
     def _select_resident_modules(
         self,
@@ -737,6 +874,8 @@ class DynamicWeightsHook(ModelHook):
         ordered_candidates = candidates
         if self.resident_module_selection == "spread":
             ordered_candidates = _spread_order(candidates, self.resident_module_budget_bytes)
+        elif self.resident_module_selection == "largest":
+            ordered_candidates = _largest_first_order(candidates)
 
         selected_bytes = 0
         for module_name, _, module_bytes in ordered_candidates:
@@ -1016,6 +1155,14 @@ class DynamicWeightsHook(ModelHook):
                 flush=True,
             )
 
+        planner_decisions = summary["planner_decisions"]
+        if planner_decisions:
+            print(
+                "  [dynamic-weights-profile] "
+                f"planner_decisions={planner_decisions}",
+                flush=True,
+            )
+
         if selected_modules:
             print(
                 "  [dynamic-weights-profile] "
@@ -1118,7 +1265,14 @@ def load_dynamic_weights_settings_from_env(
         allow_pin_memory_fallback=allow_pin_memory_fallback,
         overlap_pin_setup=overlap_pin_setup,
         pin_cpu_workers=int(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4")),
+        cache_plan=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PLAN", "1"),
+        auto_budget_policy=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY", "off").lower(),
+        max_resident_module_budget_gb=float(
+            preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB", "6.0")
+        ),
+        max_pin_weight_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB", "0.0")),
         pin_weight_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB", "0.0")),
+        pin_weight_budget_ratio=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO", "0.0")),
         pin_weight_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION", "spread").lower(),
         resident_weight_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0")),
         resident_weight_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION", "spread").lower(),
@@ -1328,6 +1482,10 @@ def _spread_order(items: list[tuple[str, Any, int]], budget_bytes: int) -> list[
         if index not in seen:
             ordered.append(item)
     return ordered
+
+
+def _largest_first_order(items: list[tuple[str, Any, int]]) -> list[tuple[str, Any, int]]:
+    return sorted(items, key=lambda item: item[2], reverse=True)
 
 
 def _tensor_size_bytes(tensor: torch.Tensor) -> int:
