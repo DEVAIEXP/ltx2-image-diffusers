@@ -261,6 +261,13 @@ class DynamicWeightPlanEntry:
 
 
 @dataclass
+class DynamicWeightsLoadResult:
+    module: nn.Module
+    hook: "DynamicWeightsHook | None" = None
+    should_move_to_execution_device: bool = True
+
+
+@dataclass
 class DynamicWeightsState:
     entries: list[DynamicWeightPlanEntry] = field(default_factory=list)
     module_count: int = 0
@@ -945,6 +952,32 @@ def apply_dynamic_weights(module: nn.Module, config: DynamicWeightsConfig | None
     hook = DynamicWeightsHook(config)
     registry.register_hook(hook, _DYNAMIC_WEIGHTS_HOOK)
     return hook
+
+
+def from_pretrained_with_dynamic_weights(
+    pretrained_model_name_or_path: str | os.PathLike[str],
+    *,
+    model_loader: Any | None = None,
+    dynamic_weights_config: DynamicWeightsConfig | None = None,
+    apply_dynamic: bool = False,
+    **from_pretrained_kwargs: Any,
+) -> DynamicWeightsLoadResult:
+    if model_loader is None:
+        from diffusers import AutoModel
+
+        model_loader = AutoModel
+    from_pretrained = getattr(model_loader, "from_pretrained", model_loader)
+    module = from_pretrained(pretrained_model_name_or_path, **from_pretrained_kwargs)
+    if not apply_dynamic:
+        return DynamicWeightsLoadResult(module=module)
+
+    config = dynamic_weights_config or DynamicWeightsConfig()
+    hook = apply_dynamic_weights(module, config)
+    return DynamicWeightsLoadResult(
+        module=module,
+        hook=hook,
+        should_move_to_execution_device=config.execution_mode.lower() == "plan",
+    )
 
 
 def remove_dynamic_weights(module: nn.Module, recurse: bool = True) -> None:

@@ -1043,3 +1043,9 @@ Insight: partial pinning is not a good short-run tradeoff on Windows. It saved o
 The dynamic weights runtime now accepts generic `DIFFUSERS_DYNAMIC_WEIGHTS_*` environment aliases in addition to the legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_*` names. Presets are expanded internally by the manager, and the runner consults the generic alias first while keeping legacy variables valid for existing benchmark commands.
 
 This is the first migration step toward a model-agnostic Diffusers-style loader/runtime. LTX-specific names remain only where the current runner, model classes, or historical benchmark records are still explicitly tied to the LTX image experiment.
+
+## Config-Driven Dynamic Weights Loading
+
+The modular runner now loads the transformer through `from_pretrained_with_dynamic_weights(...)`, which delegates to Diffusers `AutoModel.from_pretrained(...)` when no explicit loader is provided. This preserves the Diffusers convention of resolving the model class from `_class_name` in `config.json` instead of hardcoding the component class at the call site.
+
+For this step the wrapper still uses the normal Diffusers loading path and applies the dynamic-weights hook afterward. That keeps behavior comparable with prior benchmarks while establishing the API boundary needed for a future loader-backed `DynamicWeightStore`.

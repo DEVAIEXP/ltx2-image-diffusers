@@ -28,12 +28,12 @@ from custom_blocks.ltx2_image.memory import (
     DynamicWeightsConfig,
     apply_dynamic_weights,
     dynamic_weights_env_names,
+    from_pretrained_with_dynamic_weights,
     is_wsl_environment,
     remove_dynamic_weights,
     resolve_dynamic_weights_preset,
 )
 from custom_blocks.ltx2_image.memory_manager import LTX2DynamicBlockManager
-from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer2DModel
 from inference_utils import RunTracker, flush
 
 
@@ -633,19 +633,53 @@ def main():
         "low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
     }
 
+    dynamic_weights_enabled = DYNAMIC_WEIGHTS_PLAN or DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan"
+    dynamic_weights_config = None
+    if dynamic_weights_enabled:
+        dynamic_weights_config = DynamicWeightsConfig(
+            execution_device=DEVICE,
+            offload_device=OFFLOAD_DEVICE,
+            target_module_classes=(torch.nn.Linear,),
+            always_resident_modules_pattern=(
+                r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
+            ),
+            small_tensor_threshold_bytes=DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB * 1024,
+            execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
+            pin_cpu_memory=DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
+            lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
+            allow_pin_memory_fallback=DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
+            pin_cpu_workers=DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
+            pin_weight_budget_gb=DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
+            pin_weight_selection=DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
+            resident_weight_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
+            resident_weight_selection=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION,
+            resident_module_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
+            resident_module_patterns=DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS,
+            resident_module_selection=DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION,
+            verbose=DYNAMIC_WEIGHTS_VERBOSE,
+        )
     if PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER:
         purge_windows_standby_cache_event(record_event, "purge_windows_standby_before_transformer")
 
     event_t0 = time.time()
     if MODEL_LOW_CPU_MEM_USAGE:
         transformer_load_kwargs["device_map"] = "cpu"
-    transformer = LTX2ImageTransformer2DModel.from_pretrained(MODEL_PATH, **transformer_load_kwargs)
+    transformer_load = from_pretrained_with_dynamic_weights(
+        MODEL_PATH,
+        dynamic_weights_config=dynamic_weights_config,
+        apply_dynamic=False,
+        **transformer_load_kwargs,
+    )
+    transformer = transformer_load.module
+    dynamic_weights_hook = transformer_load.hook
     record_event(
         "load_transformer",
         time.time() - event_t0,
         source=MODEL_PATH,
         low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
         device_map=transformer_load_kwargs.get("device_map"),
+        loader="AutoModel",
+        resolved_class=transformer.__class__.__name__,
     )
 
     event_t0 = time.time()
@@ -659,37 +693,12 @@ def main():
         drop_trivial_attention_mask=drop_trivial_attention_mask,
     )
 
-    dynamic_weights_enabled = DYNAMIC_WEIGHTS_PLAN or DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan"
     if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and TRANSFORMER_MEMORY_MANAGER != "off":
         raise ValueError("Dynamic weights execution currently requires LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER='off'. Use execution_mode='plan' with the block manager.")
 
     if dynamic_weights_enabled:
         event_t0 = time.time()
-        dynamic_weights_hook = apply_dynamic_weights(
-            transformer,
-            DynamicWeightsConfig(
-                execution_device=DEVICE,
-                offload_device=OFFLOAD_DEVICE,
-                target_module_classes=(torch.nn.Linear,),
-                always_resident_modules_pattern=(
-                    r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
-                ),
-                small_tensor_threshold_bytes=DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB * 1024,
-                execution_mode=DYNAMIC_WEIGHTS_EXECUTION_MODE,
-                pin_cpu_memory=DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
-                lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
-                allow_pin_memory_fallback=DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
-                pin_cpu_workers=DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
-                pin_weight_budget_gb=DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
-                pin_weight_selection=DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
-                resident_weight_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
-                resident_weight_selection=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION,
-                resident_module_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
-                resident_module_patterns=DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS,
-                resident_module_selection=DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION,
-                verbose=DYNAMIC_WEIGHTS_VERBOSE,
-            ),
-        )
+        dynamic_weights_hook = apply_dynamic_weights(transformer, dynamic_weights_config)
         dynamic_weights_summary = dynamic_weights_hook.state.as_dict()
         record_event(
             "build_dynamic_weights_plan",
