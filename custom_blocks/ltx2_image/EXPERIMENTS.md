@@ -1141,3 +1141,11 @@ $env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER="1"
 ```
 
 Use this to check whether the encode-speed gain survives without leaving enough host/driver memory pressure to crash transformer loading.
+
+Follow-up Windows result with conservative text encoder dynamic settings:
+
+| Mode | Text setup | Encode call | Pass 0 | Transformer setup | Transformer denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Text encoder dynamic, no pinned CPU memory, `3 GB` resident module budget, standby purge after text encoder and before transformer | `3.8537s` | `43.8340s` | `51.0s` | `54.1063s` | `161.6654s` | `232.4s` | `6.97 GB` | `48.79 GB` | Not viable for the Windows baseline. |
+
+Insight: disabling text-encoder pinned CPU memory avoids the fatal transformer-load crash, but moves a large cost into prompt encoding (`copy_seconds=42.6200s`) and still leaves the next transformer pass in a bad memory/performance state. The transformer entered denoise at `8.90 GiB` allocated and stabilized around `19-21s/it`, far worse than the current Windows transformer baseline of about `14-15s` total denoise. For now, keep text encoder dynamic weights as an explicit probe only; the recommended Windows baseline should use Diffusers text encoder group offload and reserve dynamic weights for the transformer.
