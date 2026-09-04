@@ -1029,3 +1029,11 @@ Windows auto preset validation:
 | Windows auto | `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET=auto`, standby purge before transformer | `31.9337s` | `14.5646s` | `56.9s` | `6.77 GB` | `27.36 GB` |
 
 Insight: `auto` resolved to the Windows fast path and inferred `resolved_resident_module_patterns=['^transformer_blocks\\.\\d+$']` from the module graph, selecting the same 11 resident modules as the previous hand-tuned path. This preserves the best Windows denoise behavior while removing the LTX-specific resident-module regex from the preset policy.
+
+Windows pin budget probe:
+
+| Run | Pin budget | Pinned weights | Pin setup | Denoise | Pass 1 | Runtime copy | Peak RAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Pin budget probe | `12 GB` | `316` | `18.4572s` / `11.9868 GB` | `126.2842s` | `167.1s` | `121.7972s` / `148.1445 GB` | `40.13 GB` |
+
+Insight: partial pinning is not a good short-run tradeoff on Windows. It saved only about `4.3s` of pin setup versus full pinning, but the unpinned streamed weights pushed runtime copy time from roughly sub-second/low-single-second to `121.7972s`. For 8-step runs the preset should keep either full eager pinning or no pinning for compatibility; pin budgets may only be worth revisiting with smarter per-weight profiling or a persistent warm process.
