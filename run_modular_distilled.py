@@ -130,6 +130,8 @@ DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_W
 DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK", "1")
 DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL = parse_bool_preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL", "1")
 DYNAMIC_WEIGHTS_PIN_CPU_WORKERS = int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4"))
+DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB = float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB", "0.0"))
+DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION", "spread").lower()
 DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB = int(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024"))
 DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB = float(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0"))
 DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION = preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION", "spread").lower()
@@ -478,6 +480,8 @@ def main():
         "dynamic_weights_allow_pin_memory_fallback": DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
         "dynamic_weights_disable_pin_on_wsl": DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL,
         "dynamic_weights_pin_cpu_workers": DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
+        "dynamic_weights_pin_weight_budget_gb": DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
+        "dynamic_weights_pin_weight_selection": DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
         "dynamic_weights_small_tensor_threshold_kb": DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB,
         "dynamic_weights_resident_weight_budget_gb": DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
         "dynamic_weights_resident_weight_selection": DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION,
@@ -663,6 +667,8 @@ def main():
                 lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
                 allow_pin_memory_fallback=DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
                 pin_cpu_workers=DYNAMIC_WEIGHTS_PIN_CPU_WORKERS,
+                pin_weight_budget_gb=DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
+                pin_weight_selection=DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
                 resident_weight_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB,
                 resident_weight_selection=DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION,
                 resident_module_budget_gb=DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
@@ -682,6 +688,8 @@ def main():
             pin_cpu_memory=DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
             lazy_pin_cpu_memory=DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY,
             allow_pin_memory_fallback=DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK,
+            pin_weight_budget_gb=DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
+            pin_weight_selection=DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
             patched_module_count=dynamic_weights_summary["patched_module_count"],
             resolved_resident_module_patterns=dynamic_weights_summary["resolved_resident_module_patterns"],
             setup_runtime=dynamic_weights_summary["setup_runtime"],

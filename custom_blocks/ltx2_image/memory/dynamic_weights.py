@@ -202,6 +202,8 @@ class DynamicWeightsConfig:
     lazy_pin_cpu_memory: bool = False
     allow_pin_memory_fallback: bool = True
     pin_cpu_workers: int = 1
+    pin_weight_budget_gb: float = 0.0
+    pin_weight_selection: str = "spread"
     resident_weight_budget_gb: float = 0.0
     resident_weight_selection: str = "spread"
     resident_module_budget_gb: float = 0.0
@@ -236,6 +238,7 @@ class DynamicWeightsState:
     patched_module_count: int = 0
     selected_resident_modules: list[str] = field(default_factory=list)
     selected_resident_linear_weights: list[str] = field(default_factory=list)
+    selected_pinned_linear_weights: list[str] = field(default_factory=list)
     resolved_resident_module_patterns: list[str] = field(default_factory=list)
 
     def add_setup(self, action: str, seconds: float, byte_count: int = 0) -> None:
@@ -272,6 +275,7 @@ class DynamicWeightsState:
             },
             "selected_resident_modules": self.selected_resident_modules,
             "selected_resident_linear_weights": self.selected_resident_linear_weights,
+            "selected_pinned_linear_weights": self.selected_pinned_linear_weights,
             "resolved_resident_module_patterns": self.resolved_resident_module_patterns,
             "entries": [
                 {
@@ -305,6 +309,10 @@ class DynamicWeightsHook(ModelHook):
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
         self.pin_cpu_workers = max(1, int(config.pin_cpu_workers))
+        self.pin_weight_budget_bytes = int(max(0.0, float(config.pin_weight_budget_gb)) * 1024**3)
+        self.pin_weight_selection = config.pin_weight_selection.lower()
+        if self.pin_weight_selection not in {"first", "spread"}:
+            raise ValueError("DynamicWeightsConfig.pin_weight_selection must be 'first' or 'spread'")
         self.resident_weight_budget_bytes = int(max(0.0, float(config.resident_weight_budget_gb)) * 1024**3)
         self.resident_module_budget_bytes = int(max(0.0, float(config.resident_module_budget_gb)) * 1024**3)
         self.resident_weight_selection = config.resident_weight_selection.lower()
@@ -390,7 +398,7 @@ class DynamicWeightsHook(ModelHook):
         resident_patterns = tuple(re.compile(pattern) for pattern in self.config.always_resident_modules_pattern)
         resident_module_patterns = _resolve_resident_module_patterns(module, self.config)
         self.state.resolved_resident_module_patterns = [pattern.pattern for pattern in resident_module_patterns]
-        linear_modules_to_pin: list[nn.Linear] = []
+        linear_modules_to_pin: list[tuple[str, nn.Linear, int]] = []
         store_weights_to_pin: list[int] = []
 
         self._move_root_local_tensors_to_device(module)
@@ -431,7 +439,13 @@ class DynamicWeightsHook(ModelHook):
                 if use_store and id(submodule) in self._resident_linear_weight_module_ids:
                     self._move_resident_linear_to_device(submodule)
                     continue
-                self._move_linear_to_runtime_devices(submodule, linear_modules_to_pin, store_weights_to_pin, use_store)
+                self._move_linear_to_runtime_devices(
+                    module_name,
+                    submodule,
+                    linear_modules_to_pin,
+                    store_weights_to_pin,
+                    use_store,
+                )
                 self._patch_linear(submodule)
             else:
                 self._move_small_local_tensors_to_device(submodule)
@@ -439,7 +453,8 @@ class DynamicWeightsHook(ModelHook):
         eager_pin_cpu_memory = self.config.pin_cpu_memory and not self.config.lazy_pin_cpu_memory
         if eager_pin_cpu_memory and linear_modules_to_pin:
             start = time.perf_counter()
-            pinned_bytes = self._pin_linear_weights(linear_modules_to_pin)
+            selected_linears_to_pin = self._select_linear_weights_to_pin(linear_modules_to_pin)
+            pinned_bytes = self._pin_linear_weights(selected_linears_to_pin)
             self.state.add_setup("pin_linear_weights", time.perf_counter() - start, pinned_bytes)
         if eager_pin_cpu_memory and store_weights_to_pin:
             start = time.perf_counter()
@@ -448,8 +463,9 @@ class DynamicWeightsHook(ModelHook):
 
     def _move_linear_to_runtime_devices(
         self,
+        module_name: str,
         linear: nn.Linear,
-        linear_modules_to_pin: list[nn.Linear],
+        linear_modules_to_pin: list[tuple[str, nn.Linear, int]],
         store_weights_to_pin: list[int],
         use_store: bool,
     ) -> None:
@@ -469,7 +485,29 @@ class DynamicWeightsHook(ModelHook):
                 store_weights_to_pin.append(id(linear))
             return
         if linear.weight.device.type == "cpu" and not linear.weight.data.is_pinned():
-            linear_modules_to_pin.append(linear)
+            linear_modules_to_pin.append((module_name, linear, _tensor_size_bytes(linear.weight.data)))
+
+    def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Linear, int]]) -> list[nn.Linear]:
+        if self.pin_weight_budget_bytes <= 0:
+            self.state.selected_pinned_linear_weights = [module_name for module_name, _, _ in candidates]
+            return [linear for _, linear, _ in candidates]
+
+        ordered_candidates = candidates
+        if self.pin_weight_selection == "spread":
+            ordered_candidates = _spread_order(candidates, self.pin_weight_budget_bytes)
+
+        selected_linears: list[nn.Linear] = []
+        selected_bytes = 0
+        selected_names: list[str] = []
+        for module_name, linear, weight_bytes in ordered_candidates:
+            if selected_bytes + weight_bytes > self.pin_weight_budget_bytes:
+                continue
+            selected_linears.append(linear)
+            selected_names.append(module_name)
+            selected_bytes += weight_bytes
+
+        self.state.selected_pinned_linear_weights = selected_names
+        return selected_linears
 
     def _select_resident_modules(
         self,
@@ -833,6 +871,15 @@ class DynamicWeightsHook(ModelHook):
                 "  [dynamic-weights-profile] "
                 f"resident_linear_weights={selected_linear_weights[:top_n]} "
                 f"count={len(selected_linear_weights)}",
+                flush=True,
+            )
+
+        selected_pinned_linear_weights = summary["selected_pinned_linear_weights"]
+        if selected_pinned_linear_weights:
+            print(
+                "  [dynamic-weights-profile] "
+                f"pinned_linear_weights={selected_pinned_linear_weights[:top_n]} "
+                f"count={len(selected_pinned_linear_weights)}",
                 flush=True,
             )
 
