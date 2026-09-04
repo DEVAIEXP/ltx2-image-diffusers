@@ -822,6 +822,7 @@ class DynamicWeightsHook(ModelHook):
     def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Module, int]]) -> list[tuple[str, nn.Module]]:
         candidate_bytes = sum(weight_bytes for _, _, weight_bytes in candidates)
         pin_weight_budget_bytes = self.pin_weight_budget_bytes
+        requested_unlimited_pin = pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio <= 0
         if pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio > 0:
             pin_weight_budget_bytes = int(candidate_bytes * self.pin_weight_budget_ratio)
         if pin_weight_budget_bytes > 0 and self.max_pin_weight_budget_bytes > 0:
@@ -829,11 +830,16 @@ class DynamicWeightsHook(ModelHook):
         if candidate_bytes > 0 and pin_weight_budget_bytes >= int(candidate_bytes * 0.95):
             pin_weight_budget_bytes = 0
             self.state.planner_decisions["pin_weight_budget_snap_to_full"] = True
-        self.state.planner_decisions["resolved_pin_weight_budget_gb"] = round(pin_weight_budget_bytes / 1024**3, 4)
         if pin_weight_budget_bytes <= 0:
+            self.state.planner_decisions["resolved_pin_weight_budget_mode"] = (
+                "unlimited_full_pin" if requested_unlimited_pin else "snap_to_full_pin"
+            )
+            self.state.planner_decisions["resolved_pin_weight_budget_gb"] = round(candidate_bytes / 1024**3, 4)
             self.state.selected_pinned_linear_weights = [module_name for module_name, _, _ in candidates]
             return [(module_name, linear) for module_name, linear, _ in candidates]
 
+        self.state.planner_decisions["resolved_pin_weight_budget_mode"] = "limited"
+        self.state.planner_decisions["resolved_pin_weight_budget_gb"] = round(pin_weight_budget_bytes / 1024**3, 4)
         ordered_candidates = candidates
         if self.pin_weight_selection == "spread":
             ordered_candidates = _spread_order(candidates, pin_weight_budget_bytes)
