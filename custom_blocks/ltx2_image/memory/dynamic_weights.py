@@ -946,9 +946,7 @@ class DynamicWeightsHook(ModelHook):
 
     def _move_resident_module_to_execution_device(self, module_name: str, module: nn.Module) -> int:
         if not self.config.cache_resident_device_tensors:
-            module_bytes = _module_size_bytes(module)
-            module.to(self.execution_device)
-            return module_bytes
+            return self._move_module_tensors_to_execution_device(module)
 
         moved_bytes = 0
         for tensor_name, parameter in module.named_parameters(recurse=True):
@@ -974,6 +972,20 @@ class DynamicWeightsHook(ModelHook):
             if buffer.device != self.execution_device:
                 buffer.data = buffer.data.to(self.execution_device)
             buffer.data = self._store_cached_resident_device_tensor(module_name, tensor_name, buffer.data)
+        return moved_bytes
+
+    def _move_module_tensors_to_execution_device(self, module: nn.Module) -> int:
+        moved_bytes = 0
+        for parameter in module.parameters(recurse=True):
+            tensor_bytes = _tensor_size_bytes(parameter.data)
+            moved_bytes += tensor_bytes
+            if parameter.device != self.execution_device:
+                parameter.data = parameter.data.to(self.execution_device)
+        for buffer in module.buffers(recurse=True):
+            tensor_bytes = _tensor_size_bytes(buffer.data)
+            moved_bytes += tensor_bytes
+            if buffer.device != self.execution_device:
+                buffer.data = buffer.data.to(self.execution_device)
         return moved_bytes
 
     def _move_root_local_tensors_to_device(self, module: nn.Module) -> None:
