@@ -103,6 +103,7 @@ DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = DYNAMIC_WEIGHTS_CONFIG.resident_modu
 DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS = DYNAMIC_WEIGHTS_CONFIG.resident_module_patterns
 DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION = DYNAMIC_WEIGHTS_CONFIG.resident_module_selection
 DYNAMIC_WEIGHTS_VERBOSE = DYNAMIC_WEIGHTS_CONFIG.verbose
+DYNAMIC_WEIGHTS_SHOW_PROFILE = DYNAMIC_WEIGHTS_CONFIG.show_profile
 DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.effective_pin_cpu_memory
 PRE_VAE_CLEANUP_REPEATS = int(preset_env("LTX_IMAGE_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("LTX_IMAGE_RESET_DYNAMIC_MEMORY_AFTER_RUN")
@@ -438,6 +439,7 @@ def main():
         "dynamic_weights_resident_module_budget_gb": DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
         "dynamic_weights_resident_module_patterns": DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS,
         "dynamic_weights_resident_module_selection": DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION,
+        "dynamic_weights_show_profile": DYNAMIC_WEIGHTS_SHOW_PROFILE,
         "pre_vae_cleanup_repeats": PRE_VAE_CLEANUP_REPEATS,
         "attention_backend": ATTENTION_BACKEND,
         "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,
@@ -740,7 +742,8 @@ def main():
 
     if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
         run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()
-        dynamic_weights_hook.print_profile_summary()
+        if DYNAMIC_WEIGHTS_SHOW_PROFILE:
+            dynamic_weights_hook.print_profile_summary()
     del connector_prompt_embeds, connector_attention_mask
     if dynamic_weights_enabled:
         if DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and "dynamic_weights_runtime_summary" not in run_metrics:

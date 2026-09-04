@@ -289,6 +289,7 @@ class DynamicWeightsConfig:
     resident_module_patterns: tuple[str, ...] = ()
     resident_module_selection: str = "spread"
     verbose: bool = False
+    show_profile: bool = True
 
 
 @dataclass(frozen=True)
@@ -1073,6 +1074,7 @@ def load_dynamic_weights_settings_from_env(
         resident_module_patterns=_parse_pattern_list_value(preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS", "")),
         resident_module_selection=preset_env("LTX_IMAGE_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower(),
         verbose=preset_bool("LTX_IMAGE_DYNAMIC_WEIGHTS_VERBOSE", "1"),
+        show_profile=preset_bool("LTX_IMAGE_DYNAMIC_WEIGHTS_SHOW_PROFILE", "1"),
     )
     return DynamicWeightsSettings(
         requested_preset=requested_preset,
