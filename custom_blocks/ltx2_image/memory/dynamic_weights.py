@@ -31,8 +31,6 @@ _DYNAMIC_WEIGHTS_PLAN_CACHE: dict[tuple[Any, ...], "DynamicWeightsState"] = {}
 _DYNAMIC_WEIGHTS_PLAN_CACHE_LOCK = threading.Lock()
 _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE: dict[tuple[Any, ...], torch.Tensor] = {}
 _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE_LOCK = threading.Lock()
-_DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE: dict[tuple[Any, ...], torch.Tensor] = {}
-_DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE_LOCK = threading.Lock()
 
 
 def generic_dynamic_weights_env_name(name: str) -> str:
@@ -105,7 +103,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
         "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
@@ -125,7 +122,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
         "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
@@ -145,7 +141,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "1",
@@ -167,7 +162,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
         "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "balanced",
@@ -191,7 +185,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
         "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
@@ -212,7 +205,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
         "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
@@ -227,7 +219,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "2",
         "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
@@ -242,25 +233,9 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "3",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
-    },
-    "long_steps": {
-        "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
-        "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
-        "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
@@ -337,23 +312,17 @@ class DynamicWeightsConfig:
     small_tensor_threshold_bytes: int = 16 * 1024
     execution_mode: str = "plan"
     pin_cpu_memory: bool = False
-    lazy_pin_cpu_memory: bool = False
     allow_pin_memory_fallback: bool = True
-    overlap_pin_setup: bool = False
     pin_cpu_workers: int = 1
     cache_plan: bool = True
     cache_pinned_weights: bool = False
     pinned_weight_cache_namespace: str = ""
-    cache_resident_device_tensors: bool = False
-    resident_device_cache_namespace: str = ""
     auto_budget_policy: str = _AUTO_BUDGET_DISABLED
     max_resident_module_budget_gb: float = 6.0
     max_pin_weight_budget_gb: float = 0.0
     pin_weight_budget_gb: float = 0.0
     pin_weight_budget_ratio: float = 0.0
     pin_weight_selection: str = "spread"
-    resident_weight_budget_gb: float = 0.0
-    resident_weight_selection: str = "spread"
     resident_module_budget_gb: float = 0.0
     resident_module_patterns: tuple[str, ...] = ()
     resident_module_selection: str = "spread"
@@ -401,16 +370,12 @@ class DynamicWeightsSettings:
             "dynamic_weights_execution_mode": config.execution_mode,
             "dynamic_weights_pin_cpu_memory": self.requested_pin_cpu_memory,
             "dynamic_weights_effective_pin_cpu_memory": self.effective_pin_cpu_memory,
-            "dynamic_weights_lazy_pin_cpu_memory": config.lazy_pin_cpu_memory,
             "dynamic_weights_allow_pin_memory_fallback": config.allow_pin_memory_fallback,
-            "dynamic_weights_overlap_pin_setup": config.overlap_pin_setup,
             "dynamic_weights_disable_pin_on_wsl": self.disable_pin_on_wsl,
             "dynamic_weights_pin_cpu_workers": config.pin_cpu_workers,
             "dynamic_weights_cache_plan": config.cache_plan,
             "dynamic_weights_cache_pinned_weights": config.cache_pinned_weights,
             "dynamic_weights_pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
-            "dynamic_weights_cache_resident_device_tensors": config.cache_resident_device_tensors,
-            "dynamic_weights_resident_device_cache_namespace": config.resident_device_cache_namespace or None,
             "dynamic_weights_auto_budget_policy": config.auto_budget_policy,
             "dynamic_weights_max_resident_module_budget_gb": config.max_resident_module_budget_gb,
             "dynamic_weights_max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
@@ -418,8 +383,6 @@ class DynamicWeightsSettings:
             "dynamic_weights_pin_weight_budget_ratio": config.pin_weight_budget_ratio,
             "dynamic_weights_pin_weight_selection": config.pin_weight_selection,
             "dynamic_weights_small_tensor_threshold_kb": config.small_tensor_threshold_bytes // 1024,
-            "dynamic_weights_resident_weight_budget_gb": config.resident_weight_budget_gb,
-            "dynamic_weights_resident_weight_selection": config.resident_weight_selection,
             "dynamic_weights_resident_module_budget_gb": config.resident_module_budget_gb,
             "dynamic_weights_resident_module_patterns": config.resident_module_patterns,
             "dynamic_weights_resident_module_selection": config.resident_module_selection,
@@ -445,13 +408,10 @@ def build_dynamic_weights_event_payload(
         "bytes_by_placement": summary["bytes_by_placement"],
         "execution_mode": config.execution_mode,
         "pin_cpu_memory": settings.effective_pin_cpu_memory,
-        "lazy_pin_cpu_memory": config.lazy_pin_cpu_memory,
         "allow_pin_memory_fallback": config.allow_pin_memory_fallback,
         "cache_plan": config.cache_plan,
         "cache_pinned_weights": config.cache_pinned_weights,
         "pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
-        "cache_resident_device_tensors": config.cache_resident_device_tensors,
-        "resident_device_cache_namespace": config.resident_device_cache_namespace or None,
         "safetensors_backend": config.safetensors_backend or None,
         "auto_budget_policy": config.auto_budget_policy,
         "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
@@ -572,12 +532,9 @@ class DynamicWeightsHook(ModelHook):
         self.config = config
         self.state = DynamicWeightsState()
         self._patched_modules: list[tuple[nn.Module, object]] = []
-        self._lazy_pinned_tensor_ids: set[int] = set()
         self._pin_memory_disabled = False
-        self._pin_lock = threading.Lock()
         self._resident_module_names: set[str] = set()
         self._pinned_weight_cache_namespace = ""
-        self._resident_device_cache_namespace = ""
         self.execution_device = torch.device(config.execution_device)
         self.offload_device = torch.device(config.offload_device)
         self.execution_mode = config.execution_mode.lower()
@@ -592,11 +549,7 @@ class DynamicWeightsHook(ModelHook):
         if self.pin_weight_selection not in {"first", "spread", "largest"}:
             raise ValueError("DynamicWeightsConfig.pin_weight_selection must be 'first', 'spread', or 'largest'")
         self.pin_weight_budget_ratio = max(0.0, min(1.0, float(config.pin_weight_budget_ratio)))
-        self.resident_weight_budget_bytes = int(max(0.0, float(config.resident_weight_budget_gb)) * 1024**3)
         self.resident_module_budget_bytes = int(max(0.0, float(config.resident_module_budget_gb)) * 1024**3)
-        self.resident_weight_selection = config.resident_weight_selection.lower()
-        if self.resident_weight_selection not in {"first", "spread", "largest"}:
-            raise ValueError("DynamicWeightsConfig.resident_weight_selection must be 'first', 'spread', or 'largest'")
         self.resident_module_selection = config.resident_module_selection.lower()
         if self.resident_module_selection not in {"first", "spread", "largest"}:
             raise ValueError("DynamicWeightsConfig.resident_module_selection must be 'first', 'spread', or 'largest'")
@@ -605,10 +558,6 @@ class DynamicWeightsHook(ModelHook):
         self._pinned_weight_cache_namespace = (
             self.config.pinned_weight_cache_namespace.strip()
             or f"{module.__class__.__module__}.{module.__class__.__qualname__}"
-        )
-        self._resident_device_cache_namespace = (
-            self.config.resident_device_cache_namespace.strip()
-            or self._pinned_weight_cache_namespace
         )
         self.state = build_dynamic_weight_plan(module, self.config)
         if self.execution_mode not in {"plan", "linear_runtime"}:
@@ -658,7 +607,6 @@ class DynamicWeightsHook(ModelHook):
         while self._patched_modules:
             patched_module, original_forward = self._patched_modules.pop()
             patched_module.forward = original_forward
-        self._lazy_pinned_tensor_ids.clear()
         self._pin_memory_disabled = False
         self._resident_module_names.clear()
 
@@ -691,8 +639,6 @@ class DynamicWeightsHook(ModelHook):
             resident_module_patterns = _resolve_resident_module_patterns(module, self.config)
             self.state.resolved_resident_module_patterns = [pattern.pattern for pattern in resident_module_patterns]
         modules_to_pin: list[tuple[str, nn.Module, int]] = []
-        eager_pin_cpu_memory = self.config.pin_cpu_memory and not self.config.lazy_pin_cpu_memory
-        pin_work = None
 
         self._apply_auto_budget_policy(module, skip_patterns, resident_patterns, resident_module_patterns)
 
@@ -701,12 +647,6 @@ class DynamicWeightsHook(ModelHook):
             start = time.perf_counter()
             selected_bytes = self._select_resident_modules(module, skip_patterns, resident_module_patterns)
             self.state.add_setup("select_resident_modules", time.perf_counter() - start, selected_bytes)
-
-        if eager_pin_cpu_memory and self.config.overlap_pin_setup and self.pin_cpu_workers > 1:
-            candidates = self._collect_linear_modules_to_pin(module, skip_patterns, resident_patterns)
-            selected_linears_to_pin = self._select_linear_weights_to_pin(candidates)
-            if selected_linears_to_pin:
-                pin_work = self._start_pin_linear_weights(selected_linears_to_pin)
 
         for module_name, submodule in module.named_modules():
             if module_name == "":
@@ -734,24 +674,20 @@ class DynamicWeightsHook(ModelHook):
                 self._move_linear_to_runtime_devices(
                     module_name,
                     submodule,
-                    modules_to_pin if pin_work is None else None,
+                    modules_to_pin,
                 )
                 self._patch_linear(submodule)
             elif isinstance(submodule, nn.Embedding):
                 self._move_embedding_to_runtime_devices(
                     module_name,
                     submodule,
-                    modules_to_pin if pin_work is None else None,
+                    modules_to_pin,
                 )
                 self._patch_embedding(submodule)
             else:
                 self._move_small_local_tensors_to_device(submodule)
 
-        if pin_work is not None:
-            start, finish_pin_work = pin_work
-            pinned_bytes = finish_pin_work()
-            self.state.add_setup("pin_linear_weights_overlapped", time.perf_counter() - start, pinned_bytes)
-        elif eager_pin_cpu_memory and modules_to_pin:
+        if self.config.pin_cpu_memory and modules_to_pin:
             start = time.perf_counter()
             selected_linears_to_pin = self._select_linear_weights_to_pin(modules_to_pin)
             pinned_bytes = self._pin_linear_weights(selected_linears_to_pin)
@@ -943,35 +879,8 @@ class DynamicWeightsHook(ModelHook):
     def _is_descendant_of_resident_module(self, module_name: str) -> bool:
         return any(_is_module_descendant(module_name, resident_name) for resident_name in self._resident_module_names)
 
-    def _move_resident_module_to_execution_device(self, module_name: str, module: nn.Module) -> int:
-        if not self.config.cache_resident_device_tensors:
-            return self._move_module_tensors_to_execution_device(module)
-
-        moved_bytes = 0
-        for tensor_name, parameter in module.named_parameters(recurse=True):
-            tensor_bytes = _tensor_size_bytes(parameter.data)
-            moved_bytes += tensor_bytes
-            cached = self._get_cached_resident_device_tensor(module_name, tensor_name, parameter.data)
-            if cached is not None:
-                parameter.data = cached
-                self.state.add_setup("resident_device_cache_hit", 0.0, tensor_bytes)
-                continue
-            if parameter.device != self.execution_device:
-                parameter.data = parameter.data.to(self.execution_device)
-            parameter.data = self._store_cached_resident_device_tensor(module_name, tensor_name, parameter.data)
-
-        for tensor_name, buffer in module.named_buffers(recurse=True):
-            tensor_bytes = _tensor_size_bytes(buffer.data)
-            moved_bytes += tensor_bytes
-            cached = self._get_cached_resident_device_tensor(module_name, tensor_name, buffer.data)
-            if cached is not None:
-                buffer.data = cached
-                self.state.add_setup("resident_device_cache_hit", 0.0, tensor_bytes)
-                continue
-            if buffer.device != self.execution_device:
-                buffer.data = buffer.data.to(self.execution_device)
-            buffer.data = self._store_cached_resident_device_tensor(module_name, tensor_name, buffer.data)
-        return moved_bytes
+    def _move_resident_module_to_execution_device(self, _module_name: str, module: nn.Module) -> int:
+        return self._move_module_tensors_to_execution_device(module)
 
     def _move_module_tensors_to_execution_device(self, module: nn.Module) -> int:
         moved_bytes = 0
@@ -1092,65 +1001,6 @@ class DynamicWeightsHook(ModelHook):
                     break
         return pinned_bytes
 
-    def _start_pin_linear_weights(self, linears: list[tuple[str, nn.Module]]):
-        start = time.perf_counter()
-        executor = ThreadPoolExecutor(max_workers=self.pin_cpu_workers)
-        linears_iter = iter(linears)
-        futures = set()
-        pinned_bytes = 0
-
-        def pin_and_assign(module_name: str, linear: nn.Linear) -> tuple[int, bool]:
-            cached = self._get_cached_pinned_weight(module_name, linear.weight.data)
-            if cached is not None:
-                with self._pin_lock:
-                    linear.weight.data = cached
-                return _tensor_size_bytes(cached), True
-            pinned = linear.weight.data.pin_memory()
-            pinned = self._store_cached_pinned_weight(module_name, pinned)
-            tensor_bytes = _tensor_size_bytes(pinned)
-            with self._pin_lock:
-                linear.weight.data = pinned
-            return tensor_bytes, False
-
-        def submit_next() -> bool:
-            try:
-                module_name, linear = next(linears_iter)
-            except StopIteration:
-                return False
-            futures.add(executor.submit(pin_and_assign, module_name, linear))
-            return True
-
-        for _ in range(self.pin_cpu_workers):
-            if not submit_next():
-                break
-
-        def finish() -> int:
-            nonlocal pinned_bytes
-            try:
-                while futures:
-                    for future in as_completed(futures):
-                        futures.remove(future)
-                        try:
-                            tensor_bytes, cache_hit = future.result()
-                            pinned_bytes += tensor_bytes
-                            if cache_hit:
-                                self.state.add_setup("pinned_weight_cache_hit", 0.0, tensor_bytes)
-                        except _PIN_MEMORY_ERRORS as exc:
-                            if not self.config.allow_pin_memory_fallback:
-                                raise
-                            self._disable_pin_memory("pin_linear_weights_failed", exc)
-                            for pending in futures:
-                                pending.cancel()
-                            return pinned_bytes
-                        if not self._pin_memory_disabled:
-                            submit_next()
-                        break
-                return pinned_bytes
-            finally:
-                executor.shutdown(wait=True, cancel_futures=True)
-
-        return start, finish
-
     def _get_cached_pinned_weight(self, module_name: str, tensor: torch.Tensor) -> torch.Tensor | None:
         if not self.config.cache_pinned_weights:
             return None
@@ -1176,48 +1026,6 @@ class DynamicWeightsHook(ModelHook):
             "v1",
             self._pinned_weight_cache_namespace,
             module_name,
-            tuple(tensor.shape),
-            str(tensor.dtype),
-            tensor.numel(),
-            tensor.element_size(),
-        )
-
-    def _get_cached_resident_device_tensor(
-        self,
-        module_name: str,
-        tensor_name: str,
-        tensor: torch.Tensor,
-    ) -> torch.Tensor | None:
-        if not self.config.cache_resident_device_tensors:
-            return None
-        cache_key = self._resident_device_cache_key(module_name, tensor_name, tensor)
-        with _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE_LOCK:
-            cached = _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE.get(cache_key)
-        if cached is None:
-            return None
-        if cached.device != self.execution_device or cached.shape != tensor.shape or cached.dtype != tensor.dtype:
-            return None
-        return cached
-
-    def _store_cached_resident_device_tensor(
-        self,
-        module_name: str,
-        tensor_name: str,
-        tensor: torch.Tensor,
-    ) -> torch.Tensor:
-        if not self.config.cache_resident_device_tensors or tensor.device != self.execution_device:
-            return tensor
-        cache_key = self._resident_device_cache_key(module_name, tensor_name, tensor)
-        with _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE_LOCK:
-            cached = _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE.setdefault(cache_key, tensor)
-        return cached
-
-    def _resident_device_cache_key(self, module_name: str, tensor_name: str, tensor: torch.Tensor) -> tuple[Any, ...]:
-        return (
-            "v1",
-            self._resident_device_cache_namespace,
-            module_name,
-            tensor_name,
             tuple(tensor.shape),
             str(tensor.dtype),
             tensor.numel(),
@@ -1276,44 +1084,11 @@ class DynamicWeightsHook(ModelHook):
             return None
         if tensor.device == input.device and (not cast_to_input_dtype or tensor.dtype == input.dtype):
             return tensor
-        tensor = self._lazy_pin_tensor(tensor, name)
         start = time.perf_counter()
         dtype = input.dtype if cast_to_input_dtype else tensor.dtype
         moved = tensor.to(device=input.device, dtype=dtype, non_blocking=True)
         self.state.add_copy(name, time.perf_counter() - start, _tensor_size_bytes(moved))
         return moved
-
-    def _lazy_pin_tensor(self, tensor: torch.Tensor, name: str) -> torch.Tensor:
-        if self._pin_memory_disabled or not self.config.pin_cpu_memory or not self.config.lazy_pin_cpu_memory:
-            return tensor
-        if tensor.device.type == "meta":
-            return tensor
-        if tensor.device.type != "cpu" or tensor.is_pinned():
-            return tensor
-
-        start = time.perf_counter()
-        try:
-            pinned = tensor.pin_memory()
-        except _PIN_MEMORY_ERRORS as exc:
-            if not self.config.allow_pin_memory_fallback:
-                raise
-            self._disable_pin_memory(f"lazy_pin_{name}_failed", exc)
-            return tensor
-        seconds = time.perf_counter() - start
-        pinned_bytes = _tensor_size_bytes(pinned)
-
-        if isinstance(tensor, nn.Parameter):
-            tensor.data = pinned
-            pinned_tensor = tensor
-            tensor_id = id(tensor)
-        else:
-            pinned_tensor = pinned
-            tensor_id = id(pinned)
-
-        if tensor_id not in self._lazy_pinned_tensor_ids:
-            self._lazy_pinned_tensor_ids.add(tensor_id)
-            self.state.add_setup(f"lazy_pin_{name}", seconds, pinned_bytes)
-        return pinned_tensor
 
     def print_profile_summary(self, *, top_n: int = 8) -> None:
         summary = self.state.as_dict()
@@ -1427,9 +1202,7 @@ def load_dynamic_weights_settings_from_env(
     plan = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_PLAN")
     execution_mode = preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
     requested_pin_cpu_memory = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
-    lazy_pin_cpu_memory = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY")
     allow_pin_memory_fallback = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK", "1")
-    overlap_pin_setup = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_OVERLAP_PIN_SETUP", "0")
     disable_pin_on_wsl = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL", "1")
     effective_pin_cpu_memory = requested_pin_cpu_memory and not (is_wsl and disable_pin_on_wsl)
 
@@ -1447,15 +1220,11 @@ def load_dynamic_weights_settings_from_env(
         small_tensor_threshold_bytes=int(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB", "1024")) * 1024,
         execution_mode=execution_mode,
         pin_cpu_memory=effective_pin_cpu_memory,
-        lazy_pin_cpu_memory=lazy_pin_cpu_memory,
         allow_pin_memory_fallback=allow_pin_memory_fallback,
-        overlap_pin_setup=overlap_pin_setup,
         pin_cpu_workers=int(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4")),
         cache_plan=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PLAN", "1"),
         cache_pinned_weights=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PINNED_WEIGHTS", "0"),
         pinned_weight_cache_namespace=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PINNED_WEIGHT_CACHE_NAMESPACE", ""),
-        cache_resident_device_tensors=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_RESIDENT_DEVICE_TENSORS", "0"),
-        resident_device_cache_namespace=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_DEVICE_CACHE_NAMESPACE", ""),
         auto_budget_policy=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY", "off").lower(),
         max_resident_module_budget_gb=float(
             preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB", "6.0")
@@ -1464,8 +1233,6 @@ def load_dynamic_weights_settings_from_env(
         pin_weight_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB", "0.0")),
         pin_weight_budget_ratio=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO", "0.0")),
         pin_weight_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION", "spread").lower(),
-        resident_weight_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB", "0.0")),
-        resident_weight_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION", "spread").lower(),
         resident_module_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0")),
         resident_module_patterns=_parse_pattern_list_value(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS", "")),
         resident_module_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower(),
@@ -1604,11 +1371,6 @@ def clear_dynamic_weights_plan_cache() -> None:
 def clear_dynamic_weights_pinned_tensor_cache() -> None:
     with _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE_LOCK:
         _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE.clear()
-
-
-def clear_dynamic_weights_resident_device_tensor_cache() -> None:
-    with _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE_LOCK:
-        _DYNAMIC_WEIGHTS_RESIDENT_DEVICE_TENSOR_CACHE.clear()
 
 
 def build_dynamic_weight_plan(module: nn.Module, config: DynamicWeightsConfig) -> DynamicWeightsState:

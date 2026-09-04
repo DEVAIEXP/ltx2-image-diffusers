@@ -574,8 +574,6 @@ def main():
             text_encoder_dynamic_weights_config = replace(
                 DYNAMIC_WEIGHTS_CONFIG,
                 pin_cpu_memory=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
-                lazy_pin_cpu_memory=False,
-                overlap_pin_setup=False,
                 pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
                 pin_weight_budget_ratio=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO,
                 pin_weight_selection=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
