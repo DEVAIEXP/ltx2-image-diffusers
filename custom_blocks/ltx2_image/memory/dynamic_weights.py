@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 import os
@@ -367,6 +368,7 @@ class DynamicWeightsConfig:
     resident_module_budget_gb: float = 0.0
     resident_module_patterns: tuple[str, ...] = ()
     resident_module_selection: str = "spread"
+    safetensors_backend: str = ""
     verbose: bool = False
     show_profile: bool = True
 
@@ -432,6 +434,7 @@ class DynamicWeightsSettings:
             "dynamic_weights_resident_module_budget_gb": config.resident_module_budget_gb,
             "dynamic_weights_resident_module_patterns": config.resident_module_patterns,
             "dynamic_weights_resident_module_selection": config.resident_module_selection,
+            "dynamic_weights_safetensors_backend": config.safetensors_backend or None,
             "dynamic_weights_show_profile": config.show_profile,
         }
 
@@ -460,6 +463,7 @@ def build_dynamic_weights_event_payload(
         "pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
         "cache_resident_device_tensors": config.cache_resident_device_tensors,
         "resident_device_cache_namespace": config.resident_device_cache_namespace or None,
+        "safetensors_backend": config.safetensors_backend or None,
         "auto_budget_policy": config.auto_budget_policy,
         "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
         "max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
@@ -1476,6 +1480,7 @@ def load_dynamic_weights_settings_from_env(
         resident_module_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB", "0.0")),
         resident_module_patterns=_parse_pattern_list_value(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS", "")),
         resident_module_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION", "spread").lower(),
+        safetensors_backend=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_SAFETENSORS_BACKEND", "").strip().lower(),
         verbose=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE", "0"),
         show_profile=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE", "0"),
     )
@@ -1503,6 +1508,64 @@ def apply_dynamic_weights(module: nn.Module, config: DynamicWeightsConfig | None
     return hook
 
 
+@contextlib.contextmanager
+def _temporary_safetensors_backend(backend: str):
+    backend = backend.strip().lower()
+    if not backend:
+        yield
+        return
+    if backend not in {"mmap", "pread"}:
+        raise ValueError("DynamicWeightsConfig.safetensors_backend must be '', 'mmap', or 'pread'")
+
+    try:
+        import safetensors
+        import safetensors.torch
+    except ImportError:
+        yield
+        return
+
+    original_safe_open = safetensors.safe_open
+    original_torch_load_file = safetensors.torch.load_file
+
+    def safe_open_with_backend(filename, framework, device=None, **kwargs):
+        kwargs.setdefault("backend", backend)
+        if device is None:
+            return original_safe_open(filename, framework=framework, **kwargs)
+        return original_safe_open(filename, framework=framework, device=device, **kwargs)
+
+    def torch_load_file_with_backend(filename, device="cpu", **kwargs):
+        kwargs.setdefault("backend", backend)
+        return original_torch_load_file(filename, device=device, **kwargs)
+
+    safetensors.safe_open = safe_open_with_backend
+    safetensors.torch.load_file = torch_load_file_with_backend
+
+    patched_modules: list[tuple[Any, str, Any]] = []
+    for module_name in (
+        "accelerate.utils.modeling",
+        "transformers.modeling_utils",
+        "diffusers.models.model_loading_utils",
+    ):
+        try:
+            imported_module = __import__(module_name, fromlist=["_"])
+        except ImportError:
+            continue
+        if getattr(imported_module, "safe_open", None) is original_safe_open:
+            setattr(imported_module, "safe_open", safe_open_with_backend)
+            patched_modules.append((imported_module, "safe_open", original_safe_open))
+        if getattr(imported_module, "safe_load_file", None) is original_torch_load_file:
+            setattr(imported_module, "safe_load_file", torch_load_file_with_backend)
+            patched_modules.append((imported_module, "safe_load_file", original_torch_load_file))
+
+    try:
+        yield
+    finally:
+        for imported_module, attr_name, original_value in reversed(patched_modules):
+            setattr(imported_module, attr_name, original_value)
+        safetensors.safe_open = original_safe_open
+        safetensors.torch.load_file = original_torch_load_file
+
+
 def from_pretrained_with_dynamic_weights(
     pretrained_model_name_or_path: str | os.PathLike[str],
     *,
@@ -1516,11 +1579,12 @@ def from_pretrained_with_dynamic_weights(
 
         model_loader = AutoModel
     from_pretrained = getattr(model_loader, "from_pretrained", model_loader)
-    module = from_pretrained(pretrained_model_name_or_path, **from_pretrained_kwargs)
+    config = dynamic_weights_config or DynamicWeightsConfig()
+    with _temporary_safetensors_backend(config.safetensors_backend):
+        module = from_pretrained(pretrained_model_name_or_path, **from_pretrained_kwargs)
     if not apply_dynamic:
         return DynamicWeightsLoadResult(module=module)
 
-    config = dynamic_weights_config or DynamicWeightsConfig()
     hook = apply_dynamic_weights(module, config)
     return DynamicWeightsLoadResult(
         module=module,
