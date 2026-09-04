@@ -1121,3 +1121,11 @@ $env:DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD="0"
 ```
 
 The target comparison is the Windows text encoder baseline, where `encode_prompt_call` is still around `80-85s` with Diffusers group offload. This probe is successful only if the full Pass 0 time drops enough to offset any dynamic setup cost added before prompt encoding.
+
+First Windows text encoder probe:
+
+| Mode | Setup | Encode call | Pass 0 | Peak VRAM | Peak RAM | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Dynamic weights on full text encoder | `31.0953s` | `12.3552s` | `52.6s` | `6.97 GB` | `46.76 GB` | Prompt encode improved a lot, but memory pressure caused a fatal failure while loading the transformer. |
+
+Insight: applying the manager to the whole text encoder also staged/pinned `model.vision_tower.*`, which is not needed for this prompt-text path. The runner now skips `vision_tower` by default for the text encoder probe through `DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULE_PATTERNS`. Override it with an empty value only when testing a model/path that actually needs vision modules during prompt encoding.

@@ -3,9 +3,11 @@ Local low-VRAM parity runner for the experimental LTX 2.3 distilled modular T2I 
 """
 
 import contextlib
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
+import re
 import time
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -112,9 +114,17 @@ def preset_env(name: str, default: str = "") -> str:
 def parse_bool_preset_env(name: str, default: str = "0") -> bool:
     return preset_env(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
+
+def parse_pattern_list_env(name: str, default: str = "") -> tuple[str, ...]:
+    return tuple(item.strip() for item in re.split(r"[;,]", preset_env(name, default)) if item.strip())
+
 AUTO_CPU_OFFLOAD = parse_bool_env("DIFFUSERS_RUNNER_AUTO_CPU_OFFLOAD")
 TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
 TEXT_ENCODER_DYNAMIC_WEIGHTS = parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS")
+TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES = parse_pattern_list_env(
+    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULE_PATTERNS",
+    r"(^|\.)vision_tower(\.|$)",
+)
 TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD")
 TRANSFORMER_MEMORY_MANAGER = preset_env("DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER", "off").lower()
 DYNAMIC_WEIGHTS_CONFIG = DYNAMIC_WEIGHTS_SETTINGS.config
@@ -439,6 +449,7 @@ def main():
         "dtype": str(DTYPE),
         "text_encoder_low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE,
         "text_encoder_dynamic_weights": TEXT_ENCODER_DYNAMIC_WEIGHTS,
+        "text_encoder_dynamic_weights_skip_modules": TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES,
         "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
         "running_on_wsl": RUNNING_ON_WSL,
         "reset_dynamic_memory_after_run": RESET_DYNAMIC_MEMORY_AFTER_RUN,
@@ -494,7 +505,14 @@ def main():
         event_t0 = time.time()
         text_encoder_dynamic_weights_hook = None
         if TEXT_ENCODER_DYNAMIC_WEIGHTS:
-            text_encoder_dynamic_weights_hook = apply_dynamic_weights(text_encoder, DYNAMIC_WEIGHTS_CONFIG)
+            text_encoder_dynamic_weights_config = replace(
+                DYNAMIC_WEIGHTS_CONFIG,
+                skip_modules_pattern=(
+                    *DYNAMIC_WEIGHTS_CONFIG.skip_modules_pattern,
+                    *TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES,
+                ),
+            )
+            text_encoder_dynamic_weights_hook = apply_dynamic_weights(text_encoder, text_encoder_dynamic_weights_config)
             record_event(
                 "setup_text_encoder_dynamic_weights",
                 time.time() - event_t0,
