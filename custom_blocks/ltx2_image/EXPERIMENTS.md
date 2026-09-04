@@ -1149,3 +1149,11 @@ Follow-up Windows result with conservative text encoder dynamic settings:
 | Text encoder dynamic, no pinned CPU memory, `3 GB` resident module budget, standby purge after text encoder and before transformer | `3.8537s` | `43.8340s` | `51.0s` | `54.1063s` | `161.6654s` | `232.4s` | `6.97 GB` | `48.79 GB` | Not viable for the Windows baseline. |
 
 Insight: disabling text-encoder pinned CPU memory avoids the fatal transformer-load crash, but moves a large cost into prompt encoding (`copy_seconds=42.6200s`) and still leaves the next transformer pass in a bad memory/performance state. The transformer entered denoise at `8.90 GiB` allocated and stabilized around `19-21s/it`, far worse than the current Windows transformer baseline of about `14-15s` total denoise. For now, keep text encoder dynamic weights as an explicit probe only; the recommended Windows baseline should use Diffusers text encoder group offload and reserve dynamic weights for the transformer.
+
+After explicitly releasing the text encoder dynamic hook/config before `flush()` and the post-text-encoder standby purge, the same probe stopped degrading the transformer:
+
+| Mode | Text setup | Encode call | Pass 0 | Transformer setup | Transformer denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Text encoder dynamic, no pinned CPU memory, `3 GB` resident module budget, hook reference released before cleanup | `3.8299s` | `46.2332s` | `55.9s` | `29.8898s` | `14.3782s` | `52.2s` | `6.32 GB` | `25.33 GB` | Transformer returned to the healthy Windows baseline. |
+
+Insight: the cleanup order matters. The text encoder dynamic path is still not faster than desired because prompt encoding spends `45.4250s` copying `20.8677 GB`, but releasing the hook before cleanup prevents the next transformer pass from inheriting the previous bad memory state. This makes text encoder dynamic weights a viable opt-in probe again, with the next target being reducing text-encoder runtime copy cost rather than fixing transformer contamination.
