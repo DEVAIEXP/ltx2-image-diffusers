@@ -1129,3 +1129,5 @@ First Windows text encoder probe:
 | Dynamic weights on full text encoder | `31.0953s` | `12.3552s` | `52.6s` | `6.97 GB` | `46.76 GB` | Prompt encode improved a lot, but memory pressure caused a fatal failure while loading the transformer. |
 
 Insight: applying the manager to the whole text encoder also staged/pinned `model.vision_tower.*`, which is not needed for this prompt-text path. The runner now skips `vision_tower` by default for the text encoder probe through `DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULE_PATTERNS`. Override it with an empty value only when testing a model/path that actually needs vision modules during prompt encoding.
+
+Follow-up safety note: the text encoder probe now forcibly disables `DIFFUSERS_DYNAMIC_WEIGHTS_OVERLAP_PIN_SETUP` for the text encoder component. The overlap setup probe showed no transformer benefit and is too risky for this path because the text encoder has a larger and more mixed module tree.

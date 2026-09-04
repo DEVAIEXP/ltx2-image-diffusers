@@ -507,6 +507,7 @@ def main():
         if TEXT_ENCODER_DYNAMIC_WEIGHTS:
             text_encoder_dynamic_weights_config = replace(
                 DYNAMIC_WEIGHTS_CONFIG,
+                overlap_pin_setup=False,
                 skip_modules_pattern=(
                     *DYNAMIC_WEIGHTS_CONFIG.skip_modules_pattern,
                     *TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES,
@@ -557,6 +558,7 @@ def main():
             if DYNAMIC_WEIGHTS_SHOW_PROFILE:
                 text_encoder_dynamic_weights_hook.print_profile_summary()
             remove_dynamic_weights(text_encoder)
+        del prompt_state
         del prompt_pipe, text_encoder, tokenizer
         flush()
 
