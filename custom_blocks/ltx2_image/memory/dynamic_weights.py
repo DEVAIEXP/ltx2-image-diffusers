@@ -448,6 +448,13 @@ class DynamicWeightsHook(ModelHook):
                 f"placements={summary['bytes_by_placement']}",
                 flush=True,
             )
+            if self.config.pin_cpu_memory and self.pin_weight_budget_bytes > 0:
+                print(
+                    "  [dynamic-weights] warning: partial pinned-memory budgets can be slower than full pinning; "
+                    "clear DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB/LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB "
+                    "when benchmarking the fast preset.",
+                    flush=True,
+                )
             if summary["setup_runtime"]:
                 print(f"  [dynamic-weights] setup={summary['setup_runtime']}", flush=True)
         return module
