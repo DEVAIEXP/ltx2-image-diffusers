@@ -32,22 +32,7 @@ from custom_blocks.ltx2_image.memory import (
     is_wsl_environment,
     remove_dynamic_weights,
 )
-from custom_blocks.ltx2_image.memory_manager import LTX2DynamicBlockManager
 from inference_utils import RunTracker, flush
-
-
-def parse_int_list_env(name: str) -> tuple[int, ...]:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return ()
-    return tuple(int(item.strip()) for item in value.split(",") if item.strip())
-
-
-def parse_pattern_list_env(name: str) -> tuple[str, ...]:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return ()
-    return tuple(item.strip() for item in value.split(";") if item.strip())
 
 
 def env_value(name: str, default: str = "") -> str:
@@ -78,6 +63,7 @@ DYNAMIC_WEIGHTS_SETTINGS = DynamicWeightsSettings.from_env(
         r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
     ),
     running_on_wsl=RUNNING_ON_WSL,
+    default_preset="auto",
 )
 REQUESTED_DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.requested_preset
 DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.effective_preset
@@ -99,34 +85,7 @@ def parse_bool_preset_env(name: str, default: str = "0") -> bool:
 AUTO_CPU_OFFLOAD = parse_bool_env("LTX_IMAGE_AUTO_CPU_OFFLOAD")
 TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD", "1")
 TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD")
-TRANSFORMER_MEMORY_MANAGER = preset_env("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "manual_linear").lower()
-TRANSFORMER_MANAGER_PINNED_BLOCKS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_MANAGER_PINNED_BLOCKS", "0"))
-TRANSFORMER_MANAGER_HOT_BLOCKS = parse_int_list_env("LTX_IMAGE_TRANSFORMER_HOT_BLOCKS")
-TRANSFORMER_MANAGER_HOT_BLOCK_CANDIDATES = parse_int_list_env("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_CANDIDATES")
-TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB = float(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_BUDGET_GB", "0.0"))
-TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE = int(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_STRIDE", "3"))
-TRANSFORMER_MANAGER_HOT_BLOCK_OFFSET = int(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_OFFSET", "0"))
-TRANSFORMER_MANAGER_HOT_BLOCK_SELECTION = os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_BLOCK_SELECTION", "stride").lower()
-TRANSFORMER_MANAGER_HOT_LINEAR_WEIGHT_BUDGET_GB = float(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_LINEAR_WEIGHT_BUDGET_GB", "0.0"))
-TRANSFORMER_MANAGER_HOT_LINEAR_WEIGHT_STRIDE = int(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_LINEAR_WEIGHT_STRIDE", "3"))
-TRANSFORMER_MANAGER_HOT_LINEAR_WEIGHT_OFFSET = int(os.environ.get("LTX_IMAGE_TRANSFORMER_HOT_LINEAR_WEIGHT_OFFSET", "1"))
-TRANSFORMER_MANAGER_STREAMED_COPY_MODE = os.environ.get("LTX_IMAGE_TRANSFORMER_STREAMED_COPY_MODE", "direct").lower()
-TRANSFORMER_MANAGER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT = (
-    os.environ.get("LTX_IMAGE_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT", "0") == "1"
-)
-TRANSFORMER_MANAGER_SYNCHRONIZE = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_SYNCHRONIZE")
-TRANSFORMER_MANAGER_EMPTY_CACHE = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_EMPTY_CACHE")
-TRANSFORMER_MANAGER_VERBOSE = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_VERBOSE")
-TRANSFORMER_MANAGER_WEIGHT_CACHE_GB = float(os.environ.get("LTX_IMAGE_TRANSFORMER_WEIGHT_CACHE_GB", "0.0"))
-TRANSFORMER_MANAGER_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_TRANSFORMER_PIN_CPU_MEMORY")
-TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY = parse_bool_env("LTX_IMAGE_TRANSFORMER_LAZY_PIN_CPU_MEMORY")
-TRANSFORMER_MANAGER_PIN_CPU_WORKERS = int(os.environ.get("LTX_IMAGE_TRANSFORMER_PIN_CPU_WORKERS", "1"))
-TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE = int(os.environ.get("LTX_IMAGE_TRANSFORMER_SLIDING_WINDOW_SIZE", "0"))
-TRANSFORMER_MANAGER_PROFILE = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE")
-TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES")
-TRANSFORMER_MANAGER_PROFILE_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFILE_LAYERS")
-TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS = parse_bool_env("LTX_IMAGE_TRANSFORMER_PROFILE_SYNC_LAYERS")
-TRANSFORMER_MANAGER_PROFILE_FULL = parse_bool_env("LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL")
+TRANSFORMER_MEMORY_MANAGER = preset_env("LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER", "off").lower()
 DYNAMIC_WEIGHTS_CONFIG = DYNAMIC_WEIGHTS_SETTINGS.config
 DYNAMIC_WEIGHTS_PLAN = DYNAMIC_WEIGHTS_SETTINGS.plan
 DYNAMIC_WEIGHTS_EXECUTION_MODE = DYNAMIC_WEIGHTS_CONFIG.execution_mode
@@ -464,18 +423,6 @@ def main():
         "purge_windows_standby_after_run": PURGE_WINDOWS_STANDBY_AFTER_RUN,
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
         "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
-        "transformer_manager_pinned_blocks": TRANSFORMER_MANAGER_PINNED_BLOCKS,
-        "transformer_manager_weight_cache_gb": TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
-        "transformer_manager_streamed_copy_mode": TRANSFORMER_MANAGER_STREAMED_COPY_MODE,
-        "transformer_manager_keep_streamed_small_tensors_resident": TRANSFORMER_MANAGER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT,
-        "transformer_manager_pin_cpu_memory": TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
-        "transformer_manager_pin_cpu_workers": TRANSFORMER_MANAGER_PIN_CPU_WORKERS,
-        "transformer_manager_sliding_window_size": TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE,
-        "transformer_manager_profile_enabled": TRANSFORMER_MANAGER_PROFILE,
-        "transformer_manager_profile_sync_copies": TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
-        "transformer_manager_profile_layers": TRANSFORMER_MANAGER_PROFILE_LAYERS,
-        "transformer_manager_profile_sync_layers": TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS,
-        "transformer_manager_profile_full": TRANSFORMER_MANAGER_PROFILE_FULL,
         "dynamic_weights_execution_mode": DYNAMIC_WEIGHTS_EXECUTION_MODE,
         "dynamic_weights_pin_cpu_memory": DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
         "dynamic_weights_effective_pin_cpu_memory": DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY,
@@ -685,68 +632,12 @@ def main():
         )
 
     event_t0 = time.time()
-    transformer_manager = None
     if TRANSFORMER_MEMORY_MANAGER != "off":
-        if TRANSFORMER_GROUP_OFFLOAD:
-            print("  Disabling transformer group offload because transformer memory manager is enabled.", flush=True)
-        transformer_manager = LTX2DynamicBlockManager(
-            device=DEVICE,
-            offload_device=OFFLOAD_DEVICE,
-            enabled=True,
-            mode=TRANSFORMER_MEMORY_MANAGER,
-            pinned_blocks=TRANSFORMER_MANAGER_PINNED_BLOCKS,
-            hot_blocks=TRANSFORMER_MANAGER_HOT_BLOCKS,
-            hot_block_candidates=TRANSFORMER_MANAGER_HOT_BLOCK_CANDIDATES,
-            hot_block_budget_gb=TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB,
-            hot_block_stride=TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE,
-            hot_block_offset=TRANSFORMER_MANAGER_HOT_BLOCK_OFFSET,
-            hot_block_selection=TRANSFORMER_MANAGER_HOT_BLOCK_SELECTION,
-            hot_linear_weight_budget_gb=TRANSFORMER_MANAGER_HOT_LINEAR_WEIGHT_BUDGET_GB,
-            hot_linear_weight_stride=TRANSFORMER_MANAGER_HOT_LINEAR_WEIGHT_STRIDE,
-            hot_linear_weight_offset=TRANSFORMER_MANAGER_HOT_LINEAR_WEIGHT_OFFSET,
-            streamed_copy_mode=TRANSFORMER_MANAGER_STREAMED_COPY_MODE,
-            keep_streamed_small_tensors_resident=TRANSFORMER_MANAGER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT,
-            synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
-            empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
-            verbose=TRANSFORMER_MANAGER_VERBOSE,
-            weight_cache_gb=TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
-            pin_cpu_memory=TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
-            lazy_pin_cpu_memory=TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY,
-            pin_cpu_workers=TRANSFORMER_MANAGER_PIN_CPU_WORKERS,
-            sliding_window_size=TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE,
-            profile=TRANSFORMER_MANAGER_PROFILE,
-            profile_sync_copies=TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES,
-            profile_layer_runtime=TRANSFORMER_MANAGER_PROFILE_LAYERS,
-            profile_sync_layers=TRANSFORMER_MANAGER_PROFILE_SYNC_LAYERS,
+        raise ValueError(
+            "The legacy transformer block manager is no longer used by this runner. "
+            "Use DIFFUSERS_DYNAMIC_WEIGHTS_PRESET/LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET or transformer group offload."
         )
-        transformer_manager.attach(transformer)
-        record_event(
-            "setup_transformer_memory_manager",
-            time.time() - event_t0,
-            mode=TRANSFORMER_MEMORY_MANAGER,
-            pinned_blocks=TRANSFORMER_MANAGER_PINNED_BLOCKS,
-            hot_blocks=TRANSFORMER_MANAGER_HOT_BLOCKS,
-            hot_block_candidates=TRANSFORMER_MANAGER_HOT_BLOCK_CANDIDATES,
-            hot_block_budget_gb=TRANSFORMER_MANAGER_HOT_BLOCK_BUDGET_GB,
-            hot_block_stride=TRANSFORMER_MANAGER_HOT_BLOCK_STRIDE,
-            hot_block_offset=TRANSFORMER_MANAGER_HOT_BLOCK_OFFSET,
-            hot_block_selection=TRANSFORMER_MANAGER_HOT_BLOCK_SELECTION,
-            hot_linear_weight_budget_gb=TRANSFORMER_MANAGER_HOT_LINEAR_WEIGHT_BUDGET_GB,
-            hot_linear_weight_stride=TRANSFORMER_MANAGER_HOT_LINEAR_WEIGHT_STRIDE,
-            hot_linear_weight_offset=TRANSFORMER_MANAGER_HOT_LINEAR_WEIGHT_OFFSET,
-            streamed_copy_mode=TRANSFORMER_MANAGER_STREAMED_COPY_MODE,
-            keep_streamed_small_tensors_resident=TRANSFORMER_MANAGER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT,
-            selected_hot_blocks=transformer_manager.selected_hot_blocks,
-            synchronize=TRANSFORMER_MANAGER_SYNCHRONIZE,
-            empty_cache_after_offload=TRANSFORMER_MANAGER_EMPTY_CACHE,
-            weight_cache_gb=TRANSFORMER_MANAGER_WEIGHT_CACHE_GB,
-            pin_cpu_memory=TRANSFORMER_MANAGER_PIN_CPU_MEMORY,
-            lazy_pin_cpu_memory=TRANSFORMER_MANAGER_LAZY_PIN_CPU_MEMORY,
-            pin_cpu_workers=TRANSFORMER_MANAGER_PIN_CPU_WORKERS,
-            sliding_window_size=TRANSFORMER_MANAGER_SLIDING_WINDOW_SIZE,
-            profile=TRANSFORMER_MANAGER_PROFILE,
-        )
-    elif TRANSFORMER_GROUP_OFFLOAD:
+    if TRANSFORMER_GROUP_OFFLOAD:
         apply_model_group_offload(transformer, prefix="transformer")
         record_event(
             "setup_transformer_group_offload",
@@ -847,15 +738,10 @@ def main():
         print(f"  Image latent: {image_latent.shape}")
         del prepare_state, denoise_state
 
-    if transformer_manager is not None and TRANSFORMER_MANAGER_PROFILE:
-        run_metrics["transformer_manager_profile_summary"] = transformer_manager.profile_summary()
-        transformer_manager.print_profile_summary(full=TRANSFORMER_MANAGER_PROFILE_FULL)
     if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
         run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()
         dynamic_weights_hook.print_profile_summary()
     del connector_prompt_embeds, connector_attention_mask
-    if transformer_manager is not None:
-        transformer_manager.detach(transformer)
     if dynamic_weights_enabled:
         if DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and "dynamic_weights_runtime_summary" not in run_metrics:
             run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()

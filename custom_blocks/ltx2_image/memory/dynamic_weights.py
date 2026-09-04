@@ -1018,10 +1018,11 @@ def load_dynamic_weights_settings_from_env(
     always_resident_modules_pattern: tuple[str, ...] = (),
     running_on_wsl: bool | None = None,
     environ: Mapping[str, str] | None = None,
+    default_preset: str = "",
 ) -> DynamicWeightsSettings:
     env = os.environ if environ is None else environ
     is_wsl = is_wsl_environment() if running_on_wsl is None else running_on_wsl
-    requested_preset = dynamic_weights_env_value("LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET", "", env).strip().lower()
+    requested_preset = dynamic_weights_env_value("LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET", default_preset, env).strip().lower()
     effective_preset = resolve_dynamic_weights_preset(requested_preset, running_on_wsl=is_wsl)
 
     def preset_env(name: str, default: str = "") -> str:
