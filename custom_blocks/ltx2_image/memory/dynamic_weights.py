@@ -309,6 +309,10 @@ class DynamicWeightsSettings:
     def execution_mode(self) -> str:
         return self.config.execution_mode
 
+    @classmethod
+    def from_env(cls, **kwargs: Any) -> "DynamicWeightsSettings":
+        return load_dynamic_weights_settings_from_env(**kwargs)
+
 
 @dataclass(frozen=True)
 class DynamicWeightPlanEntry:

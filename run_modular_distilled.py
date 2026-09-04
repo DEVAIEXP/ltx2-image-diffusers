@@ -24,12 +24,12 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
     LTX2ImagePrepareLatentsStep,
 )
 from custom_blocks.ltx2_image.memory import (
+    DynamicWeightsSettings,
     apply_dynamic_weights,
     dynamic_weights_env_names,
     dynamic_weights_preset_env_value,
     from_pretrained_with_dynamic_weights,
     is_wsl_environment,
-    load_dynamic_weights_settings_from_env,
     remove_dynamic_weights,
 )
 from custom_blocks.ltx2_image.memory_manager import LTX2DynamicBlockManager
@@ -70,7 +70,7 @@ MODEL_TAG = "distilled_modular"
 MODEL_PATH = os.environ.get("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
 MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("LTX_IMAGE_LOW_CPU_MEM_USAGE", "1")
-DYNAMIC_WEIGHTS_SETTINGS = load_dynamic_weights_settings_from_env(
+DYNAMIC_WEIGHTS_SETTINGS = DynamicWeightsSettings.from_env(
     execution_device=DEVICE,
     offload_device=OFFLOAD_DEVICE,
     target_module_classes=(torch.nn.Linear,),
