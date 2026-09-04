@@ -90,19 +90,11 @@ MODEL_TAG = "distilled_modular"
 MODEL_PATH = env_value("DIFFUSERS_RUNNER_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
 MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE", "1")
-WIDTH = int(env_value("DIFFUSERS_RUNNER_WIDTH", "1280"))
-HEIGHT = int(env_value("DIFFUSERS_RUNNER_HEIGHT", "704"))
-SEED = int(env_value("DIFFUSERS_RUNNER_SEED", "43"))
-NUM_INFERENCE_STEPS = int(env_value("DIFFUSERS_RUNNER_STEPS", "8"))
 DYNAMIC_WEIGHTS_SETTINGS = DynamicWeightsSettings.from_env(
     execution_device=DEVICE,
     offload_device=OFFLOAD_DEVICE,
     running_on_wsl=RUNNING_ON_WSL,
     default_preset="auto",
-)
-DYNAMIC_WEIGHTS_SETTINGS = replace(
-    DYNAMIC_WEIGHTS_SETTINGS,
-    config=replace(DYNAMIC_WEIGHTS_SETTINGS.config, planned_inference_steps=NUM_INFERENCE_STEPS),
 )
 REQUESTED_DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.requested_preset
 DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.effective_preset
@@ -205,6 +197,10 @@ GROUP_OFFLOAD_CONFIG = {
     "transformer_num_blocks_per_group": int(env_value("DIFFUSERS_RUNNER_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
 }
 
+WIDTH = int(env_value("DIFFUSERS_RUNNER_WIDTH", "1280"))
+HEIGHT = int(env_value("DIFFUSERS_RUNNER_HEIGHT", "704"))
+SEED = int(env_value("DIFFUSERS_RUNNER_SEED", "43"))
+NUM_INFERENCE_STEPS = int(env_value("DIFFUSERS_RUNNER_STEPS", "8"))
 GUIDANCE_SCALE = float(env_value("DIFFUSERS_RUNNER_GUIDANCE_SCALE", "1.0"))
 GUIDANCE_RESCALE = float(env_value("DIFFUSERS_RUNNER_GUIDANCE_RESCALE", "0.7"))
 DECODE_TIMESTEP = float(env_value("DIFFUSERS_RUNNER_DECODE_TIMESTEP", "0.0"))

@@ -26,7 +26,6 @@ _DEFAULT_ALWAYS_RESIDENT_MODULE_PATTERNS = (
 )
 _AUTO_BUDGET_DISABLED = "off"
 _AUTO_BUDGET_BALANCED = "balanced"
-_AUTO_BUDGET_STEPS_BALANCED = "steps_balanced"
 _DYNAMIC_WEIGHTS_PLAN_CACHE: dict[tuple[Any, ...], "DynamicWeightsState"] = {}
 _DYNAMIC_WEIGHTS_PLAN_CACHE_LOCK = threading.Lock()
 _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE: dict[tuple[Any, ...], torch.Tensor] = {}
@@ -167,92 +166,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
-    },
-    "one_shot_overlap": {
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS": "0",
-        "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
-        "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
-        "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_OVERLAP_PIN_SETUP": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "balanced",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB": "6",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PINNED_WEIGHTS": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_RESIDENT_DEVICE_TENSORS": "0",
-        "DIFFUSERS_RUNNER_TRANSFORMER_PREPARE_REPEATS": "1",
-        "DIFFUSERS_RUNNER_GENERATION_REPEATS": "1",
-    },
-    "one_shot_adaptive": {
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS": "0",
-        "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
-        "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
-        "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "steps_balanced",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB": "6",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PINNED_WEIGHTS": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_RESIDENT_DEVICE_TENSORS": "0",
-        "DIFFUSERS_RUNNER_TRANSFORMER_PREPARE_REPEATS": "1",
-        "DIFFUSERS_RUNNER_GENERATION_REPEATS": "1",
-    },
-    "one_shot_pinned_resident": {
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS": "0",
-        "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
-        "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
-        "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_RESIDENT_MODULES_BEFORE_DEVICE": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "balanced",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB": "6",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PINNED_WEIGHTS": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_RESIDENT_DEVICE_TENSORS": "0",
-        "DIFFUSERS_RUNNER_TRANSFORMER_PREPARE_REPEATS": "1",
-        "DIFFUSERS_RUNNER_GENERATION_REPEATS": "1",
     },
     "planner_balanced": {
         "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
@@ -413,7 +326,6 @@ class DynamicWeightsConfig:
     lazy_pin_cpu_memory: bool = False
     allow_pin_memory_fallback: bool = True
     overlap_pin_setup: bool = False
-    pin_resident_modules_before_device: bool = False
     pin_cpu_workers: int = 1
     cache_plan: bool = True
     cache_pinned_weights: bool = False
@@ -421,7 +333,6 @@ class DynamicWeightsConfig:
     cache_resident_device_tensors: bool = False
     resident_device_cache_namespace: str = ""
     auto_budget_policy: str = _AUTO_BUDGET_DISABLED
-    planned_inference_steps: int = 0
     max_resident_module_budget_gb: float = 6.0
     max_pin_weight_budget_gb: float = 0.0
     pin_weight_budget_gb: float = 0.0
@@ -478,7 +389,6 @@ class DynamicWeightsSettings:
             "dynamic_weights_lazy_pin_cpu_memory": config.lazy_pin_cpu_memory,
             "dynamic_weights_allow_pin_memory_fallback": config.allow_pin_memory_fallback,
             "dynamic_weights_overlap_pin_setup": config.overlap_pin_setup,
-            "dynamic_weights_pin_resident_modules_before_device": config.pin_resident_modules_before_device,
             "dynamic_weights_disable_pin_on_wsl": self.disable_pin_on_wsl,
             "dynamic_weights_pin_cpu_workers": config.pin_cpu_workers,
             "dynamic_weights_cache_plan": config.cache_plan,
@@ -487,7 +397,6 @@ class DynamicWeightsSettings:
             "dynamic_weights_cache_resident_device_tensors": config.cache_resident_device_tensors,
             "dynamic_weights_resident_device_cache_namespace": config.resident_device_cache_namespace or None,
             "dynamic_weights_auto_budget_policy": config.auto_budget_policy,
-            "dynamic_weights_planned_inference_steps": config.planned_inference_steps,
             "dynamic_weights_max_resident_module_budget_gb": config.max_resident_module_budget_gb,
             "dynamic_weights_max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
             "dynamic_weights_pin_weight_budget_gb": config.pin_weight_budget_gb,
@@ -522,14 +431,12 @@ def build_dynamic_weights_event_payload(
         "pin_cpu_memory": settings.effective_pin_cpu_memory,
         "lazy_pin_cpu_memory": config.lazy_pin_cpu_memory,
         "allow_pin_memory_fallback": config.allow_pin_memory_fallback,
-        "pin_resident_modules_before_device": config.pin_resident_modules_before_device,
         "cache_plan": config.cache_plan,
         "cache_pinned_weights": config.cache_pinned_weights,
         "pinned_weight_cache_namespace": config.pinned_weight_cache_namespace or None,
         "cache_resident_device_tensors": config.cache_resident_device_tensors,
         "resident_device_cache_namespace": config.resident_device_cache_namespace or None,
         "auto_budget_policy": config.auto_budget_policy,
-        "planned_inference_steps": config.planned_inference_steps,
         "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
         "max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
         "pin_weight_budget_gb": config.pin_weight_budget_gb,
@@ -659,14 +566,8 @@ class DynamicWeightsHook(ModelHook):
         self.execution_mode = config.execution_mode.lower()
         self.pin_cpu_workers = max(1, int(config.pin_cpu_workers))
         self.auto_budget_policy = config.auto_budget_policy.lower()
-        if self.auto_budget_policy not in {
-            _AUTO_BUDGET_DISABLED,
-            _AUTO_BUDGET_BALANCED,
-            _AUTO_BUDGET_STEPS_BALANCED,
-        }:
-            raise ValueError("DynamicWeightsConfig.auto_budget_policy must be 'off', 'balanced', or 'steps_balanced'")
-        self.planned_inference_steps = max(0, int(config.planned_inference_steps))
-        self.skip_pin_weight_selection = False
+        if self.auto_budget_policy not in {_AUTO_BUDGET_DISABLED, _AUTO_BUDGET_BALANCED}:
+            raise ValueError("DynamicWeightsConfig.auto_budget_policy must be 'off' or 'balanced'")
         self.max_resident_module_budget_bytes = int(max(0.0, float(config.max_resident_module_budget_gb)) * 1024**3)
         self.max_pin_weight_budget_bytes = int(max(0.0, float(config.max_pin_weight_budget_gb)) * 1024**3)
         self.pin_weight_budget_bytes = int(max(0.0, float(config.pin_weight_budget_gb)) * 1024**3)
@@ -895,10 +796,6 @@ class DynamicWeightsHook(ModelHook):
             modules_to_pin.append((module_name, embedding, _tensor_size_bytes(embedding.weight.data)))
 
     def _select_linear_weights_to_pin(self, candidates: list[tuple[str, nn.Module, int]]) -> list[tuple[str, nn.Module]]:
-        if self.skip_pin_weight_selection:
-            self.state.selected_pinned_linear_weights = []
-            return []
-
         candidate_bytes = sum(weight_bytes for _, _, weight_bytes in candidates)
         pin_weight_budget_bytes = self.pin_weight_budget_bytes
         if pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio > 0:
@@ -960,7 +857,6 @@ class DynamicWeightsHook(ModelHook):
         self.state.planner_decisions.update(
             {
                 "auto_budget_policy": self.auto_budget_policy,
-                "planned_inference_steps": self.planned_inference_steps,
                 "candidate_weight_gb": round(candidate_weight_bytes / 1024**3, 4),
                 "candidate_resident_module_gb": round(candidate_module_bytes / 1024**3, 4),
             }
@@ -974,17 +870,6 @@ class DynamicWeightsHook(ModelHook):
             self.state.planner_decisions["auto_resident_module_budget_gb"] = round(budget / 1024**3, 4)
 
         if self.pin_weight_budget_bytes <= 0 and self.pin_weight_budget_ratio <= 0 and candidate_weight_bytes > 0:
-            if (
-                self.auto_budget_policy == _AUTO_BUDGET_STEPS_BALANCED
-                and 0 < self.planned_inference_steps <= 8
-                and candidate_weight_bytes > 16 * 1024**3
-            ):
-                self.skip_pin_weight_selection = True
-                self.state.planner_decisions["auto_pin_weight_decision"] = "skip_for_short_run"
-                self.state.planner_decisions["auto_pin_weight_budget_gb"] = 0.0
-                self.state.planner_decisions["auto_pin_weight_budget_ratio"] = 0.0
-                return
-
             if candidate_weight_bytes <= 8 * 1024**3:
                 ratio = 1.0
             elif candidate_weight_bytes <= 16 * 1024**3:
@@ -1038,10 +923,7 @@ class DynamicWeightsHook(ModelHook):
     def _move_resident_module_to_execution_device(self, module_name: str, module: nn.Module) -> int:
         if not self.config.cache_resident_device_tensors:
             module_bytes = _module_size_bytes(module)
-            if self.config.pin_resident_modules_before_device and self.config.pin_cpu_memory:
-                self._move_resident_module_to_execution_device_via_pinned_source(module)
-            else:
-                module.to(self.execution_device)
+            module.to(self.execution_device)
             return module_bytes
 
         moved_bytes = 0
@@ -1069,31 +951,6 @@ class DynamicWeightsHook(ModelHook):
                 buffer.data = buffer.data.to(self.execution_device)
             buffer.data = self._store_cached_resident_device_tensor(module_name, tensor_name, buffer.data)
         return moved_bytes
-
-    def _move_resident_module_to_execution_device_via_pinned_source(self, module: nn.Module) -> None:
-        for parameter in module.parameters(recurse=True):
-            if parameter.device == self.execution_device:
-                continue
-            parameter.data = self._move_tensor_to_execution_device_via_pinned_source(parameter.data)
-
-        for buffer in module.buffers(recurse=True):
-            if buffer.device == self.execution_device:
-                continue
-            buffer.data = self._move_tensor_to_execution_device_via_pinned_source(buffer.data)
-
-    def _move_tensor_to_execution_device_via_pinned_source(self, tensor: torch.Tensor) -> torch.Tensor:
-        if tensor.device.type == "meta":
-            return tensor
-        source = tensor
-        if tensor.device.type == "cpu" and not tensor.is_pinned() and not self._pin_memory_disabled:
-            try:
-                source = tensor.pin_memory()
-            except _PIN_MEMORY_ERRORS as exc:
-                if not self.config.allow_pin_memory_fallback:
-                    raise
-                self._disable_pin_memory("pin_resident_module_tensors_failed", exc)
-                source = tensor
-        return source.to(self.execution_device, non_blocking=True)
 
     def _move_root_local_tensors_to_device(self, module: nn.Module) -> None:
         start = time.perf_counter()
@@ -1558,10 +1415,6 @@ def load_dynamic_weights_settings_from_env(
         lazy_pin_cpu_memory=lazy_pin_cpu_memory,
         allow_pin_memory_fallback=allow_pin_memory_fallback,
         overlap_pin_setup=overlap_pin_setup,
-        pin_resident_modules_before_device=preset_bool(
-            "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_RESIDENT_MODULES_BEFORE_DEVICE",
-            "0",
-        ),
         pin_cpu_workers=int(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS", "4")),
         cache_plan=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PLAN", "1"),
         cache_pinned_weights=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PINNED_WEIGHTS", "0"),
@@ -1569,7 +1422,6 @@ def load_dynamic_weights_settings_from_env(
         cache_resident_device_tensors=preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_RESIDENT_DEVICE_TENSORS", "0"),
         resident_device_cache_namespace=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_DEVICE_CACHE_NAMESPACE", ""),
         auto_budget_policy=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY", "off").lower(),
-        planned_inference_steps=int(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PLANNED_INFERENCE_STEPS", "0")),
         max_resident_module_budget_gb=float(
             preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB", "6.0")
         ),
@@ -1731,7 +1583,6 @@ def _dynamic_weight_plan_cache_key(module: nn.Module, config: DynamicWeightsConf
         tuple(config.always_resident_modules_pattern),
         tuple(config.resident_module_patterns),
         int(config.small_tensor_threshold_bytes),
-        int(config.planned_inference_steps),
         _dynamic_weight_plan_structure_signature(module, config),
     )
 
