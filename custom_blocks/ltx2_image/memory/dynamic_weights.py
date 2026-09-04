@@ -361,9 +361,10 @@ class DynamicWeightsSettings:
 def build_dynamic_weights_event_payload(
     settings: DynamicWeightsSettings,
     state: "DynamicWeightsState",
+    config: DynamicWeightsConfig | None = None,
 ) -> dict[str, Any]:
     summary = state.as_dict()
-    config = settings.config
+    config = config or settings.config
     return {
         "module_count": summary["module_count"],
         "total_gb": summary["total_gb"],

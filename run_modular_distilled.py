@@ -118,9 +118,22 @@ def parse_bool_preset_env(name: str, default: str = "0") -> bool:
 def parse_pattern_list_env(name: str, default: str = "") -> tuple[str, ...]:
     return tuple(item.strip() for item in re.split(r"[;,]", preset_env(name, default)) if item.strip())
 
+
+def parse_float_preset_env(name: str, default: str = "0.0") -> float:
+    return float(preset_env(name, default))
+
+
 AUTO_CPU_OFFLOAD = parse_bool_env("DIFFUSERS_RUNNER_AUTO_CPU_OFFLOAD")
 TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
 TEXT_ENCODER_DYNAMIC_WEIGHTS = parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS")
+TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_preset_env(
+    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY",
+    "0",
+)
+TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
+    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB",
+    "3.0",
+)
 TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES = parse_pattern_list_env(
     "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULE_PATTERNS",
     r"(^|\.)vision_tower(\.|$)",
@@ -135,6 +148,7 @@ DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.effective_pi
 PRE_VAE_CLEANUP_REPEATS = int(preset_env("DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("DIFFUSERS_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN")
 PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
+PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER")
 PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
 PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_RUN")
 METRICS_LEVEL = parse_metrics_level()
@@ -449,11 +463,14 @@ def main():
         "dtype": str(DTYPE),
         "text_encoder_low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE,
         "text_encoder_dynamic_weights": TEXT_ENCODER_DYNAMIC_WEIGHTS,
+        "text_encoder_dynamic_weights_pin_cpu_memory": TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
+        "text_encoder_dynamic_weights_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
         "text_encoder_dynamic_weights_skip_modules": TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES,
         "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
         "running_on_wsl": RUNNING_ON_WSL,
         "reset_dynamic_memory_after_run": RESET_DYNAMIC_MEMORY_AFTER_RUN,
         "purge_windows_standby_before_run": PURGE_WINDOWS_STANDBY_BEFORE_RUN,
+        "purge_windows_standby_after_text_encoder": PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER,
         "purge_windows_standby_before_transformer": PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER,
         "purge_windows_standby_after_run": PURGE_WINDOWS_STANDBY_AFTER_RUN,
         "metrics_level": METRICS_LEVEL,
@@ -507,7 +524,10 @@ def main():
         if TEXT_ENCODER_DYNAMIC_WEIGHTS:
             text_encoder_dynamic_weights_config = replace(
                 DYNAMIC_WEIGHTS_CONFIG,
+                pin_cpu_memory=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
+                lazy_pin_cpu_memory=False,
                 overlap_pin_setup=False,
+                resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
                 skip_modules_pattern=(
                     *DYNAMIC_WEIGHTS_CONFIG.skip_modules_pattern,
                     *TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES,
@@ -517,7 +537,11 @@ def main():
             record_event(
                 "setup_text_encoder_dynamic_weights",
                 time.time() - event_t0,
-                **build_dynamic_weights_event_payload(DYNAMIC_WEIGHTS_SETTINGS, text_encoder_dynamic_weights_hook.state),
+                **build_dynamic_weights_event_payload(
+                    DYNAMIC_WEIGHTS_SETTINGS,
+                    text_encoder_dynamic_weights_hook.state,
+                    text_encoder_dynamic_weights_config,
+                ),
             )
         elif TEXT_ENCODER_GROUP_OFFLOAD:
             apply_model_group_offload(text_encoder, prefix="text_encoder")
@@ -561,6 +585,8 @@ def main():
         del prompt_state
         del prompt_pipe, text_encoder, tokenizer
         flush()
+        if PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER:
+            purge_windows_standby_cache_event(record_event, "purge_windows_standby_after_text_encoder")
 
     if SHOW_METRICS:
         print(f"  prompt_embeds shape: {prompt_embeds.shape}")

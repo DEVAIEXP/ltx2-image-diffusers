@@ -1131,3 +1131,13 @@ First Windows text encoder probe:
 Insight: applying the manager to the whole text encoder also staged/pinned `model.vision_tower.*`, which is not needed for this prompt-text path. The runner now skips `vision_tower` by default for the text encoder probe through `DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULE_PATTERNS`. Override it with an empty value only when testing a model/path that actually needs vision modules during prompt encoding.
 
 Follow-up safety note: the text encoder probe now forcibly disables `DIFFUSERS_DYNAMIC_WEIGHTS_OVERLAP_PIN_SETUP` for the text encoder component. The overlap setup probe showed no transformer benefit and is too risky for this path because the text encoder has a larger and more mixed module tree.
+
+Second safety adjustment: the text encoder dynamic probe now has component-specific memory settings. It defaults to no pinned CPU memory and a smaller resident module budget so it does not inherit the transformer-optimized full-pin profile:
+
+```powershell
+$env:DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="0"
+$env:DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="3"
+$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER="1"
+```
+
+Use this to check whether the encode-speed gain survives without leaving enough host/driver memory pressure to crash transformer loading.
