@@ -211,6 +211,7 @@ PAG_SCALE = float(env_value("DIFFUSERS_RUNNER_PAG_SCALE", "0.2"))
 PAG_APPLIED_LAYERS = [int(x) for x in env_value("DIFFUSERS_RUNNER_PAG_LAYERS", "28").split(",") if x]
 FAKE_PROMPT_EMBEDS = parse_bool_env("DIFFUSERS_RUNNER_FAKE_PROMPT")
 GENERATION_REPEATS = max(1, int(preset_env("DIFFUSERS_RUNNER_GENERATION_REPEATS", "1")))
+TRANSFORMER_PREPARE_REPEATS = max(1, int(preset_env("DIFFUSERS_RUNNER_TRANSFORMER_PREPARE_REPEATS", "1")))
 
 prompt = env_value(
     "DIFFUSERS_RUNNER_PROMPT",
@@ -477,6 +478,7 @@ def main():
         "seed": seed,
         "num_inference_steps": NUM_INFERENCE_STEPS,
         "generation_repeats": GENERATION_REPEATS,
+        "transformer_prepare_repeats": TRANSFORMER_PREPARE_REPEATS,
         "guidance_scale": GUIDANCE_SCALE,
         "guidance_rescale": GUIDANCE_RESCALE,
         "vae_decode_timestep": DECODE_TIMESTEP,
@@ -692,89 +694,118 @@ def main():
     flush()
     record_event("offload_connector_outputs", 0.0)
 
-    transformer_load_kwargs = {
-        "subfolder": "transformer",
-        "torch_dtype": DTYPE,
-        "low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
-    }
-
     dynamic_weights_enabled = DYNAMIC_WEIGHTS_SETTINGS.enabled
     dynamic_weights_config = DYNAMIC_WEIGHTS_CONFIG if dynamic_weights_enabled else None
-    if PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER:
-        purge_windows_standby_cache_event(record_event, "purge_windows_standby_before_transformer")
 
-    event_t0 = time.time()
-    if MODEL_LOW_CPU_MEM_USAGE:
-        transformer_load_kwargs["device_map"] = "cpu"
-    transformer_load = from_pretrained_with_dynamic_weights(
-        MODEL_PATH,
-        dynamic_weights_config=dynamic_weights_config,
-        apply_dynamic=False,
-        **transformer_load_kwargs,
-    )
-    transformer = transformer_load.module
-    dynamic_weights_hook = transformer_load.hook
-    record_event(
-        "load_transformer",
-        time.time() - event_t0,
-        source=MODEL_PATH,
-        low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
-        device_map=transformer_load_kwargs.get("device_map"),
-        loader="AutoModel",
-        resolved_class=transformer.__class__.__name__,
-    )
+    def transformer_prepare_event_name(name: str, repeat_index: int) -> str:
+        if TRANSFORMER_PREPARE_REPEATS == 1:
+            return name
+        return f"{name}_prepare_{repeat_index + 1}"
 
-    event_t0 = time.time()
-    patched_attention_processors, resolved_attention_backend, drop_trivial_attention_mask = apply_transformer_attention_backend(transformer)
-    record_event(
-        "set_transformer_attention_backend",
-        time.time() - event_t0,
-        requested_backend=ATTENTION_BACKEND,
-        resolved_backend=resolved_attention_backend,
-        patched_processors=patched_attention_processors,
-        drop_trivial_attention_mask=drop_trivial_attention_mask,
-    )
+    def load_and_prepare_transformer(repeat_index: int):
+        transformer_load_kwargs = {
+            "subfolder": "transformer",
+            "torch_dtype": DTYPE,
+            "low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
+        }
 
-    if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and TRANSFORMER_MEMORY_MANAGER != "off":
-        raise ValueError(
-            "Dynamic weights execution currently requires "
-            "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER/LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER='off'. "
-            "Use execution_mode='plan' with the block manager."
-        )
+        if PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER:
+            purge_windows_standby_cache_event(
+                record_event,
+                transformer_prepare_event_name("purge_windows_standby_before_transformer", repeat_index),
+            )
 
-    if dynamic_weights_enabled:
         event_t0 = time.time()
-        dynamic_weights_hook = apply_dynamic_weights(transformer, dynamic_weights_config)
+        if MODEL_LOW_CPU_MEM_USAGE:
+            transformer_load_kwargs["device_map"] = "cpu"
+        transformer_load = from_pretrained_with_dynamic_weights(
+            MODEL_PATH,
+            dynamic_weights_config=dynamic_weights_config,
+            apply_dynamic=False,
+            **transformer_load_kwargs,
+        )
+        prepared_transformer = transformer_load.module
+        prepared_dynamic_weights_hook = transformer_load.hook
         record_event(
-            "build_dynamic_weights_plan",
+            transformer_prepare_event_name("load_transformer", repeat_index),
             time.time() - event_t0,
-            **build_dynamic_weights_event_payload(DYNAMIC_WEIGHTS_SETTINGS, dynamic_weights_hook.state),
+            source=MODEL_PATH,
+            low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
+            device_map=transformer_load_kwargs.get("device_map"),
+            loader="AutoModel",
+            resolved_class=prepared_transformer.__class__.__name__,
         )
 
-    event_t0 = time.time()
-    if TRANSFORMER_MEMORY_MANAGER != "off":
-        raise ValueError(
-            "The legacy transformer block manager is no longer used by this runner. "
-            "Use DIFFUSERS_DYNAMIC_WEIGHTS_PRESET/LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET or transformer group offload."
+        event_t0 = time.time()
+        patched_attention_processors, resolved_attention_backend, drop_trivial_attention_mask = (
+            apply_transformer_attention_backend(prepared_transformer)
         )
-    if TRANSFORMER_GROUP_OFFLOAD:
-        apply_model_group_offload(transformer, prefix="transformer")
         record_event(
-            "setup_transformer_group_offload",
+            transformer_prepare_event_name("set_transformer_attention_backend", repeat_index),
             time.time() - event_t0,
-            offload_type=GROUP_OFFLOAD_CONFIG["transformer_offload_type"],
-            use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
-            low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
+            requested_backend=ATTENTION_BACKEND,
+            resolved_backend=resolved_attention_backend,
+            patched_processors=patched_attention_processors,
+            drop_trivial_attention_mask=drop_trivial_attention_mask,
         )
-    elif dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
-        record_event(
-            "skip_transformer_to_cuda",
-            time.time() - event_t0,
-            reason=f"dynamic_weights_{DYNAMIC_WEIGHTS_EXECUTION_MODE}",
-        )
-    else:
-        transformer.to(DEVICE)
-        record_event("load_transformer_to_cuda", time.time() - event_t0)
+
+        if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and TRANSFORMER_MEMORY_MANAGER != "off":
+            raise ValueError(
+                "Dynamic weights execution currently requires "
+                "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER/LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER='off'. "
+                "Use execution_mode='plan' with the block manager."
+            )
+
+        if dynamic_weights_enabled:
+            event_t0 = time.time()
+            prepared_dynamic_weights_hook = apply_dynamic_weights(prepared_transformer, dynamic_weights_config)
+            record_event(
+                transformer_prepare_event_name("build_dynamic_weights_plan", repeat_index),
+                time.time() - event_t0,
+                **build_dynamic_weights_event_payload(DYNAMIC_WEIGHTS_SETTINGS, prepared_dynamic_weights_hook.state),
+            )
+
+        event_t0 = time.time()
+        if TRANSFORMER_MEMORY_MANAGER != "off":
+            raise ValueError(
+                "The legacy transformer block manager is no longer used by this runner. "
+                "Use DIFFUSERS_DYNAMIC_WEIGHTS_PRESET/LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET or transformer group offload."
+            )
+        if TRANSFORMER_GROUP_OFFLOAD:
+            apply_model_group_offload(prepared_transformer, prefix="transformer")
+            record_event(
+                transformer_prepare_event_name("setup_transformer_group_offload", repeat_index),
+                time.time() - event_t0,
+                offload_type=GROUP_OFFLOAD_CONFIG["transformer_offload_type"],
+                use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
+                low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
+            )
+        elif dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
+            record_event(
+                transformer_prepare_event_name("skip_transformer_to_cuda", repeat_index),
+                time.time() - event_t0,
+                reason=f"dynamic_weights_{DYNAMIC_WEIGHTS_EXECUTION_MODE}",
+            )
+        else:
+            prepared_transformer.to(DEVICE)
+            record_event(transformer_prepare_event_name("load_transformer_to_cuda", repeat_index), time.time() - event_t0)
+        return prepared_transformer, prepared_dynamic_weights_hook
+
+    transformer = None
+    dynamic_weights_hook = None
+    for prepare_repeat_index in range(TRANSFORMER_PREPARE_REPEATS):
+        if TRANSFORMER_PREPARE_REPEATS > 1:
+            print(
+                f"  Transformer prepare repeat {prepare_repeat_index + 1}/{TRANSFORMER_PREPARE_REPEATS}",
+                flush=True,
+            )
+        transformer, dynamic_weights_hook = load_and_prepare_transformer(prepare_repeat_index)
+        if prepare_repeat_index + 1 < TRANSFORMER_PREPARE_REPEATS:
+            if dynamic_weights_enabled:
+                remove_dynamic_weights(transformer)
+            del transformer
+            dynamic_weights_hook = None
+            flush()
 
     event_t0 = time.time()
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")
