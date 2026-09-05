@@ -23,7 +23,7 @@ Known setup from the current experiments:
 
 ## Current Status
 
-The current active direction is the generic `dynamic_weights` manager, not the retired manual transformer manager.
+The current active direction is the generic `dynamic_offload` manager, not the retired manual transformer manager.
 Historical sections below are kept as benchmark evidence, but new runs should use generic environment names and the
 current presets.
 
@@ -34,10 +34,10 @@ Current preset behavior:
 | `auto` | Default benchmark path | Resolves to `one_shot_fast` on Windows, Linux, and WSL. |
 | `one_shot_fast` | Main one-shot preset | Uses `linear_runtime`, RAM-aware `balanced` planning, up to `6 GB` resident modules, pinned CPU weights only when enough usable system RAM is available, Diffusers group offload for the text encoder, native attention. |
 | `low_ram_safe` | Explicit low-VRAM fallback | Uses no pinned CPU memory and a smaller `3 GB` resident-module budget. It is safer but much slower on the 8 GB VRAM / simulated 32 GB RAM Windows test. |
-| `wsl_compat` | Explicit WSL fallback | Disables pinned dynamic weights and uses text encoder group offload with stream disabled for WSL/driver setups where pinned-memory behavior is unstable. |
+| `wsl_compat` | Explicit WSL fallback | Disables pinned dynamic offloads and uses text encoder group offload with stream disabled for WSL/driver setups where pinned-memory behavior is unstable. |
 | `warm_process` | Server-like comparison | Enables process-lifetime pinned tensor cache and generation repeats for warm-process measurements. |
-| `diffusers_offload_compat` | Official Diffusers fallback | Disables dynamic weights and uses Diffusers transformer `block_level` group offload with `stream=1`, `record_stream=1`, and one block per group. |
-| `diffusers_leaf_offload_compat` | Official Diffusers leaf fallback | Disables dynamic weights and uses Diffusers transformer `leaf_level` group offload with `stream=1` and `record_stream=1`. |
+| `diffusers_offload_compat` | Official Diffusers fallback | Disables dynamic offloads and uses Diffusers transformer `block_level` group offload with `stream=1`, `record_stream=1`, and one block per group. |
+| `diffusers_leaf_offload_compat` | Official Diffusers leaf fallback | Disables dynamic offloads and uses Diffusers transformer `leaf_level` group offload with `stream=1` and `record_stream=1`. |
 | `compat` | Conservative fallback | Dynamic runtime without pinned CPU memory, for driver/OS-sensitive machines. |
 
 ## Important Baselines
@@ -59,12 +59,12 @@ Current preset behavior:
 The command below is preserved only as history from the retired manual-manager phase:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_linear"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MANAGER_PROFILE="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES="0"
-$env:DIFFUSERS_RUNNER_ATTENTION_BACKEND="native"
+$env:DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_linear"
+$env:DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DDO_RUNNER_TRANSFORMER_MANAGER_PROFILE="1"
+$env:DDO_RUNNER_TRANSFORMER_MANAGER_PROFILE_SYNC_COPIES="0"
+$env:DDO_RUNNER_ATTENTION_BACKEND="native"
 python run_modular_distilled.py
 ```
 
@@ -81,30 +81,30 @@ Expected behavior from the confirmed runs:
 Use generic environment names for new benchmark runs:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PRESET="auto"
-$env:DIFFUSERS_RUNNER_WIDTH="1280"
-$env:DIFFUSERS_RUNNER_HEIGHT="704"
-$env:DIFFUSERS_RUNNER_STEPS="8"
-$env:DIFFUSERS_RUNNER_SEED="43"
-$env:DIFFUSERS_RUNNER_GENERATION_REPEATS="1"
-$env:DIFFUSERS_RUNNER_METRICS_LEVEL="1"
-$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
-$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
+$env:DDO_PRESET="auto"
+$env:DDO_RUNNER_WIDTH="1280"
+$env:DDO_RUNNER_HEIGHT="704"
+$env:DDO_RUNNER_STEPS="8"
+$env:DDO_RUNNER_SEED="43"
+$env:DDO_RUNNER_GENERATION_REPEATS="1"
+$env:DDO_RUNNER_METRICS_LEVEL="1"
+$env:DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
+$env:DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
 python run_modular_distilled.py
 ```
 
 Enable deeper diagnostics only when needed:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE="1"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE="1"
-$env:DIFFUSERS_RUNNER_METRICS_LEVEL="2"
+$env:DDO_SHOW_PROFILE="1"
+$env:DDO_VERBOSE="1"
+$env:DDO_RUNNER_METRICS_LEVEL="2"
 ```
 
 ## Current Preset Baselines
 
 Detailed notes for the current preset comparison are also tracked in
-[`../../experiments/dynamic_weights_results.md`](../../experiments/dynamic_weights_results.md).
+[`../../experiments/dynamic_offload_results.md`](../../experiments/dynamic_offload_results.md).
 The same sidecar contains the current Windows-first validation matrix for WSL/Linux and Diffusers fallback checks.
 
 The current Windows transformer-only baseline uses fake prompt embeds, 1280x704, 8 steps, seed 43, BF16, native
@@ -115,11 +115,11 @@ attention, and Windows standby purge before the transformer.
 | Dynamic weights, enough RAM | `one_shot_fast` | detected `46.84 GB`, full pin selected | `34.67s` | `14.38s` denoise | `0.56s` / `148.14 GB` | `6.97 GB` | `25.15 GB` | Fast path selected: `snap_to_full_pin`, 444 patched modules, 11 resident blocks. |
 | Dynamic weights, simulated 32 GB RAM | `one_shot_fast` | pin skipped, insufficient RAM | `7.72s` | `198.2s` pass, denoise copy-bound | `174.12s` / `148.14 GB` | `6.97 GB` | `25.87 GB` | Correct safe path: avoids pinning when usable RAM is below required RAM. |
 | Low RAM fallback | `low_ram_safe` | no pin, smaller resident budget | `3.78s` | `194.10s` denoise | `187.81s` / `172.17 GB` | `3.28 GB reserved` | not captured | Uses less VRAM but is slower than `one_shot_fast` simulated at 32 GB. |
-| Official Diffusers group offload | dynamic weights off, transformer `leaf_level`, stream, record stream, low CPU mem usage off | Diffusers hook path | `0.07s` hook setup | `315.29s` denoise | not tracked by dynamic weights | `6.49 GB` | `26.60 GB` | Useful compatibility baseline, but much slower in this low-VRAM 8-step test. |
-| Official Diffusers group offload | dynamic weights off, transformer `leaf_level`, stream, record stream, low CPU mem usage on | Diffusers hook path | `0.05s` hook setup | `320.10s` denoise | not tracked by dynamic weights | `6.56 GB` | `26.60 GB` | Low CPU mem usage did not improve this path; setup stays tiny and denoise stays offload-bound. |
-| Official Diffusers group offload | dynamic weights off, transformer `leaf_level`, no stream, no record stream, low CPU mem usage on | Diffusers hook path | `0.03s` hook setup | `507.83s` denoise | not tracked by dynamic weights | `6.58 GB` | `39.37 GB` | Worst official offload probe so far; disabling stream is not viable for this model/shape. |
-| Official Diffusers group offload | dynamic weights off, transformer `block_level`, `num_blocks_per_group=1`, stream, record stream, low CPU mem usage on | Diffusers hook path | `0.02s` hook setup | `265.47s` denoise | not tracked by dynamic weights | `6.49 GB` | `26.79 GB` | Better than `leaf_level`, but still far from the dynamic weights fast path. |
-| Official Diffusers group offload | dynamic weights off, transformer `block_level`, `num_blocks_per_group=1`, stream, no record stream, low CPU mem usage on | Diffusers hook path | `0.01s` hook setup | `312.03s` denoise | not tracked by dynamic weights | `6.51 GB` | `26.78 GB` | Disabling `record_stream` made this path regress close to `leaf_level` timing. |
+| Official Diffusers group offload | dynamic offloads off, transformer `leaf_level`, stream, record stream, low CPU mem usage off | Diffusers hook path | `0.07s` hook setup | `315.29s` denoise | not tracked by dynamic offloads | `6.49 GB` | `26.60 GB` | Useful compatibility baseline, but much slower in this low-VRAM 8-step test. |
+| Official Diffusers group offload | dynamic offloads off, transformer `leaf_level`, stream, record stream, low CPU mem usage on | Diffusers hook path | `0.05s` hook setup | `320.10s` denoise | not tracked by dynamic offloads | `6.56 GB` | `26.60 GB` | Low CPU mem usage did not improve this path; setup stays tiny and denoise stays offload-bound. |
+| Official Diffusers group offload | dynamic offloads off, transformer `leaf_level`, no stream, no record stream, low CPU mem usage on | Diffusers hook path | `0.03s` hook setup | `507.83s` denoise | not tracked by dynamic offloads | `6.58 GB` | `39.37 GB` | Worst official offload probe so far; disabling stream is not viable for this model/shape. |
+| Official Diffusers group offload | dynamic offloads off, transformer `block_level`, `num_blocks_per_group=1`, stream, record stream, low CPU mem usage on | Diffusers hook path | `0.02s` hook setup | `265.47s` denoise | not tracked by dynamic offloads | `6.49 GB` | `26.79 GB` | Better than `leaf_level`, but still far from the dynamic offloads fast path. |
+| Official Diffusers group offload | dynamic offloads off, transformer `block_level`, `num_blocks_per_group=1`, stream, no record stream, low CPU mem usage on | Diffusers hook path | `0.01s` hook setup | `312.03s` denoise | not tracked by dynamic offloads | `6.51 GB` | `26.78 GB` | Disabling `record_stream` made this path regress close to `leaf_level` timing. |
 
 Current preset direction:
 
@@ -129,7 +129,7 @@ Current preset direction:
 - `wsl_compat` remains explicit for WSL/driver setups where stream or pinned-memory behavior is unstable.
 - `warm_process` remains the process-lifetime cache/server-like preset.
 - Official Diffusers group offload remains a compatibility baseline. `block_level` is faster than `leaf_level` here,
-  but still not close to the pinned dynamic weights transformer path. For `block_level` with stream enabled,
+  but still not close to the pinned dynamic offloads transformer path. For `block_level` with stream enabled,
   `record_stream=1` is currently better than `record_stream=0`. `leaf_level` without stream is the worst official
   offload probe in the current matrix.
 
@@ -216,18 +216,18 @@ This is effectively tied with `manual_linear + pinned CPU`. The profile still re
 
 This confirms that eliminating repeated transfers for resident blocks improves denoise time until memory pressure starts to dominate. The curve bent hard at `16` hot blocks: copies dropped to `128.1568 GB`, but denoise regressed to `201.2456s`. The current sweet spot is `12` hot blocks for this machine/resolution.
 
-An automatic hot-block budget selector was added after the explicit hot-block tests. Explicit `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS` still wins; when it is unset, `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB` selects every `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_STRIDE` block until the memory budget is consumed.
+An automatic hot-block budget selector was added after the explicit hot-block tests. Explicit `DDO_RUNNER_TRANSFORMER_HOT_BLOCKS` still wins; when it is unset, `DDO_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB` selects every `DDO_RUNNER_TRANSFORMER_HOT_BLOCK_STRIDE` block until the memory budget is consumed.
 
 The first budget run used:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS=""
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_STRIDE="3"
-$env:DIFFUSERS_RUNNER_ATTENTION_BACKEND="native"
+$env:DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCKS=""
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_STRIDE="3"
+$env:DDO_RUNNER_ATTENTION_BACKEND="native"
 ```
 
 Result:
@@ -340,16 +340,16 @@ The `manual_hot_blocks` path was updated so streamed blocks keep tiny tensors re
 Test configuration:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS=""
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_STRIDE="3"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_OFFSET="0"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="direct"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
-$env:DIFFUSERS_RUNNER_ATTENTION_BACKEND="native"
+$env:DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCKS=""
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_STRIDE="3"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_OFFSET="0"
+$env:DDO_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="direct"
+$env:DDO_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:DDO_RUNNER_ATTENTION_BACKEND="native"
 ```
 
 Result:
@@ -377,8 +377,8 @@ A `lazy_pin_cpu_memory` experiment tried to avoid the eager `pin_cpu_blocks` set
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="0"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_LAZY_PIN_CPU_MEMORY="1"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="0"
+$env:DDO_RUNNER_TRANSFORMER_LAZY_PIN_CPU_MEMORY="1"
 ```
 
 Result:
@@ -397,9 +397,9 @@ A `streamed_copy_mode=host_buffered` experiment tried to create persistent CPU p
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="0"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_LAZY_PIN_CPU_MEMORY="0"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="host_buffered"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="0"
+$env:DDO_RUNNER_TRANSFORMER_LAZY_PIN_CPU_MEMORY="0"
+$env:DDO_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="host_buffered"
 ```
 
 Result:
@@ -418,9 +418,9 @@ A `hot_linear_weight_budget_gb` experiment tried to keep selected `Linear.weight
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_LINEAR_WEIGHT_BUDGET_GB="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_LINEAR_WEIGHT_STRIDE="3"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_LINEAR_WEIGHT_OFFSET="1"
+$env:DDO_RUNNER_TRANSFORMER_HOT_LINEAR_WEIGHT_BUDGET_GB="1"
+$env:DDO_RUNNER_TRANSFORMER_HOT_LINEAR_WEIGHT_STRIDE="3"
+$env:DDO_RUNNER_TRANSFORMER_HOT_LINEAR_WEIGHT_OFFSET="1"
 ```
 
 Result:
@@ -439,8 +439,8 @@ A `streamed_copy_mode=buffered` run was repeated after keeping streamed small te
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="buffered"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:DDO_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="buffered"
+$env:DDO_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
 ```
 
 Result:
@@ -454,12 +454,12 @@ Insight: buffering is no longer catastrophic once tiny tensors stay resident, bu
 
 ## Parallel CPU Pinning
 
-The CPU pinning setup was parallelized with `DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS`. This targets the largest remaining setup cost in the best `manual_hot_blocks` path: pinning about `18.5 GB` of CPU transformer block tensors before denoise.
+The CPU pinning setup was parallelized with `DDO_RUNNER_TRANSFORMER_PIN_CPU_WORKERS`. This targets the largest remaining setup cost in the best `manual_hot_blocks` path: pinning about `18.5 GB` of CPU transformer block tensors before denoise.
 
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="4"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="4"
 ```
 
 Result:
@@ -479,8 +479,8 @@ Layer-level profiling was added to identify whether the denoise gap is dominated
 Configuration difference from the best baseline:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PROFILE_LAYERS="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PROFILE_SYNC_LAYERS="1"
+$env:DDO_RUNNER_TRANSFORMER_PROFILE_LAYERS="1"
+$env:DDO_RUNNER_TRANSFORMER_PROFILE_SYNC_LAYERS="1"
 ```
 
 Result:
@@ -489,7 +489,7 @@ Result:
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `manual_hot_blocks` + layer sync profile | `71.9572s` | `82.5902s` | `10.3239s/it` | `176.8s` | `13.4310s` | `69.0724s` | `30.8499s` | `27.6515s` | `23.3325s` | `0.6158s` |
 
-Insight: synchronized layer profiling slows the run, but the distribution is useful. The denoise gap is not isolated to one layer type. `cross_attn`, `self_attn`, and `ff` are all significant, which points back to the dynamic weight execution path used by all of their `Linear` modules. The next useful comparison is a block-staged mode that copies a block's linear weights once before the block forward rather than staging each linear call independently.
+Insight: synchronized layer profiling slows the run, but the distribution is useful. The denoise gap is not isolated to one layer type. `cross_attn`, `self_attn`, and `ff` are all significant, which points back to the dynamic offload execution path used by all of their `Linear` modules. The next useful comparison is a block-staged mode that copies a block's linear weights once before the block forward rather than staging each linear call independently.
 
 ## Block Staged Linear Weights
 
@@ -498,8 +498,8 @@ A `manual_block_staged` experiment tried to stage every streamed block's linear 
 Configuration difference from the best `manual_hot_blocks` baseline:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_block_staged"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="0"
+$env:DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_block_staged"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="0"
 ```
 
 Result:
@@ -518,14 +518,14 @@ The latest stable `manual_hot_blocks` run used the current best configuration wi
 Configuration:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="2"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="direct"
-$env:DIFFUSERS_RUNNER_ATTENTION_BACKEND="native"
+$env:DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="2"
+$env:DDO_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DDO_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="direct"
+$env:DDO_RUNNER_ATTENTION_BACKEND="native"
 ```
 
 Result:
@@ -549,14 +549,14 @@ Insight: this confirms the current best path is setup-bound plus streamed-block-
 
 ## Profile-Guided Hot Block Candidates
 
-`DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_CANDIDATES` was added so a profile-derived block priority list can be budgeted safely. Unlike explicit `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS`, candidates are selected in order only until `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB` is reached.
+`DDO_RUNNER_TRANSFORMER_HOT_BLOCK_CANDIDATES` was added so a profile-derived block priority list can be budgeted safely. Unlike explicit `DDO_RUNNER_TRANSFORMER_HOT_BLOCKS`, candidates are selected in order only until `DDO_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB` is reached.
 
 Configuration difference from the best baseline:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCKS=""
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_CANDIDATES="36,2,29,32,12,19,9,22,16,28,4,1,7,13,25,31,35,38,40,43,44,47"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCKS=""
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_CANDIDATES="36,2,29,32,12,19,9,22,16,28,4,1,7,13,25,31,35,38,40,43,44,47"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
 ```
 
 Result:
@@ -572,7 +572,7 @@ Insight: profile-guided candidates did not materially improve the result, but th
 
 1. Keep `manual_hot_blocks + pinned CPU + resident small tensors` as the current baseline.
 2. Move new experiments toward a Diffusers-style `Config + apply_* + ModelHook` API.
-3. Build a generic dynamic weight plan before changing execution behavior.
+3. Build a generic dynamic offload plan before changing execution behavior.
 4. Reduce setup cost by avoiding repeated full CPU pinning when possible.
 5. Investigate a ComfyUI-like dynamic staging path that avoids per-run heavyweight setup while preserving fast streamed execution.
 6. Continue micro-committing every working state.
@@ -585,7 +585,7 @@ To keep this experiment portable to a future Diffusers-style implementation, new
 
 1. Prefer `Config` dataclasses plus `apply_*` functions.
 2. Use `ModelHook` and `HookRegistry` for attach/detach behavior.
-3. Keep the dynamic weight core model-agnostic.
+3. Keep the dynamic offload core model-agnostic.
 4. Keep LTX-specific knowledge in adapter/planning code only.
 5. Avoid custom devices, global PyTorch monkeypatching, and loader replacement until the execution model proves useful.
 6. Bring in one behavior at a time and benchmark each step.
@@ -593,7 +593,7 @@ To keep this experiment portable to a future Diffusers-style implementation, new
 A planner-only module now exists behind:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PLAN="1"
+$env:DDO_PLAN="1"
 ```
 
 This builds a generic `nn.Linear` weight plan and records module count, total planned weight size, and placement buckets. It does not change the forward path yet.
@@ -629,13 +629,13 @@ Windows memory state appears to materially affect repeatability. After boot, the
 Configuration stayed on the same best baseline:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="2"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="direct"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PLAN="1"
+$env:DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER="manual_hot_blocks"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_MEMORY="1"
+$env:DDO_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="2"
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_BUDGET_GB="6"
+$env:DDO_RUNNER_TRANSFORMER_KEEP_STREAMED_SMALL_TENSORS_RESIDENT="1"
+$env:DDO_RUNNER_TRANSFORMER_STREAMED_COPY_MODE="direct"
+$env:DDO_PLAN="1"
 ```
 
 Result after clearing standby cache:
@@ -659,8 +659,8 @@ Question: whether `low_cpu_mem_usage` contributes to Windows standby/cache growt
 Code change:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="0"              # applies to transformer/connectors/VAE only
-$env:DIFFUSERS_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN="1" # optional Python/CUDA cleanup at script end
+$env:DDO_RUNNER_LOW_CPU_MEM_USAGE="0"              # applies to transformer/connectors/VAE only
+$env:DDO_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN="1" # optional Python/CUDA cleanup at script end
 ```
 
 The text encoder intentionally remains fixed at `low_cpu_mem_usage=True` so the A/B test isolates the image-side components. The runner now records `text_encoder_low_cpu_mem_usage`, `model_low_cpu_mem_usage`, and `reset_dynamic_memory_after_run` in the metrics JSON.
@@ -673,20 +673,20 @@ Interpretation before testing:
 
 Recommended protocol:
 
-1. Run the current baseline with `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="1"` and note setup, denoise, RAM cache/standby, and pass total.
+1. Run the current baseline with `DDO_RUNNER_LOW_CPU_MEM_USAGE="1"` and note setup, denoise, RAM cache/standby, and pass total.
 2. Clear Windows standby cache externally if you want a cold comparable run.
-3. Run with `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="0"` using the same env vars and compare setup/pin time, denoise time, peak RAM, and standby cache growth.
-4. Repeat with `DIFFUSERS_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN="1"` and check whether the next run degrades less without external cache clearing.
+3. Run with `DDO_RUNNER_LOW_CPU_MEM_USAGE="0"` using the same env vars and compare setup/pin time, denoise time, peak RAM, and standby cache growth.
+4. Repeat with `DDO_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN="1"` and check whether the next run degrades less without external cache clearing.
 
-Update: Diffusers rejects `low_cpu_mem_usage=False` together with `device_map="cpu"` during `from_pretrained`. The runner now keeps `device_map="cpu"` only when `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="1"`. When testing `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="0"`, transformer loading uses the regular CPU loading path before the custom manager is attached. Treat this as a loading-path A/B, not as a perfectly isolated boolean change.
+Update: Diffusers rejects `low_cpu_mem_usage=False` together with `device_map="cpu"` during `from_pretrained`. The runner now keeps `device_map="cpu"` only when `DDO_RUNNER_LOW_CPU_MEM_USAGE="1"`. When testing `DDO_RUNNER_LOW_CPU_MEM_USAGE="0"`, transformer loading uses the regular CPU loading path before the custom manager is attached. Treat this as a loading-path A/B, not as a perfectly isolated boolean change.
 
 ## Windows Standby Purge Helper
 
 The runner now has an optional Windows-only benchmark helper that calls `NtSetSystemInformation(SystemMemoryListInformation=80, MemoryPurgeStandbyList=4)` through Python `ctypes`. It enables `SeProfileSingleProcessPrivilege` on the current process token first, so the Python process must run from an elevated/admin terminal.
 
 ```powershell
-$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
-$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_RUN="1"
+$env:DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
+$env:DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_RUN="1"
 ```
 
 Smoke test result from an elevated terminal:
@@ -702,10 +702,10 @@ Use `BEFORE_RUN=1` for cold benchmark control. Use `AFTER_RUN=1` to test whether
 A second Windows standby purge point was added after prompt/connectors cleanup and immediately before transformer loading:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
+$env:DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
 ```
 
-Observed comparison with the same baseline and `DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE="1"`:
+Observed comparison with the same baseline and `DDO_RUNNER_LOW_CPU_MEM_USAGE="1"`:
 
 | Purge placement | Denoise | Step avg | Torch alloc/reserved |
 | --- | ---: | ---: | ---: |
@@ -719,8 +719,8 @@ Insight: standby/cache pressure can build during the prompt/connectors stage bef
 A new optional hot-block selection policy was added for the dynamic manager:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_SELECTION="stride" # default, previous behavior
-$env:DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_SELECTION="spread" # experimental
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_SELECTION="stride" # default, previous behavior
+$env:DDO_RUNNER_TRANSFORMER_HOT_BLOCK_SELECTION="spread" # experimental
 ```
 
 `stride` preserves the current baseline: candidates are visited by `hot_block_stride` and selection stops when the VRAM budget is exhausted. With a `6 GB` block budget this produced the current best stable pattern:
@@ -746,7 +746,7 @@ Insight: distributed residency improved the denoise loop but setup regressed bec
 
 `_pin_cpu_blocks` now pins and assigns tensors through a bounded worker queue instead of collecting all source tensor references and pinned results before assignment. This keeps the same pinned tensor set, but should reduce temporary host-memory pressure during setup.
 
-Test with the same stable baseline and `DIFFUSERS_RUNNER_TRANSFORMER_HOT_BLOCK_SELECTION="spread"`.
+Test with the same stable baseline and `DDO_RUNNER_TRANSFORMER_HOT_BLOCK_SELECTION="spread"`.
 
 ### Spread + Bounded Pinning Result
 
@@ -772,7 +772,7 @@ The redundant `.to()` guard was neutral in the stable spread baseline:
 | `spread` + bounded pinning | `40.2046s` | `31.4450s` | `8.0990s` | `34.6251s` | `4.3215s/it` | `91.9s` | `6.71 GB` | `27.65 GB` |
 | + skip redundant block moves | `38.8747s` | `30.1105s` | `8.0700s` | `35.6465s` | `4.4229s/it` | `90.5s` | `6.68 GB` | `27.65 GB` |
 
-Insight: `blocks_to_target_devices` did not materially change, so the remaining setup problem is still CPU pinning. The next controlled A/B should keep the same two-purge spread baseline and vary only `DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS`.
+Insight: `blocks_to_target_devices` did not materially change, so the remaining setup problem is still CPU pinning. The next controlled A/B should keep the same two-purge spread baseline and vary only `DDO_RUNNER_TRANSFORMER_PIN_CPU_WORKERS`.
 
 ### Pin CPU Workers Result
 
@@ -783,7 +783,7 @@ With bounded pin assignment, increasing pin workers from `2` to `4` improved set
 | `2` | `38.8747s` | `30.1105s` | `35.6465s` | `4.4229s/it` | `90.5s` | `6.68 GB` | `27.65 GB` | `0.3428s` |
 | `4` | `32.3166s` | `23.5359s` | `34.8546s` | `4.3236s/it` | `83.8s` | `6.68 GB` | `27.65 GB` | `0.1083s` |
 
-Insight: pinning parallelism is now productive with the bounded queue. Next A/B should test `DIFFUSERS_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="8"` under the same two-purge spread baseline.
+Insight: pinning parallelism is now productive with the bounded queue. Next A/B should test `DDO_RUNNER_TRANSFORMER_PIN_CPU_WORKERS="8"` under the same two-purge spread baseline.
 
 ### Pin CPU Workers 8 Result
 
@@ -809,19 +809,19 @@ Insight: `5 GB` is useful as a lower-VRAM profile, but not as the fastest profil
 
 ## Dynamic Weights Linear Runtime
 
-The `dynamic_weights` module now has an experimental execution mode:
+The `dynamic_offload` module now has an experimental execution mode:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_runtime"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS="4"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="off"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DDO_EXECUTION_MODE="linear_runtime"
+$env:DDO_PIN_CPU_MEMORY="1"
+$env:DDO_PIN_CPU_WORKERS="4"
+$env:DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER="off"
+$env:DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
 ```
 
 This is the first real dynamic-weight execution path, separate from the LTX-specific block manager. It patches `nn.Linear` modules generically, keeps configured resident modules on the execution device, keeps small non-linear local tensors on the execution device, and streams large linear weights from CPU to the input device during forward.
 
-Important: this is not expected to beat `manual_hot_blocks` yet. Its purpose is to move the architecture toward a portable Diffusers-style dynamic weight runtime, so future iterations can add residency budgets, reusable device buffers, and loader-backed storage without baking LTX transformer details into the core mechanism.
+Important: this is not expected to beat `manual_hot_blocks` yet. Its purpose is to move the architecture toward a portable Diffusers-style dynamic offload runtime, so future iterations can add residency budgets, reusable device buffers, and loader-backed storage without baking LTX transformer details into the core mechanism.
 
 Smoke test result: a tiny CUDA `nn.Sequential(nn.RMSNorm, nn.Linear)` model successfully patched, executed, and restored through the hook.
 
@@ -839,14 +839,14 @@ Insight: `4` workers remains the best balanced setting. Higher worker counts can
 
 ### Dynamic Weights Store Runtime
 
-The `dynamic_weights` module now has a second execution mode:
+The `dynamic_offload` module now has a second execution mode:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_store_runtime"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS="4"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER="off"
-$env:DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
+$env:DDO_EXECUTION_MODE="linear_store_runtime"
+$env:DDO_PIN_CPU_MEMORY="1"
+$env:DDO_PIN_CPU_WORKERS="4"
+$env:DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER="off"
+$env:DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD="0"
 ```
 
 This mode moves large `nn.Linear.weight` tensors into an internal runtime store and replaces the active module parameter with a `meta` placeholder. The patched linear forward reads from the store and copies the weight to the input device when needed.
@@ -868,8 +868,8 @@ Insight: patching `576` linear modules and streaming all large weights is too sl
 `linear_store_runtime` now supports a generic resident weight budget:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="6"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_SELECTION="spread"
+$env:DDO_RESIDENT_WEIGHT_BUDGET_GB="6"
+$env:DDO_RESIDENT_WEIGHT_SELECTION="spread"
 ```
 
 This keeps a spread of large `nn.Linear.weight` tensors resident on the execution device while the remaining linear weights stay in the internal store with `meta` placeholders in the active modules. This is still model-agnostic: selection is based on module order and byte budget, not LTX block names.
@@ -891,13 +891,13 @@ Insight: per-linear residency is not coherent enough for this transformer. It re
 `linear_store_runtime` now supports a generic resident module budget:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="0"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="6"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
+$env:DDO_RESIDENT_WEIGHT_BUDGET_GB="0"
+$env:DDO_RESIDENT_MODULE_BUDGET_GB="6"
+$env:DDO_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
+$env:DDO_RESIDENT_MODULE_SELECTION="spread"
 ```
 
-This keeps whole matching modules resident on the execution device and skips patching their descendants. For LTX this lets the portable dynamic weights runtime treat `transformer_blocks.N` as the budget unit without hardcoding LTX-specific names in the manager.
+This keeps whole matching modules resident on the execution device and skips patching their descendants. For LTX this lets the portable dynamic offloads runtime treat `transformer_blocks.N` as the budget unit without hardcoding LTX-specific names in the manager.
 
 Smoke test result: a CUDA sequential model with two block-like submodules successfully ran with one resident block and remaining linears store-backed through `meta` placeholders.
 
@@ -914,11 +914,11 @@ Insight: module residency is structurally closer to `manual_hot_blocks`, but the
 `resident_module_budget_gb` now also works with `linear_runtime`. This tests generic module-level residency without the store/meta indirection:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE="linear_runtime"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_WEIGHT_BUDGET_GB="0"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="6"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION="spread"
+$env:DDO_EXECUTION_MODE="linear_runtime"
+$env:DDO_RESIDENT_WEIGHT_BUDGET_GB="0"
+$env:DDO_RESIDENT_MODULE_BUDGET_GB="6"
+$env:DDO_RESIDENT_MODULE_PATTERNS="^transformer_blocks\.\d+$"
+$env:DDO_RESIDENT_MODULE_SELECTION="spread"
 ```
 
 Smoke test result: a CUDA sequential model with block-like submodules successfully ran with one resident block and remaining linears patched through regular CPU parameters.
@@ -929,7 +929,7 @@ First full transformer result with `linear_runtime`, `6 GB` resident module budg
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `linear_runtime` + resident module budget | `444` | `5.5077 GB` | `31.7174s / 18.5181 GB` | `93.9007s` | `11.7310s/it` | `144.7s` | `6.32/6.63 GiB` | `6.77 GB` | `46.66 GB` |
 
-Insight: removing the `store/meta` indirection did not recover speed. The generic dynamic path is still far slower than `manual_hot_blocks`, so the next diagnostic is runtime profiling inside `dynamic_weights` itself: copy totals, resident module names, and whether input/device transfers are happening during the transformer forward.
+Insight: removing the `store/meta` indirection did not recover speed. The generic dynamic path is still far slower than `manual_hot_blocks`, so the next diagnostic is runtime profiling inside `dynamic_offload` itself: copy totals, resident module names, and whether input/device transfers are happening during the transformer forward.
 
 Follow-up profiling showed the selected resident modules matched the fastest manual baseline exactly:
 
@@ -940,7 +940,7 @@ Follow-up profiling showed the selected resident modules matched the fastest man
   linear_weight: calls=3552 seconds=4.5617 gb=148.1445
 ```
 
-Insight: the module selection is not the problem. One remaining difference from the manual manager is that non-linear block-local parameters, such as modulation tables used through inline `.to(temb.device)` calls in the block forward, were neither pinned nor made resident by the generic dynamic runtime. The runner now exposes `DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB` and defaults it to `1024` for dynamic weights so these small/medium local tensors can stay resident instead of being copied implicitly during every block forward.
+Insight: the module selection is not the problem. One remaining difference from the manual manager is that non-linear block-local parameters, such as modulation tables used through inline `.to(temb.device)` calls in the block forward, were neither pinned nor made resident by the generic dynamic runtime. The runner now exposes `DDO_SMALL_TENSOR_THRESHOLD_KB` and defaults it to `1024` for dynamic offloads so these small/medium local tensors can stay resident instead of being copied implicitly during every block forward.
 
 Result after increasing the dynamic small tensor resident threshold to `1024 KB`:
 
@@ -949,16 +949,16 @@ Result after increasing the dynamic small tensor resident threshold to `1024 KB`
 | `linear_runtime` + module budget + `16 KB` small tensors | `0.0033 GB` | `444` | `31.7174s / 18.5181 GB` | `93.9007s` | `11.7310s/it` | `144.7s` | `4.5617s` | `6.32/6.63 GiB` | `6.77 GB` | `46.66 GB` |
 | `linear_runtime` + module budget + `1024 KB` small tensors | `0.0282 GB` | `444` | `23.3566s / 18.5181 GB` | `13.9789s` | `1.5810s/it` | `56.1s` | `0.3306s` | `6.32/6.63 GiB` | `6.69 GB` | `27.36 GB` |
 
-Insight: this is the first generic dynamic weights path to beat the ComfyUI denoise loop in isolation on this test. The remaining gap is setup/model initialization: Diffusers still loads the transformer then spends tens of seconds pinning and placing CPU/GPU tensors, while the ComfyUI dynamic loader reports sub-second dynamic preparation plus a larger initialization phase inside the sampler.
+Insight: this is the first generic dynamic offloads path to beat the ComfyUI denoise loop in isolation on this test. The remaining gap is setup/model initialization: Diffusers still loads the transformer then spends tens of seconds pinning and placing CPU/GPU tensors, while the ComfyUI dynamic loader reports sub-second dynamic preparation plus a larger initialization phase inside the sampler.
 
 ### Dynamic VRAM Portability Notes
 
-Comfy-Org/comfy-aimdo issue #25 reports that `ModelVBAR` allocation can fail on NVIDIA GRID / vGPU environments and should degrade gracefully instead of hard-crashing. This does not affect the current `dynamic_weights` implementation because it uses regular CPU/CUDA tensors and pinned memory, not `comfy-aimdo`/VBAR. It is still an important design constraint if we later add a VBAR-like allocator or virtual device:
+Comfy-Org/comfy-aimdo issue #25 reports that `ModelVBAR` allocation can fail on NVIDIA GRID / vGPU environments and should degrade gracefully instead of hard-crashing. This does not affect the current `dynamic_offload` implementation because it uses regular CPU/CUDA tensors and pinned memory, not `comfy-aimdo`/VBAR. It is still an important design constraint if we later add a VBAR-like allocator or virtual device:
 
 - Detect allocator support at initialization time, not during the first model forward.
 - Treat VBAR/managed host buffer allocation failure as an optional acceleration failure, not a fatal model-load failure.
 - Keep a plain pinned-memory path as the portable fallback for vGPU, Linux setups without the allocator, or Windows systems where privilege/driver behavior differs.
-- Log the selected dynamic weight backend clearly so benchmark results show whether the run used VBAR-like staging, pinned host tensors, or regular pageable CPU tensors.
+- Log the selected dynamic offload backend clearly so benchmark results show whether the run used VBAR-like staging, pinned host tensors, or regular pageable CPU tensors.
 
 The open `comfy-aimdo` issue list reinforces the same boundary: reported failures include `cuMemSetAccess` device-not-ready errors on Blackwell, `cuGetProcAddress` / driver symbol mismatches, ROCm owner-device accounting bugs, VBAR allocation failures on older AMD cards, address-space exhaustion on ROCm/Windows, host buffer free crashes during RAM-pressure eviction, and unexpected system throughput drops after generation. These are allocator/driver/OS failure modes, not ordinary PyTorch module-placement bugs. Any future VBAR-like backend should therefore be optional, capability-probed up front, and paired with the current pinned-memory fallback.
 
@@ -970,16 +970,16 @@ A control run with `linear_runtime`, `6 GB` resident module budget, `1024 KB` sm
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
 | `linear_runtime` + module budget + no pin | `9.0407s` | `121.8672s` | first step `44.7585s`, later `10-13s/it` | `118.7173s` | `142.1s` | `6.79 GB` | `28.22 GB` |
 
-Insight: pageable CPU copies are the wrong tradeoff. The next test adds `DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY=1`, which should avoid the eager `pin_linear_weights` setup cost while pinning each streamed CPU weight on first use so later copies can use the faster pinned path.
+Insight: pageable CPU copies are the wrong tradeoff. The next test adds `DDO_LAZY_PIN_CPU_MEMORY=1`, which should avoid the eager `pin_linear_weights` setup cost while pinning each streamed CPU weight on first use so later copies can use the faster pinned path.
 
 Test command delta:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="1"
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_LAZY_PIN_CPU_MEMORY="1"
+$env:DDO_PIN_CPU_MEMORY="1"
+$env:DDO_LAZY_PIN_CPU_MEMORY="1"
 ```
 
-If this works, `build_dynamic_weights_plan` should stay closer to the no-pin run while `dynamic-weights-profile` reports `lazy_pin_linear_weight` under setup runtime and copy time should drop after the first use of each weight.
+If this works, `build_dynamic_offload_plan` should stay closer to the no-pin run while `dynamic-weights-profile` reports `lazy_pin_linear_weight` under setup runtime and copy time should drop after the first use of each weight.
 
 First full result:
 
@@ -987,19 +987,19 @@ First full result:
 | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
 | `linear_runtime` + module budget + lazy pin | `9.2746s` | `54.8884s / 18.5181 GB` | `71.3503s` | first step `58.8127s`, later mostly `~1.7s/it` | `0.4201s` | `91.5s` | `6.79 GB` | `27.40 GB` |
 
-Insight: lazy pin is technically working, but for an 8-step image run it moves the eager pin cost into the first denoise step instead of eliminating it. After the first-step pinning, later steps are very fast, so this may be useful for long-running or persistent-process workloads, but the best single-run preset remains eager pinned dynamic weights with resident modules and resident small tensors.
+Insight: lazy pin is technically working, but for an 8-step image run it moves the eager pin cost into the first denoise step instead of eliminating it. After the first-step pinning, later steps are very fast, so this may be useful for long-running or persistent-process workloads, but the best single-run preset remains eager pinned dynamic offloads with resident modules and resident small tensors.
 
 ### Warm Generation Benchmark
 
 The runner now supports repeated generation with a single loaded/configured transformer:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_GENERATION_REPEATS="2"
+$env:DDO_RUNNER_GENERATION_REPEATS="2"
 ```
 
 This keeps the default single-run path unchanged when unset. With repeats enabled, the runner rebuilds latents and runs denoise multiple times before VAE decode, saving the last latent/image. This is intended to separate cold setup cost from warm execution cost and to compare more fairly against server-style systems such as ComfyUI.
 
-Preset implication: eager pinned dynamic weights are still best for short one-shot runs. Lazy pin may become useful only when the same process/model performs additional warm generations, because the first generation pays the pinning cost and later generations can reuse pinned CPU weights.
+Preset implication: eager pinned dynamic offloads are still best for short one-shot runs. Lazy pin may become useful only when the same process/model performs additional warm generations, because the first generation pays the pinning cost and later generations can reuse pinned CPU weights.
 
 First warm benchmark with the current best eager-pinned dynamic preset:
 
@@ -1007,7 +1007,7 @@ First warm benchmark with the current best eager-pinned dynamic preset:
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `linear_runtime` + module budget + eager pin + repeats `2` | `32.2961s` | `14.4916s` | `14.5287s` | `~1.63s/it` | `0.7809s / 296.2891 GB` | `72.4s` | `6.69 GB` | `27.35 GB` |
 
-Insight: this is the strongest parity signal so far. In a warm/server-style run, the PyTorch-only dynamic weights path is already close to the ComfyUI reference (`72.11s` full prompt execution) while avoiding the VBAR/driver-level risk class. The remaining optimization target is cold setup, mainly `pin_linear_weights` (`23.4006s`) plus resident module placement (`8.3050s`), not the steady denoise loop.
+Insight: this is the strongest parity signal so far. In a warm/server-style run, the PyTorch-only dynamic offloads path is already close to the ComfyUI reference (`72.11s` full prompt execution) while avoiding the VBAR/driver-level risk class. The remaining optimization target is cold setup, mainly `pin_linear_weights` (`23.4006s`) plus resident module placement (`8.3050s`), not the steady denoise loop.
 
 ### Preset Planning Notes
 
@@ -1033,7 +1033,7 @@ Windows-specific note: standby cache state can dominate benchmark variance. On t
 
 ### Dynamic Weights Presets
 
-The runner supports `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET` as a convenience layer over the existing environment variables.
+The runner supports `DDO_PRESET` as a convenience layer over the existing environment variables.
 Explicit environment variables still override preset values. Presets intentionally do not enable Windows standby purge
 so they remain portable to Linux/WSL.
 
@@ -1048,16 +1048,16 @@ so they remain portable to Linux/WSL.
 | `diffusers_leaf_offload_compat` | Official Diffusers leaf fallback | Dynamic weights disabled, transformer group offload `leaf_level`, `stream=1`, `record_stream=1`, low CPU mem usage on |
 | `compat` | Highest portability baseline for driver/OS-sensitive machines | `linear_runtime`, no pinned CPU memory, `3 GB` resident module budget |
 
-WSL/Linux test note: run the same preset without `DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_*`. This will tell us whether the strong warm result is mostly from generic pinned-memory/module-residency behavior or from Windows WDDM/shared-memory behavior. Key comparison fields are `build_dynamic_weights_plan`, repeated denoise times, process RAM, and VRAM.
+WSL/Linux test note: run the same preset without `DDO_RUNNER_PURGE_WINDOWS_STANDBY_*`. This will tell us whether the strong warm result is mostly from generic pinned-memory/module-residency behavior or from Windows WDDM/shared-memory behavior. Key comparison fields are `build_dynamic_offload_plan`, repeated denoise times, process RAM, and VRAM.
 
 First WSL isolation found two portability issues before denoise:
 
 - Text encoder group offload failed while calling Diffusers `tensor.pin_memory()` (`CUDA error: out of memory`).
-- With fake prompt enabled, the transformer reached dynamic weights setup but failed on our eager `linear.weight.data.pin_memory()` path.
+- With fake prompt enabled, the transformer reached dynamic offloads setup but failed on our eager `linear.weight.data.pin_memory()` path.
 
-The dynamic weights hook now has `allow_pin_memory_fallback`, exposed as `DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK` and enabled by presets. If large pinned memory allocation fails, the hook logs `pin_linear_weights_failed`, disables further pin attempts, and continues with pageable CPU tensors when the CUDA context remains healthy.
+The dynamic offloads hook now has `allow_pin_memory_fallback`, exposed as `DDO_ALLOW_PIN_MEMORY_FALLBACK` and enabled by presets. If large pinned memory allocation fails, the hook logs `pin_linear_weights_failed`, disables further pin attempts, and continues with pageable CPU tensors when the CUDA context remains healthy.
 
-Follow-up WSL result: catching `torch.AcceleratorError` after a failed large `pin_memory()` was not enough. Denoise completed, but VAE decode later failed with `CUDA driver error: device not ready`, indicating that the failed pin attempt can poison the CUDA context. `wsl_compat` disables dynamic-weights pinned CPU memory via `DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=1`. The default `auto` preset now resolves to `one_shot_fast` on every platform, so WSL compatibility behavior must be requested explicitly when needed.
+Follow-up WSL result: catching `torch.AcceleratorError` after a failed large `pin_memory()` was not enough. Denoise completed, but VAE decode later failed with `CUDA driver error: device not ready`, indicating that the failed pin attempt can poison the CUDA context. `wsl_compat` disables dynamic-weights pinned CPU memory via `DDO_DISABLE_PIN_ON_WSL=1`. The default `auto` preset now resolves to `one_shot_fast` on every platform, so WSL compatibility behavior must be requested explicitly when needed.
 
 ### Windows Baseline For WSL Comparison
 
@@ -1072,13 +1072,13 @@ Use this Windows run as the current dynamic-weights reference for WSL/Linux comp
 
 Setup breakdown: `pin_linear_weights: 31.5272s / 18.5181 GB`, `resident_budget_modules_to_device: 8.4379s / 5.5077 GB`, `resident_modules_to_device: 0.4867s / 0.9554 GB`, small tensors resident `0.0243s / 0.0042 GB`.
 
-Step profile: first step `0.6680s`, then mostly `~1.78-2.30s`. This remains the best Windows one-shot comparison point after adding dynamic weights and standby purge.
+Step profile: first step `0.6680s`, then mostly `~1.78-2.30s`. This remains the best Windows one-shot comparison point after adding dynamic offloads and standby purge.
 
-WSL decode follow-up: with pinned dynamic weights disabled, the run completed through VAE decode (`load_vae_to_cuda: 0.9268s`, `vae_decode_modular_call: 0.6174s`, Pass 2 `1.7s`) and saved the image. Total fake-prompt runtime was `52.2s`. This confirms the previous VAE `device not ready` failure was tied to the failed pinned-memory path or memory pressure around it, not to VAE decode itself.
+WSL decode follow-up: with pinned dynamic offloads disabled, the run completed through VAE decode (`load_vae_to_cuda: 0.9268s`, `vae_decode_modular_call: 0.6174s`, Pass 2 `1.7s`) and saved the image. Total fake-prompt runtime was `52.2s`. This confirms the previous VAE `device not ready` failure was tied to the failed pinned-memory path or memory pressure around it, not to VAE decode itself.
 
-WSL real-prompt baseline: text encoder group offload works with `DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM=0`; with stream enabled it previously hit pinned-memory/driver problems. Real encode took `25.8941s` (`Pass 0: 30.1s`, peak RAM `23.50 GB`, peak VRAM `3.81 GB`). Full run completed in `71.6s`: Pass 1 `39.5s`, VAE Pass 2 `1.6s`, save `0.2s`. This is now the best WSL full-run reference and is close to the earlier ComfyUI total prompt execution reference of `72.11s`, although the distribution is different.
+WSL real-prompt baseline: text encoder group offload works with `DDO_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM=0`; with stream enabled it previously hit pinned-memory/driver problems. Real encode took `25.8941s` (`Pass 0: 30.1s`, peak RAM `23.50 GB`, peak VRAM `3.81 GB`). Full run completed in `71.6s`: Pass 1 `39.5s`, VAE Pass 2 `1.6s`, save `0.2s`. This is now the best WSL full-run reference and is close to the earlier ComfyUI total prompt execution reference of `72.11s`, although the distribution is different.
 
-Ubuntu native baseline: using `one_shot_fast` without Windows standby purge, native Linux accepted eager pinned dynamic weights. Real encode took `16.8579s` (`Pass 0: 20.2s`, peak VRAM `3.80 GB`). Dynamic setup was much faster than Windows (`pin_linear_weights: 13.4585s / 18.5181 GB`, resident budget move `4.7624s / 5.5077 GB`), and denoise was slightly faster than the Windows pinned baseline (`13.0216s`, copy time `0.0521s`). Full run completed in `60.8s` with VAE Pass 2 `1.7s`. This confirms the pinned-memory failure is WSL-specific in the current test matrix, not a general Linux issue.
+Ubuntu native baseline: using `one_shot_fast` without Windows standby purge, native Linux accepted eager pinned dynamic offloads. Real encode took `16.8579s` (`Pass 0: 20.2s`, peak VRAM `3.80 GB`). Dynamic setup was much faster than Windows (`pin_linear_weights: 13.4585s / 18.5181 GB`, resident budget move `4.7624s / 5.5077 GB`), and denoise was slightly faster than the Windows pinned baseline (`13.0216s`, copy time `0.0521s`). Full run completed in `60.8s` with VAE Pass 2 `1.7s`. This confirms the pinned-memory failure is WSL-specific in the current test matrix, not a general Linux issue.
 
 Follow-up Ubuntu native comparison:
 
@@ -1088,7 +1088,7 @@ Follow-up Ubuntu native comparison:
 | `ubuntu_3`, dynamic pinned | group offload stream off, encode `32.3742s` | yes | `18.9910s` | `13.1480s` | `0.0634s` | `37.7s` | `79.5s` |
 | `ubuntu_4`, standard Diffusers runner | standard offload, encode `22.1791s` | n/a | n/a | `36.6993s` | n/a | `38.0s` | `64.5s` |
 
-Insight: pinned dynamic weights on Ubuntu native strongly improve denoise (`~13s` vs standard Diffusers `~36.7s`), but the cold setup cost makes single-generation Pass 1 roughly equal to the standard runner (`37.7s` vs `38.0s`). This means dynamic weights should pay off most clearly for warm/server-style runs or multiple generations per load. The text encoder timing varied heavily across these runs (`16.9s`, `29.5s`, `32.4s`, `22.2s`), so total runtime comparisons need at least repeated samples before drawing conclusions about the encoder path.
+Insight: pinned dynamic offloads on Ubuntu native strongly improve denoise (`~13s` vs standard Diffusers `~36.7s`), but the cold setup cost makes single-generation Pass 1 roughly equal to the standard runner (`37.7s` vs `38.0s`). This means dynamic offloads should pay off most clearly for warm/server-style runs or multiple generations per load. The text encoder timing varied heavily across these runs (`16.9s`, `29.5s`, `32.4s`, `22.2s`), so total runtime comparisons need at least repeated samples before drawing conclusions about the encoder path.
 
 Additional Ubuntu native preset probes:
 
@@ -1098,15 +1098,15 @@ Additional Ubuntu native preset probes:
 | `ubuntu_6` | Text encoder stream on | `one_shot_fast`, text encoder stream on, pinned weights | `16.6s` | `11.5440s` | `12.9409s` | `26.1s` | `43.7s` |
 | `ubuntu_7` | Intended low-RAM check | stream off, pinned weights, but effective resident set still matched `6 GB`/11 blocks | `24.3s` | `18.9552s` | `13.0583s` | `38.4s` | `64.9s` |
 
-Insight: on Ubuntu native, `DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM=1` works and is currently the fastest full-run path. The best run was `ubuntu_6` at `43.7s` total, with Pass 1 only `26.1s`. This is much faster than the earlier ComfyUI reference total (`72.11s`) and shows that Linux native plus pinned dynamic weights is the strongest platform so far. The intended low-RAM test needs to be repeated with explicit resident budget cleanup, because `ubuntu_7` still selected the same 11 resident modules and moved `5.5077 GB`, so it did not validate a true lower-budget profile.
+Insight: on Ubuntu native, `DDO_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM=1` works and is currently the fastest full-run path. The best run was `ubuntu_6` at `43.7s` total, with Pass 1 only `26.1s`. This is much faster than the earlier ComfyUI reference total (`72.11s`) and shows that Linux native plus pinned dynamic offloads is the strongest platform so far. The intended low-RAM test needs to be repeated with explicit resident budget cleanup, because `ubuntu_7` still selected the same 11 resident modules and moved `5.5077 GB`, so it did not validate a true lower-budget profile.
 
-Architecture note: dynamic weights presets now live with the `dynamic_weights` manager rather than in the runner. The runner resolves `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET=auto` through that manager and then passes explicit parameters to `DynamicWeightsConfig`. Resident module presets use `auto`, which lets the manager infer repeated module groups from the PyTorch module graph instead of hardcoding LTX-specific names. This keeps the script thin and makes the policy easier to port toward a Diffusers-native design later.
+Architecture note: dynamic offloads presets now live with the `dynamic_offload` manager rather than in the runner. The runner resolves `DDO_PRESET=auto` through that manager and then passes explicit parameters to `DynamicOffloadConfig`. Resident module presets use `auto`, which lets the manager infer repeated module groups from the PyTorch module graph instead of hardcoding LTX-specific names. This keeps the script thin and makes the policy easier to port toward a Diffusers-native design later.
 
 Windows auto preset validation:
 
 | Run | Key settings | Dynamic setup | Denoise | Pass 1 | Peak VRAM | Peak RAM |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Windows auto | `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET=auto`, standby purge before transformer | `31.9337s` | `14.5646s` | `56.9s` | `6.77 GB` | `27.36 GB` |
+| Windows auto | `DDO_PRESET=auto`, standby purge before transformer | `31.9337s` | `14.5646s` | `56.9s` | `6.77 GB` | `27.36 GB` |
 
 Insight: `auto` resolved to the Windows fast path and inferred `resolved_resident_module_patterns=['^transformer_blocks\\.\\d+$']` from the module graph, selecting the same 11 resident modules as the previous hand-tuned path. This preserves the best Windows denoise behavior while removing the LTX-specific resident-module regex from the preset policy.
 
@@ -1120,32 +1120,32 @@ Insight: partial pinning is not a good short-run tradeoff on Windows. It saved o
 
 ## Generic Dynamic Weights Naming
 
-The dynamic weights runtime uses generic `DIFFUSERS_DYNAMIC_WEIGHTS_*` environment names. Presets are expanded
-internally by the manager, and the runner uses `DIFFUSERS_RUNNER_*` for script controls.
+The dynamic offloads runtime uses generic `DDO_*` environment names. Presets are expanded
+internally by the manager, and the runner uses `DDO_RUNNER_*` for script controls.
 
 This is the first migration step toward a model-agnostic Diffusers-style loader/runtime. LTX-specific names remain only where the current runner, model classes, or historical benchmark records are still explicitly tied to the LTX image experiment.
 
 ## Config-Driven Dynamic Weights Loading
 
-The modular runner now loads the transformer through `from_pretrained_with_dynamic_weights(...)`, which delegates to Diffusers `AutoModel.from_pretrained(...)` when no explicit loader is provided. This preserves the Diffusers convention of resolving the model class from `_class_name` in `config.json` instead of hardcoding the component class at the call site.
+The modular runner now loads the transformer through `from_pretrained_with_dynamic_offload(...)`, which delegates to Diffusers `AutoModel.from_pretrained(...)` when no explicit loader is provided. This preserves the Diffusers convention of resolving the model class from `_class_name` in `config.json` instead of hardcoding the component class at the call site.
 
-For this step the wrapper still uses the normal Diffusers loading path and applies the dynamic-weights hook afterward. That keeps behavior comparable with prior benchmarks while establishing the API boundary needed for a future loader-backed `DynamicWeightStore`.
+For this step the wrapper still uses the normal Diffusers loading path and applies the dynamic-weights hook afterward. That keeps behavior comparable with prior benchmarks while establishing the API boundary needed for a future loader-backed `DynamicOffloadStore`.
 
 ## Dynamic Weights Profile Output
 
-`DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE=1` enables the printed `[dynamic-weights-profile]` block. That flag controls
-the detailed dynamic weights profile, such as resident modules and copy breakdowns, and defaults to `0` to keep
+`DDO_SHOW_PROFILE=1` enables the printed `[dynamic-weights-profile]` block. That flag controls
+the detailed dynamic offloads profile, such as resident modules and copy breakdowns, and defaults to `0` to keep
 benchmark output compact.
 
-Runner-level metric output uses generic `DIFFUSERS_RUNNER_*` names:
+Runner-level metric output uses generic `DDO_RUNNER_*` names:
 
-- `DIFFUSERS_RUNNER_METRICS_LEVEL=0`: quiet console metrics and no metrics JSON.
-- `DIFFUSERS_RUNNER_METRICS_LEVEL=1`: show console timings/events/denoise steps, but do not save metrics JSON.
-- `DIFFUSERS_RUNNER_METRICS_LEVEL=2`: show console timings and save metrics JSON.
-- `DIFFUSERS_RUNNER_SAVE_METRICS=1`: save metrics JSON even when the metrics level is `0` or `1`.
-- `DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE=1`: additionally print the compact `[dynamic-weights] setup=...` line during setup.
+- `DDO_RUNNER_METRICS_LEVEL=0`: quiet console metrics and no metrics JSON.
+- `DDO_RUNNER_METRICS_LEVEL=1`: show console timings/events/denoise steps, but do not save metrics JSON.
+- `DDO_RUNNER_METRICS_LEVEL=2`: show console timings and save metrics JSON.
+- `DDO_RUNNER_SAVE_METRICS=1`: save metrics JSON even when the metrics level is `0` or `1`.
+- `DDO_VERBOSE=1`: additionally print the compact `[dynamic-weights] setup=...` line during setup.
 
-New benchmark commands should use `DIFFUSERS_DYNAMIC_WEIGHTS_*` for the manager and `DIFFUSERS_RUNNER_*` for
+New benchmark commands should use `DDO_*` for the manager and `DDO_RUNNER_*` for
 script/runtime controls.
 
 ## Current Windows Baseline
@@ -1156,27 +1156,27 @@ Latest Windows real-prompt baseline after the generic environment rename and com
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Windows auto, standby purge before run and before transformer | `84.9s` | `31.3680s` | `14.5250s` | `1.6361s/it` | `56.6s` | `6.73 GB` | `27.36 GB` |
 
-Insight: the denoise phase is back in the best observed range for Windows. The remaining cold-start target is dynamic weights setup, especially eager pinned CPU linear weights plus resident module placement. Partial pin budgets are currently not useful for 8-step Windows runs because they save setup time but make runtime copies much slower.
+Insight: the denoise phase is back in the best observed range for Windows. The remaining cold-start target is dynamic offloads setup, especially eager pinned CPU linear weights plus resident module placement. Partial pin budgets are currently not useful for 8-step Windows runs because they save setup time but make runtime copies much slower.
 
 ## Overlapped Pin Setup Probe
 
 The manager now has an opt-in setup overlap probe:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_OVERLAP_PIN_SETUP="1"
+$env:DDO_OVERLAP_PIN_SETUP="1"
 ```
 
-This starts eager pinning of streamed linear weights while the manager moves resident modules and small tensors to the execution device. It is disabled by default and should be tested only against the current Windows baseline. A successful run should keep denoise near `14-15s` while reducing `build_dynamic_weights_plan` below the current `~31s` baseline.
+This starts eager pinning of streamed linear weights while the manager moves resident modules and small tensors to the execution device. It is disabled by default and should be tested only against the current Windows baseline. A successful run should keep denoise near `14-15s` while reducing `build_dynamic_offload_plan` below the current `~31s` baseline.
 
-First Windows result: no win. `build_dynamic_weights_plan` was `32.0385s` and denoise stayed healthy at `14.5994s`, so the overlap probe should remain disabled by default.
+First Windows result: no win. `build_dynamic_offload_plan` was `32.0385s` and denoise stayed healthy at `14.5994s`, so the overlap probe should remain disabled by default.
 
 ## Text Encoder Dynamic Weights Probe
 
-The dynamic weights manager now understands both `nn.Linear` and `nn.Embedding`, which makes it possible to test the same generic runtime against text encoders. This is still opt-in:
+The dynamic offloads manager now understands both `nn.Linear` and `nn.Embedding`, which makes it possible to test the same generic runtime against text encoders. This is still opt-in:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS="1"
-$env:DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD="0"
+$env:DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD="1"
+$env:DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD="0"
 ```
 
 The target comparison is the Windows text encoder baseline, where `encode_prompt_call` is still around `80-85s` with Diffusers group offload. This probe is successful only if the full Pass 0 time drops enough to offset any dynamic setup cost added before prompt encoding.
@@ -1187,16 +1187,16 @@ First Windows text encoder probe:
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Dynamic weights on full text encoder | `31.0953s` | `12.3552s` | `52.6s` | `6.97 GB` | `46.76 GB` | Prompt encode improved a lot, but memory pressure caused a fatal failure while loading the transformer. |
 
-Insight: applying the manager to the whole text encoder also staged/pinned `model.vision_tower.*`, which is not needed for this prompt-text path. The runner now skips `vision_tower` by default for the text encoder probe through `DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULE_PATTERNS`. Override it with an empty value only when testing a model/path that actually needs vision modules during prompt encoding.
+Insight: applying the manager to the whole text encoder also staged/pinned `model.vision_tower.*`, which is not needed for this prompt-text path. The runner now skips `vision_tower` by default for the text encoder probe through `DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULE_PATTERNS`. Override it with an empty value only when testing a model/path that actually needs vision modules during prompt encoding.
 
-Follow-up safety note: the text encoder probe now forcibly disables `DIFFUSERS_DYNAMIC_WEIGHTS_OVERLAP_PIN_SETUP` for the text encoder component. The overlap setup probe showed no transformer benefit and is too risky for this path because the text encoder has a larger and more mixed module tree.
+Follow-up safety note: the text encoder probe now forcibly disables `DDO_OVERLAP_PIN_SETUP` for the text encoder component. The overlap setup probe showed no transformer benefit and is too risky for this path because the text encoder has a larger and more mixed module tree.
 
 Second safety adjustment: the text encoder dynamic probe now has component-specific memory settings. It defaults to no pinned CPU memory and a smaller resident module budget so it does not inherit the transformer-optimized full-pin profile:
 
 ```powershell
-$env:DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY="0"
-$env:DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB="3"
-$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER="1"
+$env:DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY="0"
+$env:DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB="3"
+$env:DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER="1"
 ```
 
 Use this to check whether the encode-speed gain survives without leaving enough host/driver memory pressure to crash transformer loading.
@@ -1207,7 +1207,7 @@ Follow-up Windows result with conservative text encoder dynamic settings:
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | Text encoder dynamic, no pinned CPU memory, `3 GB` resident module budget, standby purge after text encoder and before transformer | `3.8537s` | `43.8340s` | `51.0s` | `54.1063s` | `161.6654s` | `232.4s` | `6.97 GB` | `48.79 GB` | Not viable for the Windows baseline. |
 
-Insight: disabling text-encoder pinned CPU memory avoids the fatal transformer-load crash, but moves a large cost into prompt encoding (`copy_seconds=42.6200s`) and still leaves the next transformer pass in a bad memory/performance state. The transformer entered denoise at `8.90 GiB` allocated and stabilized around `19-21s/it`, far worse than the current Windows transformer baseline of about `14-15s` total denoise. For now, keep text encoder dynamic weights as an explicit probe only; the recommended Windows baseline should use Diffusers text encoder group offload and reserve dynamic weights for the transformer.
+Insight: disabling text-encoder pinned CPU memory avoids the fatal transformer-load crash, but moves a large cost into prompt encoding (`copy_seconds=42.6200s`) and still leaves the next transformer pass in a bad memory/performance state. The transformer entered denoise at `8.90 GiB` allocated and stabilized around `19-21s/it`, far worse than the current Windows transformer baseline of about `14-15s` total denoise. For now, keep text encoder dynamic offloads as an explicit probe only; the recommended Windows baseline should use Diffusers text encoder group offload and reserve dynamic offloads for the transformer.
 
 After explicitly releasing the text encoder dynamic hook/config before `flush()` and the post-text-encoder standby purge, the same probe stopped degrading the transformer:
 
@@ -1215,7 +1215,7 @@ After explicitly releasing the text encoder dynamic hook/config before `flush()`
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | Text encoder dynamic, no pinned CPU memory, `3 GB` resident module budget, hook reference released before cleanup | `3.8299s` | `46.2332s` | `55.9s` | `29.8898s` | `14.3782s` | `52.2s` | `6.32 GB` | `25.33 GB` | Transformer returned to the healthy Windows baseline. |
 
-Insight: the cleanup order matters. The text encoder dynamic path is still not faster than desired because prompt encoding spends `45.4250s` copying `20.8677 GB`, but releasing the hook before cleanup prevents the next transformer pass from inheriting the previous bad memory state. This makes text encoder dynamic weights a viable opt-in probe again, with the next target being reducing text-encoder runtime copy cost rather than fixing transformer contamination.
+Insight: the cleanup order matters. The text encoder dynamic path is still not faster than desired because prompt encoding spends `45.4250s` copying `20.8677 GB`, but releasing the hook before cleanup prevents the next transformer pass from inheriting the previous bad memory state. This makes text encoder dynamic offloads a viable opt-in probe again, with the next target being reducing text-encoder runtime copy cost rather than fixing transformer contamination.
 
 ## ComfyUI Text Encoder Dynamic VRAM Probe
 
@@ -1240,13 +1240,13 @@ Insight: ComfyUI is not making the text encoder fast by avoiding the large encod
 
 ## Text Encoder Full Pin Probe
 
-Windows probe with text encoder dynamic weights, `vision_tower` skipped, pinned CPU memory enabled for the text encoder, and standby purge after prompt encoding:
+Windows probe with text encoder dynamic offloads, `vision_tower` skipped, pinned CPU memory enabled for the text encoder, and standby purge after prompt encoding:
 
 | Mode | Text setup | Encode call | Pass 0 | Transformer setup | Transformer denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | Text encoder dynamic, pinned CPU memory, `3 GB` resident module budget, standby purge after text encoder and before transformer | `30.5638s` | `12.9208s` | `54.1s` | `47.1080s` | `15.6117s` | `76.6s` | `6.82 GB` | `45.23 GB` | Encoder call became fast, transformer runtime stayed healthy, but setup costs are too high. |
 
-Insight: pinned text-encoder dynamic weights moves the prompt encode call from the previous `~80s` baseline down to `~13s`, matching the direction suggested by the ComfyUI probe. However, full text-encoder pinning costs about `27s` during setup and appears to make the following transformer setup less stable/expensive (`47s` vs the current `~31s` transformer baseline). This proves the text encoder path can be accelerated, but it needs a narrower policy than full pinning: likely pin only embeddings and/or the largest MLP weights that dominate runtime copies, while keeping enough memory headroom for the transformer setup.
+Insight: pinned text-encoder dynamic offloads moves the prompt encode call from the previous `~80s` baseline down to `~13s`, matching the direction suggested by the ComfyUI probe. However, full text-encoder pinning costs about `27s` during setup and appears to make the following transformer setup less stable/expensive (`47s` vs the current `~31s` transformer baseline). This proves the text encoder path can be accelerated, but it needs a narrower policy than full pinning: likely pin only embeddings and/or the largest MLP weights that dominate runtime copies, while keeping enough memory headroom for the transformer setup.
 
 Follow-up Windows text encoder partial pin probe:
 
@@ -1262,7 +1262,7 @@ Second partial pin probe:
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | Text encoder dynamic, pinned CPU memory, `16 GB` pinned weight budget, `largest` pin selection, `3 GB` resident module budget | `19.9521s` | `41.4448s` | `70.8s` | `44.6919s` | `15.3801s` | `73.0s` | `6.89 GB` | `41.94 GB` | Better than the `8 GB` partial pin, but still worse than full pin and not competitive. |
 
-Insight: the text encoder shows a sharp threshold behavior. Pinning `8 GB` selected `43` weights and left `55.6s` of runtime copies; pinning `16 GB` selected `115` weights and still left `37.3s` of runtime copies. Full pinning selected `289` weights and reduced runtime copy time to near zero. A fixed GB budget is therefore a weak control for this component. The manager now supports `DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO` plus the runner-specific `DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO` so experiments can budget by a fraction of streamable candidate weight size instead of an absolute amount.
+Insight: the text encoder shows a sharp threshold behavior. Pinning `8 GB` selected `43` weights and left `55.6s` of runtime copies; pinning `16 GB` selected `115` weights and still left `37.3s` of runtime copies. Full pinning selected `289` weights and reduced runtime copy time to near zero. A fixed GB budget is therefore a weak control for this component. The manager now supports `DDO_PIN_WEIGHT_BUDGET_RATIO` plus the runner-specific `DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO` so experiments can budget by a fraction of streamable candidate weight size instead of an absolute amount.
 
 ## Text Encoder Ratio Pin Probe
 
@@ -1274,20 +1274,20 @@ Windows probe using proportional text-encoder pinned weight budget with `largest
 
 Details: the text encoder pinned `217` linear/embedding weights, with `19.8129 GB` in pinned linear weights and `2.9226 GB` in resident budget modules. Runtime copy remained `14.8410s / 20.8677 GB`, so the ratio did reduce encode cost versus the `8 GB` and `16 GB` partial probes, but not enough to beat the current group-offload baseline once setup is included.
 
-Insight: dynamic budget by component size is the right control surface, but text encoder acceleration needs a smarter selection policy than "largest first" alone. Near-full pinning reduces runtime copy sharply, while partial pinning leaves many repeated runtime transfers. For Windows one-shot runs, keep the transformer dynamic path as the recommended baseline and treat text encoder dynamic weights as a tuning probe until setup can be reduced or the pinned subset can be selected by actual runtime reuse/cost rather than raw tensor size.
+Insight: dynamic budget by component size is the right control surface, but text encoder acceleration needs a smarter selection policy than "largest first" alone. Near-full pinning reduces runtime copy sharply, while partial pinning leaves many repeated runtime transfers. For Windows one-shot runs, keep the transformer dynamic path as the recommended baseline and treat text encoder dynamic offloads as a tuning probe until setup can be reduced or the pinned subset can be selected by actual runtime reuse/cost rather than raw tensor size.
 
 ## Dynamic Weights Load Planner V1
 
 The manager now has a planner-style budget policy used by the main preset:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY="balanced"
+$env:DDO_AUTO_BUDGET_POLICY="balanced"
 ```
 
 or, normally:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PRESET="one_shot_fast"
+$env:DDO_PRESET="one_shot_fast"
 ```
 
 `one_shot_fast` is now the stable/default path. The planner derives budgets from the actual loaded component and the
@@ -1295,8 +1295,8 @@ available system RAM:
 
 | Decision | V1 behavior |
 | --- | --- |
-| Resident module budget | `25%` of matching resident module candidates, capped by `DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB`, default `6 GB` |
-| Pin weight budget | `100%` when streamable candidates are `<=8 GB`, `85%` when `<=16 GB`, otherwise `75%`; optionally capped by `DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB` |
+| Resident module budget | `25%` of matching resident module candidates, capped by `DDO_MAX_RESIDENT_MODULE_BUDGET_GB`, default `6 GB` |
+| Pin weight budget | `100%` when streamable candidates are `<=8 GB`, `85%` when `<=16 GB`, otherwise `75%`; optionally capped by `DDO_MAX_PIN_WEIGHT_BUDGET_GB` |
 | RAM safety | Pinning is skipped when usable system RAM is below the required model/resident/headroom budget |
 | Selection | Still uses the configured `first`, `spread`, or `largest` ordering |
 

@@ -25,14 +25,14 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
     LTX2ImageDenoiseStep,
     LTX2ImagePrepareLatentsStep,
 )
-from custom_blocks.ltx2_image.memory import (
-    DynamicWeightsSettings,
-    apply_dynamic_weights,
-    build_dynamic_weights_event_payload,
-    format_dynamic_weights_presets,
-    from_pretrained_with_dynamic_weights,
+from diffusers_dynamic_offloader import (
+    DynamicOffloadSettings,
+    apply_dynamic_offload,
+    build_dynamic_offload_event_payload,
+    format_dynamic_offload_presets,
+    from_pretrained_with_dynamic_offload,
     is_wsl_environment,
-    remove_dynamic_weights,
+    remove_dynamic_offload,
 )
 from inference_utils import RunTracker, flush
 
@@ -46,45 +46,45 @@ def parse_bool_env(name: str, default: str = "0") -> bool:
 
 
 def parse_metrics_level() -> int:
-    value = env_value("DIFFUSERS_RUNNER_METRICS_LEVEL", "0").strip()
+    value = env_value("DDO_RUNNER_METRICS_LEVEL", "0").strip()
     try:
         level = int(value)
     except ValueError as exc:
         raise ValueError(
-            f"Invalid DIFFUSERS_RUNNER_METRICS_LEVEL={value!r}. "
+            f"Invalid DDO_RUNNER_METRICS_LEVEL={value!r}. "
             "Valid values: 0, 1, 2."
         ) from exc
     if level not in {0, 1, 2}:
         raise ValueError(
-            f"Invalid DIFFUSERS_RUNNER_METRICS_LEVEL={value!r}. "
+            f"Invalid DDO_RUNNER_METRICS_LEVEL={value!r}. "
             "Valid values: 0, 1, 2."
         )
     return level
 
 
 RUNNING_ON_WSL = is_wsl_environment()
-DEVICE = env_value("DIFFUSERS_RUNNER_DEVICE", "cuda:0")
+DEVICE = env_value("DDO_RUNNER_DEVICE", "cuda:0")
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_modular"
-MODEL_PATH = env_value("DIFFUSERS_RUNNER_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
+MODEL_PATH = env_value("DDO_RUNNER_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
-MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("DIFFUSERS_RUNNER_LOW_CPU_MEM_USAGE", "1")
-DYNAMIC_WEIGHTS_SETTINGS = DynamicWeightsSettings.from_env(
+MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("DDO_RUNNER_LOW_CPU_MEM_USAGE", "1")
+DYNAMIC_OFFLOAD_SETTINGS = DynamicOffloadSettings.from_env(
     execution_device=DEVICE,
     offload_device=OFFLOAD_DEVICE,
     running_on_wsl=RUNNING_ON_WSL,
     default_preset="auto",
 )
-REQUESTED_DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.requested_preset
-DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.effective_preset
+REQUESTED_DYNAMIC_OFFLOAD_PRESET = DYNAMIC_OFFLOAD_SETTINGS.requested_preset
+DYNAMIC_OFFLOAD_PRESET = DYNAMIC_OFFLOAD_SETTINGS.effective_preset
 
 
 def preset_env(name: str, default: str = "") -> str:
     if name in os.environ:
         return os.environ[name]
-    value = DYNAMIC_WEIGHTS_SETTINGS.preset_value(name)
+    value = DYNAMIC_OFFLOAD_SETTINGS.preset_value(name)
     if value != "":
         return value
     return default
@@ -102,107 +102,107 @@ def parse_float_preset_env(name: str, default: str = "0.0") -> float:
     return float(preset_env(name, default))
 
 
-AUTO_CPU_OFFLOAD = parse_bool_env("DIFFUSERS_RUNNER_AUTO_CPU_OFFLOAD")
-TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
-TEXT_ENCODER_DYNAMIC_WEIGHTS = parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS")
-TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = parse_bool_preset_env(
-    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY",
+AUTO_CPU_OFFLOAD = parse_bool_env("DDO_RUNNER_AUTO_CPU_OFFLOAD")
+TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
+TEXT_ENCODER_DYNAMIC_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD")
+TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY = parse_bool_preset_env(
+    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY",
     "0",
 )
-TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
-    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB",
+TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
+    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB",
     "3.0",
 )
-TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
-    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB",
+TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
+    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB",
     "0.0",
 )
-TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO = parse_float_preset_env(
-    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO",
+TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO = parse_float_preset_env(
+    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO",
     "0.0",
 )
-TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION = preset_env(
-    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION",
-    DYNAMIC_WEIGHTS_SETTINGS.config.pin_weight_selection,
+TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION = preset_env(
+    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION",
+    DYNAMIC_OFFLOAD_SETTINGS.config.pin_weight_selection,
 ).lower()
-TEXT_ENCODER_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY = preset_env(
-    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY",
-    DYNAMIC_WEIGHTS_SETTINGS.config.auto_budget_policy,
+TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY = preset_env(
+    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY",
+    DYNAMIC_OFFLOAD_SETTINGS.config.auto_budget_policy,
 ).lower()
-TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
-    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB",
-    str(DYNAMIC_WEIGHTS_SETTINGS.config.max_resident_module_budget_gb),
+TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
+    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB",
+    str(DYNAMIC_OFFLOAD_SETTINGS.config.max_resident_module_budget_gb),
 )
-TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
-    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB",
-    str(DYNAMIC_WEIGHTS_SETTINGS.config.max_pin_weight_budget_gb),
+TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
+    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB",
+    str(DYNAMIC_OFFLOAD_SETTINGS.config.max_pin_weight_budget_gb),
 )
-TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES = parse_pattern_list_env(
-    "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULE_PATTERNS",
+TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES = parse_pattern_list_env(
+    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULE_PATTERNS",
     r"(^|\.)vision_tower(\.|$)",
 )
-TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD")
-TRANSFORMER_MEMORY_MANAGER = preset_env("DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER", "off").lower()
-DYNAMIC_WEIGHTS_CONFIG = DYNAMIC_WEIGHTS_SETTINGS.config
-DYNAMIC_WEIGHTS_EXECUTION_MODE = DYNAMIC_WEIGHTS_CONFIG.execution_mode
-DYNAMIC_WEIGHTS_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.requested_pin_cpu_memory
-DYNAMIC_WEIGHTS_SHOW_PROFILE = DYNAMIC_WEIGHTS_CONFIG.show_profile
-DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_WEIGHTS_SETTINGS.effective_pin_cpu_memory
-PRE_VAE_CLEANUP_REPEATS = int(preset_env("DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
-RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("DIFFUSERS_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN")
-PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
-PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER")
-PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
-PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_RUN")
+TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD")
+TRANSFORMER_MEMORY_MANAGER = preset_env("DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER", "off").lower()
+DYNAMIC_OFFLOAD_CONFIG = DYNAMIC_OFFLOAD_SETTINGS.config
+DYNAMIC_OFFLOAD_EXECUTION_MODE = DYNAMIC_OFFLOAD_CONFIG.execution_mode
+DYNAMIC_OFFLOAD_PIN_CPU_MEMORY = DYNAMIC_OFFLOAD_SETTINGS.requested_pin_cpu_memory
+DYNAMIC_OFFLOAD_SHOW_PROFILE = DYNAMIC_OFFLOAD_CONFIG.show_profile
+DYNAMIC_OFFLOAD_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_OFFLOAD_SETTINGS.effective_pin_cpu_memory
+PRE_VAE_CLEANUP_REPEATS = int(preset_env("DDO_RUNNER_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
+RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("DDO_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN")
+PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
+PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER")
+PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
+PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_RUN")
 METRICS_LEVEL = parse_metrics_level()
-SHOW_METRICS = METRICS_LEVEL >= 1 or parse_bool_env("DIFFUSERS_RUNNER_SHOW_METRICS")
-SAVE_METRICS = METRICS_LEVEL >= 2 or parse_bool_env("DIFFUSERS_RUNNER_SAVE_METRICS")
-ATTENTION_BACKEND = preset_env("DIFFUSERS_RUNNER_ATTENTION_BACKEND", "native").lower()
+SHOW_METRICS = METRICS_LEVEL >= 1 or parse_bool_env("DDO_RUNNER_SHOW_METRICS")
+SAVE_METRICS = METRICS_LEVEL >= 2 or parse_bool_env("DDO_RUNNER_SAVE_METRICS")
+ATTENTION_BACKEND = preset_env("DDO_RUNNER_ATTENTION_BACKEND", "native").lower()
 FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
 DROP_TRIVIAL_ATTENTION_MASK = (
-    parse_bool_env("DIFFUSERS_RUNNER_DROP_TRIVIAL_ATTENTION_MASK")
+    parse_bool_env("DDO_RUNNER_DROP_TRIVIAL_ATTENTION_MASK")
     or ATTENTION_BACKEND in FLASH_COMPATIBLE_ATTENTION_BACKENDS
 )
 GROUP_OFFLOAD_CONFIG = {
     "mode": "components_manager_auto_cpu_offload" if AUTO_CPU_OFFLOAD else "disabled",
     "device": DEVICE,
     "text_encoder_group_offload": TEXT_ENCODER_GROUP_OFFLOAD,
-    "text_encoder_offload_type": preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE", "leaf_level"),
-    "text_encoder_use_stream": parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM", "1"),
-    "text_encoder_record_stream": parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_RECORD_STREAM"),
-    "text_encoder_num_blocks_per_group": int(preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
+    "text_encoder_offload_type": preset_env("DDO_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE", "leaf_level"),
+    "text_encoder_use_stream": parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM", "1"),
+    "text_encoder_record_stream": parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_OFFLOAD_RECORD_STREAM"),
+    "text_encoder_num_blocks_per_group": int(preset_env("DDO_RUNNER_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
     "transformer_group_offload": TRANSFORMER_GROUP_OFFLOAD,
-    "transformer_offload_type": preset_env("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
-    "transformer_use_stream": parse_bool_preset_env("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_STREAM", "1"),
-    "transformer_record_stream": parse_bool_preset_env("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_RECORD_STREAM"),
+    "transformer_offload_type": preset_env("DDO_RUNNER_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
+    "transformer_use_stream": parse_bool_preset_env("DDO_RUNNER_TRANSFORMER_OFFLOAD_STREAM", "1"),
+    "transformer_record_stream": parse_bool_preset_env("DDO_RUNNER_TRANSFORMER_OFFLOAD_RECORD_STREAM"),
     "transformer_low_cpu_mem_usage": parse_bool_preset_env(
-        "DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_LOW_CPU_MEM_USAGE",
+        "DDO_RUNNER_TRANSFORMER_OFFLOAD_LOW_CPU_MEM_USAGE",
         "1" if MODEL_LOW_CPU_MEM_USAGE else "0",
     ),
-    "transformer_num_blocks_per_group": int(preset_env("DIFFUSERS_RUNNER_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
+    "transformer_num_blocks_per_group": int(preset_env("DDO_RUNNER_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
 }
 
-WIDTH = int(env_value("DIFFUSERS_RUNNER_WIDTH", "1280"))
-HEIGHT = int(env_value("DIFFUSERS_RUNNER_HEIGHT", "704"))
-SEED = int(env_value("DIFFUSERS_RUNNER_SEED", "43"))
-NUM_INFERENCE_STEPS = int(env_value("DIFFUSERS_RUNNER_STEPS", "8"))
-GUIDANCE_SCALE = float(env_value("DIFFUSERS_RUNNER_GUIDANCE_SCALE", "1.0"))
-GUIDANCE_RESCALE = float(env_value("DIFFUSERS_RUNNER_GUIDANCE_RESCALE", "0.7"))
-DECODE_TIMESTEP = float(env_value("DIFFUSERS_RUNNER_DECODE_TIMESTEP", "0.0"))
-DECODE_NOISE_SCALE_ENV = env_value("DIFFUSERS_RUNNER_DECODE_NOISE_SCALE")
+WIDTH = int(env_value("DDO_RUNNER_WIDTH", "1280"))
+HEIGHT = int(env_value("DDO_RUNNER_HEIGHT", "704"))
+SEED = int(env_value("DDO_RUNNER_SEED", "43"))
+NUM_INFERENCE_STEPS = int(env_value("DDO_RUNNER_STEPS", "8"))
+GUIDANCE_SCALE = float(env_value("DDO_RUNNER_GUIDANCE_SCALE", "1.0"))
+GUIDANCE_RESCALE = float(env_value("DDO_RUNNER_GUIDANCE_RESCALE", "0.7"))
+DECODE_TIMESTEP = float(env_value("DDO_RUNNER_DECODE_TIMESTEP", "0.0"))
+DECODE_NOISE_SCALE_ENV = env_value("DDO_RUNNER_DECODE_NOISE_SCALE")
 DECODE_NOISE_SCALE = None if DECODE_NOISE_SCALE_ENV in (None, "") else float(DECODE_NOISE_SCALE_ENV)
-PAG_ENABLED = parse_bool_env("DIFFUSERS_RUNNER_PAG_ENABLED")
-PAG_SCALE = float(env_value("DIFFUSERS_RUNNER_PAG_SCALE", "0.2"))
-PAG_APPLIED_LAYERS = [int(x) for x in env_value("DIFFUSERS_RUNNER_PAG_LAYERS", "28").split(",") if x]
-FAKE_PROMPT_EMBEDS = parse_bool_env("DIFFUSERS_RUNNER_FAKE_PROMPT")
-GENERATION_REPEATS = max(1, int(preset_env("DIFFUSERS_RUNNER_GENERATION_REPEATS", "1")))
-TRANSFORMER_PREPARE_REPEATS = max(1, int(preset_env("DIFFUSERS_RUNNER_TRANSFORMER_PREPARE_REPEATS", "1")))
+PAG_ENABLED = parse_bool_env("DDO_RUNNER_PAG_ENABLED")
+PAG_SCALE = float(env_value("DDO_RUNNER_PAG_SCALE", "0.2"))
+PAG_APPLIED_LAYERS = [int(x) for x in env_value("DDO_RUNNER_PAG_LAYERS", "28").split(",") if x]
+FAKE_PROMPT_EMBEDS = parse_bool_env("DDO_RUNNER_FAKE_PROMPT")
+GENERATION_REPEATS = max(1, int(preset_env("DDO_RUNNER_GENERATION_REPEATS", "1")))
+TRANSFORMER_PREPARE_REPEATS = max(1, int(preset_env("DDO_RUNNER_TRANSFORMER_PREPARE_REPEATS", "1")))
 
 prompt = env_value(
-    "DIFFUSERS_RUNNER_PROMPT",
+    "DDO_RUNNER_PROMPT",
     "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy.",
 )
-negative_prompt = env_value("DIFFUSERS_RUNNER_NEGATIVE_PROMPT", "")
+negative_prompt = env_value("DDO_RUNNER_NEGATIVE_PROMPT", "")
 
 
 def build_run_slug(seed):
@@ -248,7 +248,7 @@ def get_attention_backend():
     except ValueError as exc:
         valid = ", ".join(backend.value for backend in AttentionBackendName)
         raise ValueError(
-            f"Invalid DIFFUSERS_RUNNER_ATTENTION_BACKEND={ATTENTION_BACKEND!r}. "
+            f"Invalid DDO_RUNNER_ATTENTION_BACKEND={ATTENTION_BACKEND!r}. "
             f"Valid values: {valid}"
         ) from exc
 
@@ -273,7 +273,7 @@ def install_trivial_mask_flash_wrapper():
         def wrapped_backend_fn(*args, _backend_fn=backend_fn, _backend=backend, **kwargs):
             attn_mask = kwargs.get("attn_mask")
             if _is_trivial_zero_attention_mask(attn_mask):
-                if env_value("DIFFUSERS_RUNNER_LOG_ATTENTION_MASK", "0") == "1":
+                if env_value("DDO_RUNNER_LOG_ATTENTION_MASK", "0") == "1":
                     print(f"  [attention_mask] dropping trivial mask inside backend {_backend.value}", flush=True)
                 kwargs["attn_mask"] = None
             return _backend_fn(*args, **kwargs)
@@ -461,8 +461,8 @@ def denoise_progress_callback(components, step_index, timestep, callback_kwargs)
 
 
 def main():
-    if parse_bool_env("DIFFUSERS_RUNNER_PRINT_DYNAMIC_WEIGHTS_PRESETS"):
-        print(format_dynamic_weights_presets(default_preset="auto", running_on_wsl=RUNNING_ON_WSL))
+    if parse_bool_env("DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS"):
+        print(format_dynamic_offload_presets(default_preset="auto", running_on_wsl=RUNNING_ON_WSL))
         return
 
     seed = SEED or torch.randint(0, 2**32, (1,)).item()
@@ -492,16 +492,16 @@ def main():
         "pag_applied_layers": PAG_APPLIED_LAYERS if PAG_ENABLED else None,
         "dtype": str(DTYPE),
         "text_encoder_low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE,
-        "text_encoder_dynamic_weights": TEXT_ENCODER_DYNAMIC_WEIGHTS,
-        "text_encoder_dynamic_weights_pin_cpu_memory": TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
-        "text_encoder_dynamic_weights_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
-        "text_encoder_dynamic_weights_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
-        "text_encoder_dynamic_weights_pin_weight_budget_ratio": TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO,
-        "text_encoder_dynamic_weights_pin_weight_selection": TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
-        "text_encoder_dynamic_weights_auto_budget_policy": TEXT_ENCODER_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY,
-        "text_encoder_dynamic_weights_max_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB,
-        "text_encoder_dynamic_weights_max_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB,
-        "text_encoder_dynamic_weights_skip_modules": TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES,
+        "text_encoder_dynamic_offload": TEXT_ENCODER_DYNAMIC_OFFLOAD,
+        "text_encoder_dynamic_offload_pin_cpu_memory": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY,
+        "text_encoder_dynamic_offload_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB,
+        "text_encoder_dynamic_offload_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB,
+        "text_encoder_dynamic_offload_pin_weight_budget_ratio": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO,
+        "text_encoder_dynamic_offload_pin_weight_selection": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION,
+        "text_encoder_dynamic_offload_auto_budget_policy": TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY,
+        "text_encoder_dynamic_offload_max_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB,
+        "text_encoder_dynamic_offload_max_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB,
+        "text_encoder_dynamic_offload_skip_modules": TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES,
         "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
         "running_on_wsl": RUNNING_ON_WSL,
         "reset_dynamic_memory_after_run": RESET_DYNAMIC_MEMORY_AFTER_RUN,
@@ -514,7 +514,7 @@ def main():
         "save_metrics": SAVE_METRICS,
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
         "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
-        **DYNAMIC_WEIGHTS_SETTINGS.as_metrics(),
+        **DYNAMIC_OFFLOAD_SETTINGS.as_metrics(),
         "pre_vae_cleanup_repeats": PRE_VAE_CLEANUP_REPEATS,
         "attention_backend": ATTENTION_BACKEND,
         "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,
@@ -524,28 +524,28 @@ def main():
 
     flash_mask_wrapper_installed = install_trivial_mask_flash_wrapper()
     run_metrics["flash_trivial_mask_wrapper_installed"] = flash_mask_wrapper_installed
-    if DYNAMIC_WEIGHTS_PRESET:
-        if REQUESTED_DYNAMIC_WEIGHTS_PRESET == "auto":
-            print(f"Using dynamic weights preset: auto -> {DYNAMIC_WEIGHTS_PRESET}", flush=True)
+    if DYNAMIC_OFFLOAD_PRESET:
+        if REQUESTED_DYNAMIC_OFFLOAD_PRESET == "auto":
+            print(f"Using DDO preset: auto -> {DYNAMIC_OFFLOAD_PRESET}", flush=True)
         else:
-            print(f"Using dynamic weights preset: {DYNAMIC_WEIGHTS_PRESET}", flush=True)
-    if DYNAMIC_WEIGHTS_PIN_CPU_MEMORY and not DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY:
-        print("  [dynamic-weights] disabling pinned CPU memory on WSL; set DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0 to force it.", flush=True)
+            print(f"Using DDO preset: {DYNAMIC_OFFLOAD_PRESET}", flush=True)
+    if DYNAMIC_OFFLOAD_PIN_CPU_MEMORY and not DYNAMIC_OFFLOAD_EFFECTIVE_PIN_CPU_MEMORY:
+        print("  [dynamic-offload] disabling pinned CPU memory on WSL; set DDO_DISABLE_PIN_ON_WSL=0 to force it.", flush=True)
     text_encoder_route = (
-        "dynamic_weights"
-        if TEXT_ENCODER_DYNAMIC_WEIGHTS
+        "dynamic_offload"
+        if TEXT_ENCODER_DYNAMIC_OFFLOAD
         else "group_offload"
         if TEXT_ENCODER_GROUP_OFFLOAD
         else "cuda_to"
     )
-    transformer_route = "dynamic_weights" if DYNAMIC_WEIGHTS_SETTINGS.enabled else "standard"
+    transformer_route = "dynamic_offload" if DYNAMIC_OFFLOAD_SETTINGS.enabled else "standard"
     print(
         "  [runner] "
         f"text_encoder_route={text_encoder_route} "
         f"text_encoder_group_offload={TEXT_ENCODER_GROUP_OFFLOAD} "
-        f"text_encoder_dynamic_weights={TEXT_ENCODER_DYNAMIC_WEIGHTS} "
+        f"text_encoder_dynamic_offload={TEXT_ENCODER_DYNAMIC_OFFLOAD} "
         f"transformer_route={transformer_route} "
-        f"preset={DYNAMIC_WEIGHTS_PRESET or 'none'}",
+        f"preset={DYNAMIC_OFFLOAD_PRESET or 'none'}",
         flush=True,
     )
 
@@ -573,31 +573,31 @@ def main():
         record_event("load_text_encoder", time.time() - event_t0, source=MODEL_PATH)
 
         event_t0 = time.time()
-        text_encoder_dynamic_weights_hook = None
-        if TEXT_ENCODER_DYNAMIC_WEIGHTS:
-            text_encoder_dynamic_weights_config = replace(
-                DYNAMIC_WEIGHTS_CONFIG,
-                pin_cpu_memory=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY,
-                pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB,
-                pin_weight_budget_ratio=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO,
-                pin_weight_selection=TEXT_ENCODER_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION,
-                auto_budget_policy=TEXT_ENCODER_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY,
-                max_resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB,
-                max_pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB,
-                resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB,
+        text_encoder_dynamic_offload_hook = None
+        if TEXT_ENCODER_DYNAMIC_OFFLOAD:
+            text_encoder_dynamic_offload_config = replace(
+                DYNAMIC_OFFLOAD_CONFIG,
+                pin_cpu_memory=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY,
+                pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB,
+                pin_weight_budget_ratio=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO,
+                pin_weight_selection=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION,
+                auto_budget_policy=TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY,
+                max_resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB,
+                max_pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB,
+                resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB,
                 skip_modules_pattern=(
-                    *DYNAMIC_WEIGHTS_CONFIG.skip_modules_pattern,
-                    *TEXT_ENCODER_DYNAMIC_WEIGHTS_SKIP_MODULES,
+                    *DYNAMIC_OFFLOAD_CONFIG.skip_modules_pattern,
+                    *TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES,
                 ),
             )
-            text_encoder_dynamic_weights_hook = apply_dynamic_weights(text_encoder, text_encoder_dynamic_weights_config)
+            text_encoder_dynamic_offload_hook = apply_dynamic_offload(text_encoder, text_encoder_dynamic_offload_config)
             record_event(
-                "setup_text_encoder_dynamic_weights",
+                "setup_text_encoder_dynamic_offload",
                 time.time() - event_t0,
-                **build_dynamic_weights_event_payload(
-                    DYNAMIC_WEIGHTS_SETTINGS,
-                    text_encoder_dynamic_weights_hook.state,
-                    text_encoder_dynamic_weights_config,
+                **build_dynamic_offload_event_payload(
+                    DYNAMIC_OFFLOAD_SETTINGS,
+                    text_encoder_dynamic_offload_hook.state,
+                    text_encoder_dynamic_offload_config,
                 ),
             )
         elif TEXT_ENCODER_GROUP_OFFLOAD:
@@ -635,13 +635,13 @@ def main():
 
         prompt_embeds = prompt_state["prompt_embeds"].to(OFFLOAD_DEVICE)
         prompt_attention_mask = prompt_state["prompt_attention_mask"].to(OFFLOAD_DEVICE)
-        if text_encoder_dynamic_weights_hook is not None:
-            run_metrics["text_encoder_dynamic_weights_runtime_summary"] = text_encoder_dynamic_weights_hook.state.as_dict()
-            if DYNAMIC_WEIGHTS_SHOW_PROFILE:
-                text_encoder_dynamic_weights_hook.print_profile_summary()
-            remove_dynamic_weights(text_encoder)
-            text_encoder_dynamic_weights_hook = None
-            del text_encoder_dynamic_weights_config
+        if text_encoder_dynamic_offload_hook is not None:
+            run_metrics["text_encoder_dynamic_offload_runtime_summary"] = text_encoder_dynamic_offload_hook.state.as_dict()
+            if DYNAMIC_OFFLOAD_SHOW_PROFILE:
+                text_encoder_dynamic_offload_hook.print_profile_summary()
+            remove_dynamic_offload(text_encoder)
+            text_encoder_dynamic_offload_hook = None
+            del text_encoder_dynamic_offload_config
         del prompt_state
         del prompt_pipe, text_encoder, tokenizer
         cleanup_runtime_state(record_event, "cleanup_after_text_encoder")
@@ -696,8 +696,8 @@ def main():
     del connector_pipe, connectors
     cleanup_runtime_state(record_event, "cleanup_after_connectors")
 
-    dynamic_weights_enabled = DYNAMIC_WEIGHTS_SETTINGS.enabled
-    dynamic_weights_config = DYNAMIC_WEIGHTS_CONFIG if dynamic_weights_enabled else None
+    dynamic_offload_enabled = DYNAMIC_OFFLOAD_SETTINGS.enabled
+    dynamic_offload_config = DYNAMIC_OFFLOAD_CONFIG if dynamic_offload_enabled else None
 
     def transformer_prepare_event_name(name: str, repeat_index: int) -> str:
         if TRANSFORMER_PREPARE_REPEATS == 1:
@@ -720,14 +720,14 @@ def main():
         event_t0 = time.time()
         if MODEL_LOW_CPU_MEM_USAGE:
             transformer_load_kwargs["device_map"] = "cpu"
-        transformer_load = from_pretrained_with_dynamic_weights(
+        transformer_load = from_pretrained_with_dynamic_offload(
             MODEL_PATH,
-            dynamic_weights_config=dynamic_weights_config,
+            dynamic_offload_config=dynamic_offload_config,
             apply_dynamic=False,
             **transformer_load_kwargs,
         )
         prepared_transformer = transformer_load.module
-        prepared_dynamic_weights_hook = transformer_load.hook
+        prepared_dynamic_offload_hook = transformer_load.hook
         record_event(
             transformer_prepare_event_name("load_transformer", repeat_index),
             time.time() - event_t0,
@@ -751,27 +751,27 @@ def main():
             drop_trivial_attention_mask=drop_trivial_attention_mask,
         )
 
-        if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and TRANSFORMER_MEMORY_MANAGER != "off":
+        if dynamic_offload_enabled and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan" and TRANSFORMER_MEMORY_MANAGER != "off":
             raise ValueError(
-                "Dynamic weights execution currently requires "
-                "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER='off'. "
+                "Dynamic offload execution currently requires "
+                "DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER='off'. "
                 "Use execution_mode='plan' with the block manager."
             )
 
-        if dynamic_weights_enabled:
+        if dynamic_offload_enabled:
             event_t0 = time.time()
-            prepared_dynamic_weights_hook = apply_dynamic_weights(prepared_transformer, dynamic_weights_config)
+            prepared_dynamic_offload_hook = apply_dynamic_offload(prepared_transformer, dynamic_offload_config)
             record_event(
-                transformer_prepare_event_name("build_dynamic_weights_plan", repeat_index),
+                transformer_prepare_event_name("build_dynamic_offload_plan", repeat_index),
                 time.time() - event_t0,
-                **build_dynamic_weights_event_payload(DYNAMIC_WEIGHTS_SETTINGS, prepared_dynamic_weights_hook.state),
+                **build_dynamic_offload_event_payload(DYNAMIC_OFFLOAD_SETTINGS, prepared_dynamic_offload_hook.state),
             )
 
         event_t0 = time.time()
         if TRANSFORMER_MEMORY_MANAGER != "off":
             raise ValueError(
                 "The transformer block manager is no longer used by this runner. "
-                "Use DIFFUSERS_DYNAMIC_WEIGHTS_PRESET or transformer group offload."
+                "Use DDO_PRESET or transformer group offload."
             )
         if TRANSFORMER_GROUP_OFFLOAD:
             apply_model_group_offload(prepared_transformer, prefix="transformer")
@@ -783,31 +783,31 @@ def main():
                 record_stream=GROUP_OFFLOAD_CONFIG["transformer_record_stream"],
                 low_cpu_mem_usage=GROUP_OFFLOAD_CONFIG["transformer_low_cpu_mem_usage"],
             )
-        elif dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
+        elif dynamic_offload_enabled and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan":
             record_event(
                 transformer_prepare_event_name("skip_transformer_to_cuda", repeat_index),
                 time.time() - event_t0,
-                reason=f"dynamic_weights_{DYNAMIC_WEIGHTS_EXECUTION_MODE}",
+                reason=f"dynamic_offload_{DYNAMIC_OFFLOAD_EXECUTION_MODE}",
             )
         else:
             prepared_transformer.to(DEVICE)
             record_event(transformer_prepare_event_name("load_transformer_to_cuda", repeat_index), time.time() - event_t0)
-        return prepared_transformer, prepared_dynamic_weights_hook
+        return prepared_transformer, prepared_dynamic_offload_hook
 
     transformer = None
-    dynamic_weights_hook = None
+    dynamic_offload_hook = None
     for prepare_repeat_index in range(TRANSFORMER_PREPARE_REPEATS):
         if TRANSFORMER_PREPARE_REPEATS > 1:
             print(
                 f"  Transformer prepare repeat {prepare_repeat_index + 1}/{TRANSFORMER_PREPARE_REPEATS}",
                 flush=True,
             )
-        transformer, dynamic_weights_hook = load_and_prepare_transformer(prepare_repeat_index)
+        transformer, dynamic_offload_hook = load_and_prepare_transformer(prepare_repeat_index)
         if prepare_repeat_index + 1 < TRANSFORMER_PREPARE_REPEATS:
-            if dynamic_weights_enabled:
-                remove_dynamic_weights(transformer)
+            if dynamic_offload_enabled:
+                remove_dynamic_offload(transformer)
             del transformer
-            dynamic_weights_hook = None
+            dynamic_offload_hook = None
             cleanup_runtime_state(record_event, transformer_prepare_event_name("cleanup_after_transformer_prepare", prepare_repeat_index))
 
     event_t0 = time.time()
@@ -893,16 +893,16 @@ def main():
             print(f"  Image latent: {image_latent.shape}")
         del prepare_state, denoise_state
 
-    if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
-        run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()
-        if DYNAMIC_WEIGHTS_SHOW_PROFILE:
-            dynamic_weights_hook.print_profile_summary()
+    if dynamic_offload_enabled and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan":
+        run_metrics["dynamic_offload_runtime_summary"] = dynamic_offload_hook.state.as_dict()
+        if DYNAMIC_OFFLOAD_SHOW_PROFILE:
+            dynamic_offload_hook.print_profile_summary()
     del connector_prompt_embeds, connector_attention_mask
-    if dynamic_weights_enabled:
-        if DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and "dynamic_weights_runtime_summary" not in run_metrics:
-            run_metrics["dynamic_weights_runtime_summary"] = dynamic_weights_hook.state.as_dict()
-        remove_dynamic_weights(transformer)
-        dynamic_weights_hook = None
+    if dynamic_offload_enabled:
+        if DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan" and "dynamic_offload_runtime_summary" not in run_metrics:
+            run_metrics["dynamic_offload_runtime_summary"] = dynamic_offload_hook.state.as_dict()
+        remove_dynamic_offload(transformer)
+        dynamic_offload_hook = None
     del prepare_pipe, denoise_pipe, transformer, scheduler
     cleanup_before_vae_decode(record_event)
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)

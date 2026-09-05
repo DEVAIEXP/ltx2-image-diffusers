@@ -1,10 +1,10 @@
 # Repository Guidance
 
-This repository is currently focused on a generic Diffusers-style dynamic weights manager for low-VRAM inference.
+This repository is currently focused on a generic Diffusers-style dynamic offload manager for low-VRAM inference.
 
 ## Project Direction
 
-- Keep the dynamic weights implementation model-agnostic. It must not depend on LTX-specific class names or component types.
+- Keep the dynamic offload implementation model-agnostic. It must not depend on LTX-specific class names or component types.
 - Prefer Diffusers conventions and architecture. Code should be easy to upstream or adapt into Diffusers internals later.
 - Keep runtime logic self-contained in the memory manager. Runners should mainly parse/pass parameters and orchestrate components.
 - Avoid native VBAR or hardware-specific low-level paths unless explicitly chosen later. The current priority is compatibility first, then performance.
@@ -13,11 +13,11 @@ This repository is currently focused on a generic Diffusers-style dynamic weight
 ## Experiment Tracking
 
 - `custom_blocks/ltx2_image/EXPERIMENTS.md` is the canonical experiment log. Update it whenever a benchmark changes the current recommendation or invalidates an older assumption.
-- `experiments/dynamic_weights_results.md` is a compact sidecar for current comparison tables and report-ready notes.
+- `experiments/dynamic_offload_results.md` is a compact sidecar for current comparison tables and report-ready notes.
 - Historical results may stay in `EXPERIMENTS.md`, but stale recommendations must be marked as historical or corrected.
 - Use generic environment names in new docs and commands:
-  - `DIFFUSERS_DYNAMIC_WEIGHTS_*`
-  - `DIFFUSERS_RUNNER_*`
+  - `DDO_*`
+  - `DDO_RUNNER_*`
 
 ## Current Preset Meaning
 
