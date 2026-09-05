@@ -225,6 +225,27 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
 DYNAMIC_WEIGHTS_PRESETS = _DYNAMIC_WEIGHTS_PRESET_VALUES
 
 
+def get_dynamic_weights_presets() -> dict[str, dict[str, str]]:
+    return {preset_name: dict(values) for preset_name, values in DYNAMIC_WEIGHTS_PRESETS.items()}
+
+
+def format_dynamic_weights_presets(*, default_preset: str = "auto", running_on_wsl: bool | None = None) -> str:
+    resolved_default = resolve_dynamic_weights_preset(default_preset, running_on_wsl=running_on_wsl)
+    lines = [
+        "Dynamic weights presets",
+        f"  {default_preset} -> {resolved_default}",
+    ]
+    for preset_name in sorted(DYNAMIC_WEIGHTS_PRESETS):
+        lines.append(f"\n{preset_name}")
+        preset_values = DYNAMIC_WEIGHTS_PRESETS[preset_name]
+        if not preset_values:
+            lines.append("  <no preset values>")
+            continue
+        for key in sorted(preset_values):
+            lines.append(f"  {key}={preset_values[key]}")
+    return "\n".join(lines)
+
+
 def resolve_dynamic_weights_preset(requested_preset: str, *, running_on_wsl: bool | None = None) -> str:
     requested_preset = requested_preset.strip().lower()
     if requested_preset != "auto":

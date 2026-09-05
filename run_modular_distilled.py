@@ -29,6 +29,7 @@ from custom_blocks.ltx2_image.memory import (
     DynamicWeightsSettings,
     apply_dynamic_weights,
     build_dynamic_weights_event_payload,
+    format_dynamic_weights_presets,
     from_pretrained_with_dynamic_weights,
     is_wsl_environment,
     remove_dynamic_weights,
@@ -460,6 +461,10 @@ def denoise_progress_callback(components, step_index, timestep, callback_kwargs)
 
 
 def main():
+    if parse_bool_env("DIFFUSERS_RUNNER_PRINT_DYNAMIC_WEIGHTS_PRESETS"):
+        print(format_dynamic_weights_presets(default_preset="auto", running_on_wsl=RUNNING_ON_WSL))
+        return
+
     seed = SEED or torch.randint(0, 2**32, (1,)).item()
     if not SEED:
         print(f"Using random seed: {seed}")

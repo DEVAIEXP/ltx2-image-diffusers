@@ -45,6 +45,14 @@ Recommended defaults:
 - `diffusers_offload_compat` -> official Diffusers group-offload compatibility fallback
 - `diffusers_leaf_offload_compat` -> official Diffusers leaf-level fallback for models where finer granularity may fit better
 
+Inspect the current preset contract without loading model weights:
+
+```powershell
+$env:DIFFUSERS_RUNNER_PRINT_DYNAMIC_WEIGHTS_PRESETS="1"
+python run_modular_distilled.py
+Remove-Item Env:DIFFUSERS_RUNNER_PRINT_DYNAMIC_WEIGHTS_PRESETS -ErrorAction SilentlyContinue
+```
+
 Potential report sections:
 - one-shot setup cost vs denoise throughput
 - RAM-aware pinning behavior
