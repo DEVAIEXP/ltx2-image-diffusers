@@ -21,6 +21,27 @@ Known setup from the current experiments:
 - Page file: Windows-managed, about `46 GB`
 - System RAM: `64 GB`
 
+## Current Status
+
+The current active direction is the generic `dynamic_weights` manager, not the retired manual transformer manager.
+Historical sections below are kept as benchmark evidence, but new runs should use generic environment names and the
+current presets.
+
+Current preset behavior:
+
+| Preset | Role | Current behavior |
+| --- | --- | --- |
+| `auto` | Default benchmark path | Resolves to `one_shot_fast` on Windows, Linux, and WSL. |
+| `one_shot_fast` | Main one-shot preset | Uses `linear_runtime`, RAM-aware `balanced` planning, up to `6 GB` resident modules, pinned CPU weights only when enough usable system RAM is available, Diffusers group offload for the text encoder, native attention. |
+| `low_ram_safe` | Explicit low-VRAM fallback | Uses no pinned CPU memory and a smaller `3 GB` resident-module budget. It is safer but much slower on the 8 GB VRAM / simulated 32 GB RAM Windows test. |
+| `wsl_compat` | Explicit WSL fallback | Disables pinned dynamic weights and uses text encoder group offload with stream disabled for WSL/driver setups where pinned-memory behavior is unstable. |
+| `warm_process` | Server-like comparison | Enables process-lifetime pinned tensor cache and generation repeats for warm-process measurements. |
+| `compat` | Conservative fallback | Dynamic runtime without pinned CPU memory, for driver/OS-sensitive machines. |
+
+Legacy aliases remain accepted for old commands: `windows_fast` and `linux_native_fast` map to `one_shot_fast`,
+`linux_safe`, `planner_slim_resident`, and `low_ram` map to `low_ram_safe`, `planner_balanced` maps to
+`one_shot_fast`, and `warm_server` maps to `warm_process`.
+
 ## Important Baselines
 
 | Mode | Encode | Transformer setup/load | Denoise | Pass 1 total | Torch alloc during denoise | Peak RAM | Notes |
@@ -1010,11 +1031,14 @@ The runner now supports `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET` as a convenience laye
 | Preset | Intended use | Main resolved settings |
 | --- | --- | --- |
 | `off` | Disable dynamic execution | `execution_mode=plan` |
-| `one_shot_fast` | Best current one-shot baseline on the 64 GB Windows test system | `linear_runtime`, eager pinned CPU weights, `6 GB` resident module budget, `1024 KB` small tensors, native attention |
-| `warm_server` | ComfyUI-like warm/server benchmark | Same as `one_shot_fast` plus `generation_repeats=2` |
-| `low_ram` | Conservative start for systems around `32 GB` RAM | `linear_runtime`, eager pin, `3 GB` resident module budget, `2` pin workers |
+| `one_shot_fast` | General default one-shot baseline | `linear_runtime`, RAM-aware `balanced` planner, up to `6 GB` resident module budget, full pinned CPU weights only when enough usable RAM is available, `1024 KB` small tensors, native attention |
+| `warm_process` | ComfyUI-like warm/server benchmark | Same runtime family as `one_shot_fast`, plus process-lifetime pinned weight cache and `generation_repeats=2` |
+| `low_ram_safe` | Explicit low-VRAM fallback | `linear_runtime`, no pinned CPU memory, `3 GB` resident module budget |
+| `wsl_compat` | Explicit WSL/driver fallback | `linear_runtime`, no pinned CPU memory, text encoder group offload stream disabled, extra pre-VAE cleanup |
 | `compat` | Highest portability baseline for driver/OS-sensitive machines | `linear_runtime`, no pinned CPU memory, `3 GB` resident module budget |
-| `long_steps` | Experimental profile for many steps or persistent reuse | `linear_runtime`, lazy pin enabled, `6 GB` resident module budget |
+
+Legacy preset names are aliases only: `windows_fast` and `linux_native_fast` resolve to `one_shot_fast`, `warm_server`
+resolves to `warm_process`, and `low_ram`, `linux_safe`, and `planner_slim_resident` resolve to `low_ram_safe`.
 
 WSL/Linux test note: run the same preset without `DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_*`. This will tell us whether the strong warm result is mostly from generic pinned-memory/module-residency behavior or from Windows WDDM/shared-memory behavior. Key comparison fields are `build_dynamic_weights_plan`, repeated denoise times, process RAM, and VRAM.
 
@@ -1025,11 +1049,11 @@ First WSL isolation found two portability issues before denoise:
 
 The dynamic weights hook now has `allow_pin_memory_fallback`, exposed as `DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK` and enabled by presets. If large pinned memory allocation fails, the hook logs `pin_linear_weights_failed`, disables further pin attempts, and continues with pageable CPU tensors when the CUDA context remains healthy.
 
-Follow-up WSL result: catching `torch.AcceleratorError` after a failed large `pin_memory()` was not enough. Denoise completed, but VAE decode later failed with `CUDA driver error: device not ready`, indicating that the failed pin attempt can poison the CUDA context. The runner now detects WSL and disables dynamic-weights pinned CPU memory by default via `DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=1`. Set it to `0` only for explicit pinning experiments.
+Follow-up WSL result: catching `torch.AcceleratorError` after a failed large `pin_memory()` was not enough. Denoise completed, but VAE decode later failed with `CUDA driver error: device not ready`, indicating that the failed pin attempt can poison the CUDA context. `wsl_compat` disables dynamic-weights pinned CPU memory via `DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=1`. The default `auto` preset now resolves to `one_shot_fast` on every platform, so WSL compatibility behavior must be requested explicitly when needed.
 
 ### Windows Baseline For WSL Comparison
 
-Use this Windows run as the current dynamic-weights reference when WSL decode becomes stable:
+Use this Windows run as the current dynamic-weights reference for WSL/Linux comparisons:
 
 | Environment | Preset shape | Setup | Denoise | Avg step | Copy time | Resident modules | Peak VRAM | Peak RAM | Pass 1 |
 | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: |
@@ -1062,7 +1086,7 @@ Additional Ubuntu native preset probes:
 
 | Run | Purpose | Key settings | Encode pass | Dynamic setup | Denoise | Pass 1 | Total |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `ubuntu_5` | Warm/server repeat | `warm_server`, text encoder stream off, pinned weights | `33.7s` | `18.3515s` | `13.0230s` + `12.8770s` | `49.5s` | `85.3s` |
+| `ubuntu_5` | Warm/server repeat | `warm_server` legacy alias for `warm_process`, text encoder stream off, pinned weights | `33.7s` | `18.3515s` | `13.0230s` + `12.8770s` | `49.5s` | `85.3s` |
 | `ubuntu_6` | Text encoder stream on | `one_shot_fast`, text encoder stream on, pinned weights | `16.6s` | `11.5440s` | `12.9409s` | `26.1s` | `43.7s` |
 | `ubuntu_7` | Intended low-RAM check | stream off, pinned weights, but effective resident set still matched `6 GB`/11 blocks | `24.3s` | `18.9552s` | `13.0583s` | `38.4s` | `64.9s` |
 
@@ -1242,29 +1266,33 @@ Insight: dynamic budget by component size is the right control surface, but text
 
 ## Dynamic Weights Load Planner V1
 
-The manager now has an opt-in planner-style budget policy:
+The manager now has a planner-style budget policy used by the main preset:
 
 ```powershell
 $env:DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY="balanced"
 ```
 
-or through:
+or, normally:
 
 ```powershell
-$env:DIFFUSERS_DYNAMIC_WEIGHTS_PRESET="planner_balanced"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PRESET="one_shot_fast"
 ```
 
-The stable presets keep `AUTO_BUDGET_POLICY=off` so current Windows/WSL/Linux baselines do not move by accident. `planner_balanced` clears the fixed resident-module budget and lets the manager derive budgets from the actual loaded component:
+`one_shot_fast` is now the stable/default path, and `planner_balanced` is only a legacy alias to the same preset. The
+planner derives budgets from the actual loaded component and the available system RAM:
 
 | Decision | V1 behavior |
 | --- | --- |
 | Resident module budget | `25%` of matching resident module candidates, capped by `DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB`, default `6 GB` |
 | Pin weight budget | `100%` when streamable candidates are `<=8 GB`, `85%` when `<=16 GB`, otherwise `75%`; optionally capped by `DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB` |
+| RAM safety | Pinning is skipped when usable system RAM is below the required model/resident/headroom budget |
 | Selection | Still uses the configured `first`, `spread`, or `largest` ordering |
 
-The profile now records `planner_decisions`, including candidate size and resolved budgets, so each run explains why the manager selected a given memory shape. This is intentionally conservative: it is a first load-planner layer above the existing runtime, not a low-level VBAR clone. The next refinement should replace raw size heuristics with observed runtime cost/reuse from the previous profile.
+The profile records `planner_decisions`, including candidate size, available RAM, required RAM, and resolved budgets,
+so each run explains why the manager selected a given memory shape. This is intentionally conservative: it is a
+load-planner layer above the existing runtime, not a low-level VBAR clone.
 
-First Windows `planner_balanced` transformer probe:
+First Windows planner transformer probe, before snap-to-full and RAM-aware safeguards became the default:
 
 | Mode | Planner resident budget | Planner pin budget | Transformer setup | Denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
