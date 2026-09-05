@@ -27,7 +27,7 @@ This repository is currently focused on a generic Diffusers-style dynamic weight
 - `low_ram_safe` is an explicit low-VRAM fallback. It reduces accelerator pressure but can make denoise copy-bound and very slow.
 - `wsl_compat` is an explicit WSL/driver fallback for cases where pinned-memory or stream behavior is unstable.
 - `warm_process` is for process-lifetime cache/server-like comparisons.
-- Official Diffusers group offload remains a compatibility baseline, not the current performance baseline.
+- `diffusers_offload_compat` uses official Diffusers group offload as a compatibility baseline, not the current performance baseline.
 
 ## Working Rules
 
