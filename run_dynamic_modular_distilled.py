@@ -26,8 +26,7 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
 )
 from diffusers_dynamic_offloader import (
     DynamicOffloadSettings,
-    enable_diffusers_group_offload,
-    enable_dynamic_offload,
+    enable_offload,
     format_dynamic_offload_presets,
     from_pretrained_with_dynamic_offload,
     is_wsl_environment,
@@ -102,7 +101,6 @@ def parse_float_preset_env(name: str, default: str = "0.0") -> float:
     return float(preset_env(name, default))
 
 
-AUTO_CPU_OFFLOAD = parse_bool_env("DDO_RUNNER_AUTO_CPU_OFFLOAD")
 TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
 TEXT_ENCODER_DYNAMIC_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD")
 TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY = parse_bool_preset_env(
@@ -163,25 +161,6 @@ DROP_TRIVIAL_ATTENTION_MASK = (
     parse_bool_env("DDO_RUNNER_DROP_TRIVIAL_ATTENTION_MASK")
     or ATTENTION_BACKEND in FLASH_COMPATIBLE_ATTENTION_BACKENDS
 )
-GROUP_OFFLOAD_CONFIG = {
-    "mode": "components_manager_auto_cpu_offload" if AUTO_CPU_OFFLOAD else "disabled",
-    "device": DEVICE,
-    "text_encoder_group_offload": TEXT_ENCODER_GROUP_OFFLOAD,
-    "text_encoder_offload_type": preset_env("DDO_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE", "leaf_level"),
-    "text_encoder_use_stream": parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM", "1"),
-    "text_encoder_record_stream": parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_OFFLOAD_RECORD_STREAM"),
-    "text_encoder_num_blocks_per_group": int(preset_env("DDO_RUNNER_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
-    "transformer_group_offload": TRANSFORMER_GROUP_OFFLOAD,
-    "transformer_offload_type": preset_env("DDO_RUNNER_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
-    "transformer_use_stream": parse_bool_preset_env("DDO_RUNNER_TRANSFORMER_OFFLOAD_STREAM", "1"),
-    "transformer_record_stream": parse_bool_preset_env("DDO_RUNNER_TRANSFORMER_OFFLOAD_RECORD_STREAM"),
-    "transformer_low_cpu_mem_usage": parse_bool_preset_env(
-        "DDO_RUNNER_TRANSFORMER_OFFLOAD_LOW_CPU_MEM_USAGE",
-        "1" if MODEL_LOW_CPU_MEM_USAGE else "0",
-    ),
-    "transformer_num_blocks_per_group": int(preset_env("DDO_RUNNER_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
-}
-
 WIDTH = int(env_value("DDO_RUNNER_WIDTH", "1280"))
 HEIGHT = int(env_value("DDO_RUNNER_HEIGHT", "704"))
 SEED = int(env_value("DDO_RUNNER_SEED", "43"))
@@ -218,24 +197,6 @@ def build_run_slug(seed):
             f"steps{NUM_INFERENCE_STEPS}",
             f"seed{seed}",
         ]
-    )
-
-
-def apply_model_group_offload(model, *, prefix):
-    offload_type = GROUP_OFFLOAD_CONFIG[f"{prefix}_offload_type"]
-    return enable_diffusers_group_offload(
-        model,
-        onload_device=DEVICE,
-        offload_device=OFFLOAD_DEVICE,
-        offload_type=offload_type,
-        use_stream=GROUP_OFFLOAD_CONFIG[f"{prefix}_use_stream"],
-        record_stream=GROUP_OFFLOAD_CONFIG[f"{prefix}_record_stream"],
-        low_cpu_mem_usage=(
-            TEXT_ENCODER_LOW_CPU_MEM_USAGE
-            if prefix == "text_encoder"
-            else GROUP_OFFLOAD_CONFIG["transformer_low_cpu_mem_usage"]
-        ),
-        num_blocks_per_group=GROUP_OFFLOAD_CONFIG[f"{prefix}_num_blocks_per_group"],
     )
 
 
@@ -419,7 +380,6 @@ def main():
         "metrics_level": METRICS_LEVEL,
         "show_metrics": SHOW_METRICS,
         "save_metrics": SAVE_METRICS,
-        "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
         "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
         **DYNAMIC_OFFLOAD_SETTINGS.as_metrics(),
         "pre_vae_cleanup_repeats": PRE_VAE_CLEANUP_REPEATS,
@@ -481,6 +441,7 @@ def main():
 
         event_t0 = time.time()
         text_encoder_dynamic_offload_hook = None
+        text_encoder_dynamic_offload_config = None
         if TEXT_ENCODER_DYNAMIC_OFFLOAD:
             text_encoder_dynamic_offload_config = replace(
                 DYNAMIC_OFFLOAD_CONFIG,
@@ -497,22 +458,21 @@ def main():
                     *TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES,
                 ),
             )
-            text_encoder_dynamic_offload = enable_dynamic_offload(
-                text_encoder,
-                settings=DYNAMIC_OFFLOAD_SETTINGS,
-                config=text_encoder_dynamic_offload_config,
-                record_event=record_event,
-                event_name="setup_text_encoder_dynamic_offload",
-            )
-            text_encoder_dynamic_offload_hook = text_encoder_dynamic_offload.hook
-        elif TEXT_ENCODER_GROUP_OFFLOAD:
-            group_offload_result = apply_model_group_offload(text_encoder, prefix="text_encoder")
-            record_event(
-                "setup_text_encoder_group_offload",
-                time.time() - event_t0,
-                **group_offload_result.event_payload,
-            )
-        else:
+
+        text_encoder_offload = enable_offload(
+            text_encoder,
+            settings=DYNAMIC_OFFLOAD_SETTINGS,
+            config=text_encoder_dynamic_offload_config,
+            component="text_encoder",
+            execution_device=DEVICE,
+            offload_device=OFFLOAD_DEVICE,
+            low_cpu_mem_usage=TEXT_ENCODER_LOW_CPU_MEM_USAGE,
+            record_event=record_event,
+            dynamic_event_name="setup_text_encoder_dynamic_offload",
+            group_event_name="setup_text_encoder_group_offload",
+        )
+        text_encoder_dynamic_offload_hook = text_encoder_offload.hook
+        if text_encoder_offload.should_move_to_execution_device:
             text_encoder.to(DEVICE)
             record_event("load_text_encoder_to_cuda", time.time() - event_t0)
 
@@ -660,36 +620,32 @@ def main():
                 "Use execution_mode='plan' with the block manager."
             )
 
-        if dynamic_offload_enabled:
-            prepared_dynamic_offload = enable_dynamic_offload(
-                prepared_transformer,
-                settings=DYNAMIC_OFFLOAD_SETTINGS,
-                config=dynamic_offload_config,
-                record_event=record_event,
-                event_name=transformer_prepare_event_name("build_dynamic_offload_plan", repeat_index),
-            )
-            prepared_dynamic_offload_hook = prepared_dynamic_offload.hook
-
         event_t0 = time.time()
         if TRANSFORMER_MEMORY_MANAGER != "off":
             raise ValueError(
                 "The transformer block manager is no longer used by this runner. "
                 "Use DDO_PRESET or transformer group offload."
             )
-        if TRANSFORMER_GROUP_OFFLOAD:
-            group_offload_result = apply_model_group_offload(prepared_transformer, prefix="transformer")
-            record_event(
-                transformer_prepare_event_name("setup_transformer_group_offload", repeat_index),
-                time.time() - event_t0,
-                **group_offload_result.event_payload,
-            )
-        elif dynamic_offload_enabled and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan":
+        transformer_offload = enable_offload(
+            prepared_transformer,
+            settings=DYNAMIC_OFFLOAD_SETTINGS,
+            config=dynamic_offload_config,
+            component="transformer",
+            execution_device=DEVICE,
+            offload_device=OFFLOAD_DEVICE,
+            low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
+            record_event=record_event,
+            dynamic_event_name=transformer_prepare_event_name("build_dynamic_offload_plan", repeat_index),
+            group_event_name=transformer_prepare_event_name("setup_transformer_group_offload", repeat_index),
+        )
+        prepared_dynamic_offload_hook = transformer_offload.hook
+        if transformer_offload.route == "dynamic_offload" and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan":
             record_event(
                 transformer_prepare_event_name("skip_transformer_to_cuda", repeat_index),
                 time.time() - event_t0,
                 reason=f"dynamic_offload_{DYNAMIC_OFFLOAD_EXECUTION_MODE}",
             )
-        else:
+        elif transformer_offload.should_move_to_execution_device:
             prepared_transformer.to(DEVICE)
             record_event(transformer_prepare_event_name("load_transformer_to_cuda", repeat_index), time.time() - event_t0)
         return prepared_transformer, prepared_dynamic_offload_hook
