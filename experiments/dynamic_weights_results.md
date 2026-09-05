@@ -52,3 +52,74 @@ Potential report sections:
 - Diffusers official group offload baseline
 - WSL/Linux validation matrix
 - Quantized model compatibility risks
+
+## Validation Matrix
+
+Use these as the next closed test ladder. Keep Windows as the development gate; repeat WSL/Ubuntu only after a Windows
+change produces a useful result.
+
+Windows baseline:
+
+```powershell
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PRESET="auto"
+$env:DIFFUSERS_RUNNER_WIDTH="1280"
+$env:DIFFUSERS_RUNNER_HEIGHT="704"
+$env:DIFFUSERS_RUNNER_STEPS="8"
+$env:DIFFUSERS_RUNNER_SEED="43"
+$env:DIFFUSERS_RUNNER_GENERATION_REPEATS="1"
+$env:DIFFUSERS_RUNNER_FAKE_PROMPT="0"
+$env:DIFFUSERS_RUNNER_METRICS_LEVEL="1"
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE="0"
+$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN="1"
+$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER="1"
+$env:DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER="1"
+python run_modular_distilled.py
+```
+
+Windows RAM-constrained planner check:
+
+```powershell
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_AVAILABLE_SYSTEM_RAM_GB="32"
+python run_modular_distilled.py
+Remove-Item Env:DIFFUSERS_DYNAMIC_WEIGHTS_AVAILABLE_SYSTEM_RAM_GB -ErrorAction SilentlyContinue
+```
+
+Linux/Ubuntu baseline:
+
+```bash
+export DIFFUSERS_DYNAMIC_WEIGHTS_PRESET=auto
+export DIFFUSERS_RUNNER_WIDTH=1280
+export DIFFUSERS_RUNNER_HEIGHT=704
+export DIFFUSERS_RUNNER_STEPS=8
+export DIFFUSERS_RUNNER_SEED=43
+export DIFFUSERS_RUNNER_GENERATION_REPEATS=1
+export DIFFUSERS_RUNNER_FAKE_PROMPT=0
+export DIFFUSERS_RUNNER_METRICS_LEVEL=1
+export DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE=0
+unset DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN
+unset DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER
+unset DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER
+python run_modular_distilled.py
+```
+
+WSL compatibility fallback:
+
+```bash
+export DIFFUSERS_DYNAMIC_WEIGHTS_PRESET=wsl_compat
+export DIFFUSERS_RUNNER_WIDTH=1280
+export DIFFUSERS_RUNNER_HEIGHT=704
+export DIFFUSERS_RUNNER_STEPS=8
+export DIFFUSERS_RUNNER_SEED=43
+export DIFFUSERS_RUNNER_GENERATION_REPEATS=1
+export DIFFUSERS_RUNNER_FAKE_PROMPT=0
+export DIFFUSERS_RUNNER_METRICS_LEVEL=1
+export DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE=0
+python run_modular_distilled.py
+```
+
+Official Diffusers fallback comparison:
+
+```powershell
+$env:DIFFUSERS_DYNAMIC_WEIGHTS_PRESET="diffusers_offload_compat"
+python run_modular_distilled.py
+```

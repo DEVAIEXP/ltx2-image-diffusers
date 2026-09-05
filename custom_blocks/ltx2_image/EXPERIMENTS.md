@@ -105,6 +105,7 @@ $env:DIFFUSERS_RUNNER_METRICS_LEVEL="2"
 
 Detailed notes for the current preset comparison are also tracked in
 [`../../experiments/dynamic_weights_results.md`](../../experiments/dynamic_weights_results.md).
+The same sidecar contains the current Windows-first validation matrix for WSL/Linux and Diffusers fallback checks.
 
 The current Windows transformer-only baseline uses fake prompt embeds, 1280x704, 8 steps, seed 43, BF16, native
 attention, and Windows standby purge before the transformer.

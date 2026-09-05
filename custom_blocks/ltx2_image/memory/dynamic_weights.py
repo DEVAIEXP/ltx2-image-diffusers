@@ -1203,8 +1203,6 @@ def load_dynamic_weights_settings_from_env(
         default_always_resident_patterns = always_resident_modules_pattern
 
     available_system_ram_override = preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_AVAILABLE_SYSTEM_RAM_GB", "").strip()
-    if not available_system_ram_override:
-        available_system_ram_override = preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_AVAILABLE_RAM_GB", "").strip()
     available_system_ram_gb = (
         float(available_system_ram_override)
         if available_system_ram_override
