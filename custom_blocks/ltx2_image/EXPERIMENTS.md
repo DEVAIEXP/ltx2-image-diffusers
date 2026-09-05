@@ -117,6 +117,10 @@ attention, and Windows standby purge before the transformer.
 | Dynamic weights, simulated 32 GB RAM | `one_shot_fast` | pin skipped, insufficient RAM | `7.72s` | `198.2s` pass, denoise copy-bound | `174.12s` / `148.14 GB` | `6.97 GB` | `25.87 GB` | Correct safe path: avoids pinning when usable RAM is below required RAM. |
 | Low RAM fallback | `low_ram_safe` | no pin, smaller resident budget | `3.78s` | `194.10s` denoise | `187.81s` / `172.17 GB` | `3.28 GB reserved` | not captured | Uses less VRAM but is slower than `one_shot_fast` simulated at 32 GB. |
 | Official Diffusers group offload | dynamic weights off, transformer `leaf_level`, stream, record stream, low CPU mem usage off | Diffusers hook path | `0.07s` hook setup | `315.29s` denoise | not tracked by dynamic weights | `6.49 GB` | `26.60 GB` | Useful compatibility baseline, but much slower in this low-VRAM 8-step test. |
+| Official Diffusers group offload | dynamic weights off, transformer `leaf_level`, stream, record stream, low CPU mem usage on | Diffusers hook path | `0.05s` hook setup | `320.10s` denoise | not tracked by dynamic weights | `6.56 GB` | `26.60 GB` | Low CPU mem usage did not improve this path; setup stays tiny and denoise stays offload-bound. |
+| Official Diffusers group offload | dynamic weights off, transformer `leaf_level`, no stream, no record stream, low CPU mem usage on | Diffusers hook path | `0.03s` hook setup | `507.83s` denoise | not tracked by dynamic weights | `6.58 GB` | `39.37 GB` | Worst official offload probe so far; disabling stream is not viable for this model/shape. |
+| Official Diffusers group offload | dynamic weights off, transformer `block_level`, `num_blocks_per_group=1`, stream, record stream, low CPU mem usage on | Diffusers hook path | `0.02s` hook setup | `265.47s` denoise | not tracked by dynamic weights | `6.49 GB` | `26.79 GB` | Better than `leaf_level`, but still far from the dynamic weights fast path. |
+| Official Diffusers group offload | dynamic weights off, transformer `block_level`, `num_blocks_per_group=1`, stream, no record stream, low CPU mem usage on | Diffusers hook path | `0.01s` hook setup | `312.03s` denoise | not tracked by dynamic weights | `6.51 GB` | `26.78 GB` | Disabling `record_stream` made this path regress close to `leaf_level` timing. |
 
 Current preset direction:
 
@@ -125,6 +129,10 @@ Current preset direction:
 - `low_ram_safe` is an explicit fallback for tighter VRAM cases, not the recommended 32 GB RAM preset for this model.
 - `wsl_compat` remains explicit for WSL/driver setups where stream or pinned-memory behavior is unstable.
 - `warm_process` remains the process-lifetime cache/server-like preset.
+- Official Diffusers group offload remains a compatibility baseline. `block_level` is faster than `leaf_level` here,
+  but still not close to the pinned dynamic weights transformer path. For `block_level` with stream enabled,
+  `record_stream=1` is currently better than `record_stream=0`. `leaf_level` without stream is the worst official
+  offload probe in the current matrix.
 
 ## Attention Backend Findings
 
