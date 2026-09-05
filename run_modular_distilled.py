@@ -190,11 +190,17 @@ GROUP_OFFLOAD_CONFIG = {
     "text_encoder_group_offload": TEXT_ENCODER_GROUP_OFFLOAD,
     "text_encoder_offload_type": preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE", "leaf_level"),
     "text_encoder_use_stream": parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM", "1"),
+    "text_encoder_record_stream": parse_bool_preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_RECORD_STREAM"),
     "text_encoder_num_blocks_per_group": int(preset_env("DIFFUSERS_RUNNER_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
     "transformer_group_offload": TRANSFORMER_GROUP_OFFLOAD,
-    "transformer_offload_type": env_value("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
-    "transformer_use_stream": parse_bool_env("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_STREAM", "1"),
-    "transformer_num_blocks_per_group": int(env_value("DIFFUSERS_RUNNER_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
+    "transformer_offload_type": preset_env("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
+    "transformer_use_stream": parse_bool_preset_env("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_STREAM", "1"),
+    "transformer_record_stream": parse_bool_preset_env("DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_RECORD_STREAM"),
+    "transformer_low_cpu_mem_usage": parse_bool_preset_env(
+        "DIFFUSERS_RUNNER_TRANSFORMER_OFFLOAD_LOW_CPU_MEM_USAGE",
+        "1" if MODEL_LOW_CPU_MEM_USAGE else "0",
+    ),
+    "transformer_num_blocks_per_group": int(preset_env("DIFFUSERS_RUNNER_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
 }
 
 WIDTH = int(env_value("DIFFUSERS_RUNNER_WIDTH", "1280"))
@@ -243,7 +249,12 @@ def apply_model_group_offload(model, *, prefix):
         "offload_device": torch.device(OFFLOAD_DEVICE),
         "offload_type": offload_type,
         "use_stream": GROUP_OFFLOAD_CONFIG[f"{prefix}_use_stream"],
-        "low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE if prefix == "text_encoder" else MODEL_LOW_CPU_MEM_USAGE,
+        "record_stream": GROUP_OFFLOAD_CONFIG[f"{prefix}_record_stream"],
+        "low_cpu_mem_usage": (
+            TEXT_ENCODER_LOW_CPU_MEM_USAGE
+            if prefix == "text_encoder"
+            else GROUP_OFFLOAD_CONFIG["transformer_low_cpu_mem_usage"]
+        ),
     }
     if offload_type == "block_level":
         kwargs["num_blocks_per_group"] = GROUP_OFFLOAD_CONFIG[f"{prefix}_num_blocks_per_group"]
@@ -613,6 +624,7 @@ def main():
                 time.time() - event_t0,
                 offload_type=GROUP_OFFLOAD_CONFIG["text_encoder_offload_type"],
                 use_stream=GROUP_OFFLOAD_CONFIG["text_encoder_use_stream"],
+                record_stream=GROUP_OFFLOAD_CONFIG["text_encoder_record_stream"],
                 low_cpu_mem_usage=TEXT_ENCODER_LOW_CPU_MEM_USAGE,
             )
         else:
@@ -785,7 +797,8 @@ def main():
                 time.time() - event_t0,
                 offload_type=GROUP_OFFLOAD_CONFIG["transformer_offload_type"],
                 use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
-                low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
+                record_stream=GROUP_OFFLOAD_CONFIG["transformer_record_stream"],
+                low_cpu_mem_usage=GROUP_OFFLOAD_CONFIG["transformer_low_cpu_mem_usage"],
             )
         elif dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan":
             record_event(

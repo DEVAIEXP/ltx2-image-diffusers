@@ -82,6 +82,29 @@ $env:DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE="1"
 $env:DIFFUSERS_RUNNER_METRICS_LEVEL="2"
 ```
 
+## Current Preset Baselines
+
+Detailed notes for the current preset comparison are also tracked in
+[`../../experiments/dynamic_weights_results.md`](../../experiments/dynamic_weights_results.md).
+
+The current Windows transformer-only baseline uses fake prompt embeds, 1280x704, 8 steps, seed 43, BF16, native
+attention, and Windows standby purge before the transformer.
+
+| Scenario | Preset / route | RAM policy | Setup | Denoise / pass | Copy | Peak VRAM | Peak RAM | Notes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Dynamic weights, enough RAM | `one_shot_fast` | detected `46.84 GB`, full pin selected | `34.67s` | `14.38s` denoise | `0.56s` / `148.14 GB` | `6.97 GB` | `25.15 GB` | Fast path selected: `snap_to_full_pin`, 444 patched modules, 11 resident blocks. |
+| Dynamic weights, simulated 32 GB RAM | `one_shot_fast` | pin skipped, insufficient RAM | `7.72s` | `198.2s` pass, denoise copy-bound | `174.12s` / `148.14 GB` | `6.97 GB` | `25.87 GB` | Correct safe path: avoids pinning when usable RAM is below required RAM. |
+| Low RAM fallback | `low_ram_safe` | no pin, smaller resident budget | `3.78s` | `194.10s` denoise | `187.81s` / `172.17 GB` | `3.28 GB reserved` | not captured | Uses less VRAM but is slower than `one_shot_fast` simulated at 32 GB. |
+| Official Diffusers group offload | dynamic weights off, transformer `leaf_level`, stream, record stream, low CPU mem usage off | Diffusers hook path | `0.07s` hook setup | `315.29s` denoise | not tracked by dynamic weights | `6.49 GB` | `26.60 GB` | Useful compatibility baseline, but much slower in this low-VRAM 8-step test. |
+
+Current preset direction:
+
+- `auto` resolves to `one_shot_fast` on Windows, Linux, and WSL.
+- `one_shot_fast` is the general default: it pins CPU weights only when the RAM-aware planner says there is enough usable system RAM.
+- `low_ram_safe` is an explicit fallback for tighter VRAM cases, not the recommended 32 GB RAM preset for this model.
+- `wsl_compat` remains explicit for WSL/driver setups where stream or pinned-memory behavior is unstable.
+- `warm_process` remains the process-lifetime cache/server-like preset.
+
 ## Attention Backend Findings
 
 Flash attention was installed in the project environment, but it did not improve the bottleneck.
