@@ -259,9 +259,6 @@ def resolve_dynamic_weights_preset(requested_preset: str, *, running_on_wsl: boo
             )
         return _resolve_dynamic_weights_preset_alias(requested_preset)
 
-    effective_running_on_wsl = is_wsl_environment() if running_on_wsl is None else running_on_wsl
-    if effective_running_on_wsl:
-        return "wsl_compat"
     return "one_shot_fast"
 
 
