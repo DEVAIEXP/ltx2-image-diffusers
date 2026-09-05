@@ -21,7 +21,7 @@ def is_wsl() -> bool:
 
 
 def should_malloc_trim() -> bool:
-    value = os.environ.get("LTX_IMAGE_MALLOC_TRIM")
+    value = os.environ.get("DIFFUSERS_RUNNER_MALLOC_TRIM")
     if value is not None:
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return not is_wsl()

@@ -18,7 +18,6 @@ This repository is currently focused on a generic Diffusers-style dynamic weight
 - Use generic environment names in new docs and commands:
   - `DIFFUSERS_DYNAMIC_WEIGHTS_*`
   - `DIFFUSERS_RUNNER_*`
-- Legacy `LTX_IMAGE_*` aliases may remain supported in code, but should not be the default in new experiment notes.
 
 ## Current Preset Meaning
 

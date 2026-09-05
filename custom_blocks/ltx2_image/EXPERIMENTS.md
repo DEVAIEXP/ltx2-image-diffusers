@@ -40,12 +40,6 @@ Current preset behavior:
 | `diffusers_leaf_offload_compat` | Official Diffusers leaf fallback | Disables dynamic weights and uses Diffusers transformer `leaf_level` group offload with `stream=1` and `record_stream=1`. |
 | `compat` | Conservative fallback | Dynamic runtime without pinned CPU memory, for driver/OS-sensitive machines. |
 
-Legacy aliases remain accepted for old commands: `windows_fast` and `linux_native_fast` map to `one_shot_fast`,
-`linux_safe`, `planner_slim_resident`, and `low_ram` map to `low_ram_safe`, `planner_balanced` maps to
-`one_shot_fast`, `warm_server` maps to `warm_process`, `diffusers_group_offload`/`group_offload_compat` map to
-`diffusers_offload_compat`, and `diffusers_leaf_group_offload`/`leaf_offload_compat` map to
-`diffusers_leaf_offload_compat`.
-
 ## Important Baselines
 
 | Mode | Encode | Transformer setup/load | Denoise | Pass 1 total | Torch alloc during denoise | Peak RAM | Notes |
@@ -1038,7 +1032,9 @@ Windows-specific note: standby cache state can dominate benchmark variance. On t
 
 ### Dynamic Weights Presets
 
-The runner now supports `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET` as a convenience layer over the existing environment variables. Explicit environment variables still override preset values. Presets intentionally do not enable Windows standby purge so they remain portable to Linux/WSL. The legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET` name remains supported for old commands.
+The runner supports `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET` as a convenience layer over the existing environment variables.
+Explicit environment variables still override preset values. Presets intentionally do not enable Windows standby purge
+so they remain portable to Linux/WSL.
 
 | Preset | Intended use | Main resolved settings |
 | --- | --- | --- |
@@ -1050,11 +1046,6 @@ The runner now supports `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET` as a convenience laye
 | `diffusers_offload_compat` | Official Diffusers compatibility fallback | Dynamic weights disabled, transformer group offload `block_level`, `num_blocks_per_group=1`, `stream=1`, `record_stream=1`, low CPU mem usage on |
 | `diffusers_leaf_offload_compat` | Official Diffusers leaf fallback | Dynamic weights disabled, transformer group offload `leaf_level`, `stream=1`, `record_stream=1`, low CPU mem usage on |
 | `compat` | Highest portability baseline for driver/OS-sensitive machines | `linear_runtime`, no pinned CPU memory, `3 GB` resident module budget |
-
-Legacy preset names are aliases only: `windows_fast` and `linux_native_fast` resolve to `one_shot_fast`, `warm_server`
-resolves to `warm_process`, `low_ram`, `linux_safe`, and `planner_slim_resident` resolve to `low_ram_safe`,
-`diffusers_group_offload`/`group_offload_compat` resolve to `diffusers_offload_compat`, and
-`diffusers_leaf_group_offload`/`leaf_offload_compat` resolve to `diffusers_leaf_offload_compat`.
 
 WSL/Linux test note: run the same preset without `DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_*`. This will tell us whether the strong warm result is mostly from generic pinned-memory/module-residency behavior or from Windows WDDM/shared-memory behavior. Key comparison fields are `build_dynamic_weights_plan`, repeated denoise times, process RAM, and VRAM.
 
@@ -1102,13 +1093,13 @@ Additional Ubuntu native preset probes:
 
 | Run | Purpose | Key settings | Encode pass | Dynamic setup | Denoise | Pass 1 | Total |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `ubuntu_5` | Warm/server repeat | `warm_server` legacy alias for `warm_process`, text encoder stream off, pinned weights | `33.7s` | `18.3515s` | `13.0230s` + `12.8770s` | `49.5s` | `85.3s` |
+| `ubuntu_5` | Warm/server repeat | `warm_process`, text encoder stream off, pinned weights | `33.7s` | `18.3515s` | `13.0230s` + `12.8770s` | `49.5s` | `85.3s` |
 | `ubuntu_6` | Text encoder stream on | `one_shot_fast`, text encoder stream on, pinned weights | `16.6s` | `11.5440s` | `12.9409s` | `26.1s` | `43.7s` |
 | `ubuntu_7` | Intended low-RAM check | stream off, pinned weights, but effective resident set still matched `6 GB`/11 blocks | `24.3s` | `18.9552s` | `13.0583s` | `38.4s` | `64.9s` |
 
 Insight: on Ubuntu native, `DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM=1` works and is currently the fastest full-run path. The best run was `ubuntu_6` at `43.7s` total, with Pass 1 only `26.1s`. This is much faster than the earlier ComfyUI reference total (`72.11s`) and shows that Linux native plus pinned dynamic weights is the strongest platform so far. The intended low-RAM test needs to be repeated with explicit resident budget cleanup, because `ubuntu_7` still selected the same 11 resident modules and moved `5.5077 GB`, so it did not validate a true lower-budget profile.
 
-Architecture note: dynamic weights presets now live with the `dynamic_weights` manager rather than in the runner. The runner resolves `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET=auto` through that manager and then passes explicit parameters to `DynamicWeightsConfig`. Resident module presets use `auto`, which lets the manager infer repeated module groups from the PyTorch module graph instead of hardcoding LTX-specific names. This keeps the script thin and makes the policy easier to port toward a Diffusers-native design later. The legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET` alias remains valid for old commands.
+Architecture note: dynamic weights presets now live with the `dynamic_weights` manager rather than in the runner. The runner resolves `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET=auto` through that manager and then passes explicit parameters to `DynamicWeightsConfig`. Resident module presets use `auto`, which lets the manager infer repeated module groups from the PyTorch module graph instead of hardcoding LTX-specific names. This keeps the script thin and makes the policy easier to port toward a Diffusers-native design later.
 
 Windows auto preset validation:
 
@@ -1128,7 +1119,8 @@ Insight: partial pinning is not a good short-run tradeoff on Windows. It saved o
 
 ## Generic Dynamic Weights Naming
 
-The dynamic weights runtime now accepts generic `DIFFUSERS_DYNAMIC_WEIGHTS_*` environment names in addition to the legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_*` aliases. Presets are expanded internally by the manager, and the runner consults `DIFFUSERS_RUNNER_*` first for script controls while keeping legacy `LTX_IMAGE_*` variables valid for existing benchmark commands.
+The dynamic weights runtime uses generic `DIFFUSERS_DYNAMIC_WEIGHTS_*` environment names. Presets are expanded
+internally by the manager, and the runner uses `DIFFUSERS_RUNNER_*` for script controls.
 
 This is the first migration step toward a model-agnostic Diffusers-style loader/runtime. LTX-specific names remain only where the current runner, model classes, or historical benchmark records are still explicitly tied to the LTX image experiment.
 
@@ -1140,9 +1132,11 @@ For this step the wrapper still uses the normal Diffusers loading path and appli
 
 ## Dynamic Weights Profile Output
 
-`DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE=1` (or legacy `LTX_IMAGE_DYNAMIC_WEIGHTS_SHOW_PROFILE=1`) enables the printed `[dynamic-weights-profile]` block. That flag controls the detailed dynamic weights profile, such as resident modules and copy breakdowns, and defaults to `0` to keep benchmark output compact.
+`DIFFUSERS_DYNAMIC_WEIGHTS_SHOW_PROFILE=1` enables the printed `[dynamic-weights-profile]` block. That flag controls
+the detailed dynamic weights profile, such as resident modules and copy breakdowns, and defaults to `0` to keep
+benchmark output compact.
 
-Runner-level metric output now uses generic `DIFFUSERS_RUNNER_*` aliases, with old `LTX_IMAGE_*` names kept as fallback:
+Runner-level metric output uses generic `DIFFUSERS_RUNNER_*` names:
 
 - `DIFFUSERS_RUNNER_METRICS_LEVEL=0`: quiet console metrics and no metrics JSON.
 - `DIFFUSERS_RUNNER_METRICS_LEVEL=1`: show console timings/events/denoise steps, but do not save metrics JSON.
@@ -1150,7 +1144,8 @@ Runner-level metric output now uses generic `DIFFUSERS_RUNNER_*` aliases, with o
 - `DIFFUSERS_RUNNER_SAVE_METRICS=1`: save metrics JSON even when the metrics level is `0` or `1`.
 - `DIFFUSERS_DYNAMIC_WEIGHTS_VERBOSE=1`: additionally print the compact `[dynamic-weights] setup=...` line during setup.
 
-New benchmark commands should prefer `DIFFUSERS_DYNAMIC_WEIGHTS_*` for the manager and `DIFFUSERS_RUNNER_*` for script/runtime controls. Historical command blocks above have been migrated to the generic names where possible; legacy `LTX_IMAGE_*` aliases remain supported in the runner.
+New benchmark commands should use `DIFFUSERS_DYNAMIC_WEIGHTS_*` for the manager and `DIFFUSERS_RUNNER_*` for
+script/runtime controls.
 
 ## Current Windows Baseline
 
@@ -1294,8 +1289,8 @@ or, normally:
 $env:DIFFUSERS_DYNAMIC_WEIGHTS_PRESET="one_shot_fast"
 ```
 
-`one_shot_fast` is now the stable/default path, and `planner_balanced` is only a legacy alias to the same preset. The
-planner derives budgets from the actual loaded component and the available system RAM:
+`one_shot_fast` is now the stable/default path. The planner derives budgets from the actual loaded component and the
+available system RAM:
 
 | Decision | V1 behavior |
 | --- | --- |
@@ -1312,7 +1307,7 @@ First Windows planner transformer probe, before snap-to-full and RAM-aware safeg
 
 | Mode | Planner resident budget | Planner pin budget | Transformer setup | Denoise | Pass 1 | Peak VRAM | Peak RAM | Result |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `planner_balanced`, text encoder not using group offload in this run | `6.0 GB` | `18.0176 GB` from `0.75` ratio | `40.9420s` | `65.1249s` | `115.1s` | `6.51 GB` | `44.20 GB` | Not viable. |
+| Early balanced-planner probe, text encoder not using group offload in this run | `6.0 GB` | `18.0176 GB` from `0.75` ratio | `40.9420s` | `65.1249s` | `115.1s` | `6.51 GB` | `44.20 GB` | Not viable. |
 
 Planner details: candidate streamable weights were `24.0234 GB`; after `6 GB` resident-module budget, the runtime pinned `432` weights instead of the full `444`. That small unpinned tail caused `63.4582s` of repeated runtime copies across `148.1445 GB`.
 

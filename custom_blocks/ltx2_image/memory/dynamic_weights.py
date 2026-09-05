@@ -20,7 +20,6 @@ from diffusers.hooks.hooks import HookRegistry, ModelHook
 _DEFAULT_TARGET_MODULE_CLASSES = (nn.Linear, nn.Embedding)
 _DYNAMIC_WEIGHTS_HOOK = "dynamic_weights"
 _DYNAMIC_WEIGHTS_ENV_PREFIX = "DIFFUSERS_DYNAMIC_WEIGHTS_"
-_LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX = "LTX_IMAGE_DYNAMIC_WEIGHTS_"
 _PIN_MEMORY_ERRORS = (RuntimeError, getattr(torch, "AcceleratorError", RuntimeError))
 _DEFAULT_ALWAYS_RESIDENT_MODULE_PATTERNS = (
     r"(^|\.)(proj_in|time_embed|prompt_adaln|norm_out|proj_out)(\.|$)",
@@ -33,43 +32,9 @@ _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE: dict[tuple[Any, ...], torch.Tensor] = {}
 _DYNAMIC_WEIGHTS_PINNED_TENSOR_CACHE_LOCK = threading.Lock()
 
 
-def generic_dynamic_weights_env_name(name: str) -> str:
-    if name.startswith(_LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX):
-        return _DYNAMIC_WEIGHTS_ENV_PREFIX + name[len(_LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX) :]
-    return name
-
-
-def legacy_dynamic_weights_env_name(name: str) -> str:
-    if name.startswith(_DYNAMIC_WEIGHTS_ENV_PREFIX):
-        return _LEGACY_DYNAMIC_WEIGHTS_ENV_PREFIX + name[len(_DYNAMIC_WEIGHTS_ENV_PREFIX) :]
-    return name
-
-
-def dynamic_weights_env_names(name: str) -> tuple[str, ...]:
-    generic_name = generic_dynamic_weights_env_name(name)
-    legacy_name = legacy_dynamic_weights_env_name(name)
-    if generic_name == legacy_name:
-        return (name,)
-    return (generic_name, legacy_name)
-
-
 def dynamic_weights_env_value(name: str, default: str = "", environ: Mapping[str, str] | None = None) -> str:
     env = os.environ if environ is None else environ
-    for env_name in dynamic_weights_env_names(name):
-        if env_name in env:
-            return env[env_name]
     return env.get(name, default)
-
-
-def _expand_dynamic_weights_preset_aliases(presets: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
-    expanded_presets: dict[str, dict[str, str]] = {}
-    for preset_name, values in presets.items():
-        expanded_values = dict(values)
-        for env_name, value in values.items():
-            for alias in dynamic_weights_env_names(env_name):
-                expanded_values.setdefault(alias, value)
-        expanded_presets[preset_name] = expanded_values
-    return expanded_presets
 
 
 def is_wsl_environment() -> bool:
@@ -154,12 +119,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_PLAN": "0",
         "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "1",
     },
-    "diffusers_leaf_group_offload": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "diffusers_leaf_offload_compat",
-    },
-    "leaf_offload_compat": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "diffusers_leaf_offload_compat",
-    },
     "diffusers_offload_compat": {
         "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
         "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
@@ -176,12 +135,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "plan",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PLAN": "0",
         "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "1",
-    },
-    "diffusers_group_offload": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "diffusers_offload_compat",
-    },
-    "group_offload_compat": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "diffusers_offload_compat",
     },
     "one_shot_fast": {
         "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
@@ -204,15 +157,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
         "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "1",
     },
-    "windows_fast": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "one_shot_fast",
-    },
-    "linux_native_fast": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "one_shot_fast",
-    },
-    "linux_safe": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "low_ram_safe",
-    },
     "wsl_compat": {
         "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
         "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
@@ -232,12 +176,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
         "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "3",
     },
-    "planner_balanced": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "one_shot_fast",
-    },
-    "planner_slim_resident": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "low_ram_safe",
-    },
     "warm_process": {
         "DIFFUSERS_RUNNER_GENERATION_REPEATS": "2",
         "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
@@ -254,9 +192,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
     },
-    "warm_server": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "warm_process",
-    },
     "low_ram_safe": {
         "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
         "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
@@ -270,9 +205,6 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
-    },
-    "low_ram": {
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "low_ram_safe",
     },
     "compat": {
         "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
@@ -290,7 +222,7 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
 }
 
 
-DYNAMIC_WEIGHTS_PRESETS = _expand_dynamic_weights_preset_aliases(_DYNAMIC_WEIGHTS_PRESET_VALUES)
+DYNAMIC_WEIGHTS_PRESETS = _DYNAMIC_WEIGHTS_PRESET_VALUES
 
 
 def resolve_dynamic_weights_preset(requested_preset: str, *, running_on_wsl: bool | None = None) -> str:
@@ -299,28 +231,12 @@ def resolve_dynamic_weights_preset(requested_preset: str, *, running_on_wsl: boo
         if requested_preset and requested_preset not in DYNAMIC_WEIGHTS_PRESETS:
             valid_presets = ", ".join(["auto", *sorted(DYNAMIC_WEIGHTS_PRESETS)])
             raise ValueError(
-                f"Invalid DIFFUSERS_DYNAMIC_WEIGHTS_PRESET/LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET={requested_preset!r}. "
+                f"Invalid DIFFUSERS_DYNAMIC_WEIGHTS_PRESET={requested_preset!r}. "
                 f"Valid values: {valid_presets}"
             )
-        return _resolve_dynamic_weights_preset_alias(requested_preset)
+        return requested_preset
 
     return "one_shot_fast"
-
-
-def _resolve_dynamic_weights_preset_alias(preset_name: str) -> str:
-    seen: set[str] = set()
-    while preset_name:
-        if preset_name in seen:
-            raise ValueError(f"Dynamic weights preset alias cycle detected at {preset_name!r}")
-        seen.add(preset_name)
-        preset_values = DYNAMIC_WEIGHTS_PRESETS.get(preset_name, {})
-        next_preset = preset_values.get("DIFFUSERS_DYNAMIC_WEIGHTS_PRESET", "").strip().lower()
-        if not next_preset or next_preset == preset_name:
-            return preset_name
-        if next_preset not in DYNAMIC_WEIGHTS_PRESETS:
-            raise ValueError(f"Dynamic weights preset {preset_name!r} aliases unknown preset {next_preset!r}")
-        preset_name = next_preset
-    return preset_name
 
 
 def dynamic_weights_preset_env_value(
@@ -333,9 +249,8 @@ def dynamic_weights_preset_env_value(
     environ: Mapping[str, str] | None = None,
 ) -> str:
     env = os.environ if environ is None else environ
-    for env_name in dynamic_weights_env_names(name):
-        if env_name in env:
-            return env[env_name]
+    if name in env:
+        return env[name]
 
     preset_name = effective_preset
     if preset_name is None:
@@ -344,9 +259,6 @@ def dynamic_weights_preset_env_value(
         return default
 
     preset_values = DYNAMIC_WEIGHTS_PRESETS[preset_name]
-    for env_name in dynamic_weights_env_names(name):
-        if env_name in preset_values:
-            return preset_values[env_name]
     return preset_values.get(name, default)
 
 
@@ -643,7 +555,7 @@ class DynamicWeightsHook(ModelHook):
             if self.config.pin_cpu_memory and self.pin_weight_budget_bytes > 0:
                 print(
                     "  [dynamic-weights] warning: partial pinned-memory budgets can be slower than full pinning; "
-                    "clear DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB/LTX_IMAGE_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB "
+                    "clear DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB "
                     "when benchmarking the fast preset.",
                     flush=True,
                 )

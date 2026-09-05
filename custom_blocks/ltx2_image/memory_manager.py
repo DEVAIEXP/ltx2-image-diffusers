@@ -549,7 +549,7 @@ class LTX2DynamicBlockManager:
         if not full:
             print(
                 "  [manager-profile] full profile saved in metrics JSON; set "
-                "LTX_IMAGE_TRANSFORMER_MANAGER_PROFILE_FULL=1 to print it.",
+                "DIFFUSERS_RUNNER_TRANSFORMER_MANAGER_PROFILE_FULL=1 to print it.",
                 flush=True,
             )
             return

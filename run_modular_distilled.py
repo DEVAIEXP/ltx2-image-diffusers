@@ -29,7 +29,6 @@ from custom_blocks.ltx2_image.memory import (
     DynamicWeightsSettings,
     apply_dynamic_weights,
     build_dynamic_weights_event_payload,
-    dynamic_weights_env_names,
     from_pretrained_with_dynamic_weights,
     is_wsl_environment,
     remove_dynamic_weights,
@@ -37,26 +36,7 @@ from custom_blocks.ltx2_image.memory import (
 from inference_utils import RunTracker, flush
 
 
-_RUNNER_ENV_PREFIX = "DIFFUSERS_RUNNER_"
-_LEGACY_RUNNER_ENV_PREFIX = "LTX_IMAGE_"
-
-
-def runner_env_names(name: str) -> tuple[str, ...]:
-    if name.startswith("LTX_IMAGE_DYNAMIC_WEIGHTS_") or name.startswith("DIFFUSERS_DYNAMIC_WEIGHTS_"):
-        return dynamic_weights_env_names(name)
-    if name.startswith(_LEGACY_RUNNER_ENV_PREFIX):
-        generic_name = _RUNNER_ENV_PREFIX + name[len(_LEGACY_RUNNER_ENV_PREFIX) :]
-        return (generic_name, name)
-    if name.startswith(_RUNNER_ENV_PREFIX):
-        legacy_name = _LEGACY_RUNNER_ENV_PREFIX + name[len(_RUNNER_ENV_PREFIX) :]
-        return (name, legacy_name)
-    return (name,)
-
-
 def env_value(name: str, default: str = "") -> str:
-    for env_name in runner_env_names(name):
-        if env_name in os.environ:
-            return os.environ[env_name]
     return os.environ.get(name, default)
 
 
@@ -70,12 +50,12 @@ def parse_metrics_level() -> int:
         level = int(value)
     except ValueError as exc:
         raise ValueError(
-            f"Invalid DIFFUSERS_RUNNER_METRICS_LEVEL/LTX_IMAGE_METRICS_LEVEL={value!r}. "
+            f"Invalid DIFFUSERS_RUNNER_METRICS_LEVEL={value!r}. "
             "Valid values: 0, 1, 2."
         ) from exc
     if level not in {0, 1, 2}:
         raise ValueError(
-            f"Invalid DIFFUSERS_RUNNER_METRICS_LEVEL/LTX_IMAGE_METRICS_LEVEL={value!r}. "
+            f"Invalid DIFFUSERS_RUNNER_METRICS_LEVEL={value!r}. "
             "Valid values: 0, 1, 2."
         )
     return level
@@ -101,13 +81,11 @@ DYNAMIC_WEIGHTS_PRESET = DYNAMIC_WEIGHTS_SETTINGS.effective_preset
 
 
 def preset_env(name: str, default: str = "") -> str:
-    for env_name in runner_env_names(name):
-        if env_name in os.environ:
-            return os.environ[env_name]
-    for env_name in runner_env_names(name):
-        value = DYNAMIC_WEIGHTS_SETTINGS.preset_value(env_name)
-        if value != "":
-            return value
+    if name in os.environ:
+        return os.environ[name]
+    value = DYNAMIC_WEIGHTS_SETTINGS.preset_value(name)
+    if value != "":
+        return value
     return default
 
 
@@ -269,7 +247,7 @@ def get_attention_backend():
     except ValueError as exc:
         valid = ", ".join(backend.value for backend in AttentionBackendName)
         raise ValueError(
-            f"Invalid DIFFUSERS_RUNNER_ATTENTION_BACKEND/LTX_IMAGE_ATTENTION_BACKEND={ATTENTION_BACKEND!r}. "
+            f"Invalid DIFFUSERS_RUNNER_ATTENTION_BACKEND={ATTENTION_BACKEND!r}. "
             f"Valid values: {valid}"
         ) from exc
 
@@ -547,7 +525,7 @@ def main():
         else:
             print(f"Using dynamic weights preset: {DYNAMIC_WEIGHTS_PRESET}", flush=True)
     if DYNAMIC_WEIGHTS_PIN_CPU_MEMORY and not DYNAMIC_WEIGHTS_EFFECTIVE_PIN_CPU_MEMORY:
-        print("  [dynamic-weights] disabling pinned CPU memory on WSL; set DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0 (or legacy LTX_IMAGE_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0) to force it.", flush=True)
+        print("  [dynamic-weights] disabling pinned CPU memory on WSL; set DIFFUSERS_DYNAMIC_WEIGHTS_DISABLE_PIN_ON_WSL=0 to force it.", flush=True)
     text_encoder_route = (
         "dynamic_weights"
         if TEXT_ENCODER_DYNAMIC_WEIGHTS
@@ -771,7 +749,7 @@ def main():
         if dynamic_weights_enabled and DYNAMIC_WEIGHTS_EXECUTION_MODE != "plan" and TRANSFORMER_MEMORY_MANAGER != "off":
             raise ValueError(
                 "Dynamic weights execution currently requires "
-                "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER/LTX_IMAGE_TRANSFORMER_MEMORY_MANAGER='off'. "
+                "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER='off'. "
                 "Use execution_mode='plan' with the block manager."
             )
 
@@ -787,8 +765,8 @@ def main():
         event_t0 = time.time()
         if TRANSFORMER_MEMORY_MANAGER != "off":
             raise ValueError(
-                "The legacy transformer block manager is no longer used by this runner. "
-                "Use DIFFUSERS_DYNAMIC_WEIGHTS_PRESET/LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET or transformer group offload."
+                "The transformer block manager is no longer used by this runner. "
+                "Use DIFFUSERS_DYNAMIC_WEIGHTS_PRESET or transformer group offload."
             )
         if TRANSFORMER_GROUP_OFFLOAD:
             apply_model_group_offload(prepared_transformer, prefix="transformer")

@@ -37,9 +37,9 @@ from diffusers.utils import apply_lora_scale, logging
 
 logger = logging.get_logger(__name__)
 
-_LOG_ATTENTION_MASK = os.environ.get("LTX_IMAGE_LOG_ATTENTION_MASK", "0") == "1"
-_LOG_ATTENTION_MASK_LIMIT = int(os.environ.get("LTX_IMAGE_LOG_ATTENTION_MASK_LIMIT", "8"))
-_DROP_TRIVIAL_ATTENTION_MASK_DEFAULT = os.environ.get("LTX_IMAGE_DROP_TRIVIAL_ATTENTION_MASK", "0") == "1"
+_LOG_ATTENTION_MASK = os.environ.get("DIFFUSERS_RUNNER_LOG_ATTENTION_MASK", "0") == "1"
+_LOG_ATTENTION_MASK_LIMIT = int(os.environ.get("DIFFUSERS_RUNNER_LOG_ATTENTION_MASK_LIMIT", "8"))
+_DROP_TRIVIAL_ATTENTION_MASK_DEFAULT = os.environ.get("DIFFUSERS_RUNNER_DROP_TRIVIAL_ATTENTION_MASK", "0") == "1"
 _attention_mask_log_count = 0
 
 
