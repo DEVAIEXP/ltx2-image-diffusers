@@ -43,6 +43,7 @@ Recommended defaults:
 - `wsl_compat` -> explicit WSL fallback when stream/pin behavior is unstable
 - `warm_process` -> process-lifetime cache comparisons and server-like usage
 - `diffusers_offload_compat` -> official Diffusers group-offload compatibility fallback
+- `diffusers_leaf_offload_compat` -> official Diffusers leaf-level fallback for models where finer granularity may fit better
 
 Potential report sections:
 - one-shot setup cost vs denoise throughput

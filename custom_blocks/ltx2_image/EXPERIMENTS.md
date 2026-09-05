@@ -37,12 +37,14 @@ Current preset behavior:
 | `wsl_compat` | Explicit WSL fallback | Disables pinned dynamic weights and uses text encoder group offload with stream disabled for WSL/driver setups where pinned-memory behavior is unstable. |
 | `warm_process` | Server-like comparison | Enables process-lifetime pinned tensor cache and generation repeats for warm-process measurements. |
 | `diffusers_offload_compat` | Official Diffusers fallback | Disables dynamic weights and uses Diffusers transformer `block_level` group offload with `stream=1`, `record_stream=1`, and one block per group. |
+| `diffusers_leaf_offload_compat` | Official Diffusers leaf fallback | Disables dynamic weights and uses Diffusers transformer `leaf_level` group offload with `stream=1` and `record_stream=1`. |
 | `compat` | Conservative fallback | Dynamic runtime without pinned CPU memory, for driver/OS-sensitive machines. |
 
 Legacy aliases remain accepted for old commands: `windows_fast` and `linux_native_fast` map to `one_shot_fast`,
 `linux_safe`, `planner_slim_resident`, and `low_ram` map to `low_ram_safe`, `planner_balanced` maps to
-`one_shot_fast`, `warm_server` maps to `warm_process`, and `diffusers_group_offload`/`group_offload_compat` map to
-`diffusers_offload_compat`.
+`one_shot_fast`, `warm_server` maps to `warm_process`, `diffusers_group_offload`/`group_offload_compat` map to
+`diffusers_offload_compat`, and `diffusers_leaf_group_offload`/`leaf_offload_compat` map to
+`diffusers_leaf_offload_compat`.
 
 ## Important Baselines
 
@@ -1046,11 +1048,13 @@ The runner now supports `DIFFUSERS_DYNAMIC_WEIGHTS_PRESET` as a convenience laye
 | `low_ram_safe` | Explicit low-VRAM fallback | `linear_runtime`, no pinned CPU memory, `3 GB` resident module budget |
 | `wsl_compat` | Explicit WSL/driver fallback | `linear_runtime`, no pinned CPU memory, text encoder group offload stream disabled, extra pre-VAE cleanup |
 | `diffusers_offload_compat` | Official Diffusers compatibility fallback | Dynamic weights disabled, transformer group offload `block_level`, `num_blocks_per_group=1`, `stream=1`, `record_stream=1`, low CPU mem usage on |
+| `diffusers_leaf_offload_compat` | Official Diffusers leaf fallback | Dynamic weights disabled, transformer group offload `leaf_level`, `stream=1`, `record_stream=1`, low CPU mem usage on |
 | `compat` | Highest portability baseline for driver/OS-sensitive machines | `linear_runtime`, no pinned CPU memory, `3 GB` resident module budget |
 
 Legacy preset names are aliases only: `windows_fast` and `linux_native_fast` resolve to `one_shot_fast`, `warm_server`
-resolves to `warm_process`, `low_ram`, `linux_safe`, and `planner_slim_resident` resolve to `low_ram_safe`, and
-`diffusers_group_offload`/`group_offload_compat` resolve to `diffusers_offload_compat`.
+resolves to `warm_process`, `low_ram`, `linux_safe`, and `planner_slim_resident` resolve to `low_ram_safe`,
+`diffusers_group_offload`/`group_offload_compat` resolve to `diffusers_offload_compat`, and
+`diffusers_leaf_group_offload`/`leaf_offload_compat` resolve to `diffusers_leaf_offload_compat`.
 
 WSL/Linux test note: run the same preset without `DIFFUSERS_RUNNER_PURGE_WINDOWS_STANDBY_*`. This will tell us whether the strong warm result is mostly from generic pinned-memory/module-residency behavior or from Windows WDDM/shared-memory behavior. Key comparison fields are `build_dynamic_weights_plan`, repeated denoise times, process RAM, and VRAM.
 
