@@ -27,8 +27,7 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
 )
 from diffusers_dynamic_offloader import (
     DynamicOffloadSettings,
-    apply_dynamic_offload,
-    build_dynamic_offload_event_payload,
+    enable_dynamic_offload,
     format_dynamic_offload_presets,
     from_pretrained_with_dynamic_offload,
     is_wsl_environment,
@@ -499,16 +498,14 @@ def main():
                     *TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES,
                 ),
             )
-            text_encoder_dynamic_offload_hook = apply_dynamic_offload(text_encoder, text_encoder_dynamic_offload_config)
-            record_event(
-                "setup_text_encoder_dynamic_offload",
-                time.time() - event_t0,
-                **build_dynamic_offload_event_payload(
-                    DYNAMIC_OFFLOAD_SETTINGS,
-                    text_encoder_dynamic_offload_hook.state,
-                    text_encoder_dynamic_offload_config,
-                ),
+            text_encoder_dynamic_offload = enable_dynamic_offload(
+                text_encoder,
+                settings=DYNAMIC_OFFLOAD_SETTINGS,
+                config=text_encoder_dynamic_offload_config,
+                record_event=record_event,
+                event_name="setup_text_encoder_dynamic_offload",
             )
+            text_encoder_dynamic_offload_hook = text_encoder_dynamic_offload.hook
         elif TEXT_ENCODER_GROUP_OFFLOAD:
             apply_model_group_offload(text_encoder, prefix="text_encoder")
             record_event(
@@ -668,13 +665,14 @@ def main():
             )
 
         if dynamic_offload_enabled:
-            event_t0 = time.time()
-            prepared_dynamic_offload_hook = apply_dynamic_offload(prepared_transformer, dynamic_offload_config)
-            record_event(
-                transformer_prepare_event_name("build_dynamic_offload_plan", repeat_index),
-                time.time() - event_t0,
-                **build_dynamic_offload_event_payload(DYNAMIC_OFFLOAD_SETTINGS, prepared_dynamic_offload_hook.state),
+            prepared_dynamic_offload = enable_dynamic_offload(
+                prepared_transformer,
+                settings=DYNAMIC_OFFLOAD_SETTINGS,
+                config=dynamic_offload_config,
+                record_event=record_event,
+                event_name=transformer_prepare_event_name("build_dynamic_offload_plan", repeat_index),
             )
+            prepared_dynamic_offload_hook = prepared_dynamic_offload.hook
 
         event_t0 = time.time()
         if TRANSFORMER_MEMORY_MANAGER != "off":
