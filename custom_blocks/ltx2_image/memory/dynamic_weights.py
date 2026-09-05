@@ -88,12 +88,57 @@ def is_wsl_environment() -> bool:
     return "microsoft" in version or "wsl" in version
 
 
+def get_available_system_ram_gb() -> float:
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    if psutil is not None:
+        try:
+            return psutil.virtual_memory().available / 1024**3
+        except Exception:
+            pass
+
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            class MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(MemoryStatusEx)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.ullAvailPhys / 1024**3
+        except Exception:
+            return 0.0
+    else:
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            available_pages = os.sysconf("SC_AVPHYS_PAGES")
+            return page_size * available_pages / 1024**3
+        except (AttributeError, OSError, ValueError):
+            return 0.0
+
+    return 0.0
+
+
 _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
     "off": {
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "plan",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PLAN": "0",
     },
-    "windows_fast": {
+    "one_shot_fast": {
         "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
         "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
         "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "1",
@@ -105,30 +150,23 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "balanced",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB": "6",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_SYSTEM_RAM_HEADROOM_GB": "8",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
         "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "1",
     },
+    "windows_fast": {
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "one_shot_fast",
+    },
     "linux_native_fast": {
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "1",
-        "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
-        "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
-        "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
-        "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "1",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "one_shot_fast",
+    },
+    "linux_safe": {
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "low_ram_safe",
     },
     "wsl_compat": {
         "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
@@ -150,52 +188,12 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_RUNNER_PRE_VAE_CLEANUP_REPEATS": "3",
     },
     "planner_balanced": {
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS": "0",
-        "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
-        "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
-        "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "balanced",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB": "6",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "one_shot_fast",
     },
     "planner_slim_resident": {
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE": "leaf_level",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM": "1",
-        "DIFFUSERS_RUNNER_TEXT_ENCODER_DYNAMIC_WEIGHTS": "0",
-        "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
-        "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
-        "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO": "0",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "4",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "low_ram_safe",
     },
-    "warm_server": {
+    "warm_process": {
         "DIFFUSERS_RUNNER_GENERATION_REPEATS": "2",
         "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
         "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
@@ -204,25 +202,32 @@ _DYNAMIC_WEIGHTS_PRESET_VALUES: dict[str, dict[str, str]] = {
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "4",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_CACHE_PINNED_WEIGHTS": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "6",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
     },
-    "low_ram": {
+    "warm_server": {
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "warm_process",
+    },
+    "low_ram_safe": {
         "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
         "DIFFUSERS_RUNNER_TRANSFORMER_GROUP_OFFLOAD": "0",
         "DIFFUSERS_RUNNER_ATTENTION_BACKEND": "native",
         "DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE": "linear_runtime",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "1",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY": "0",
         "DIFFUSERS_DYNAMIC_WEIGHTS_ALLOW_PIN_MEMORY_FALLBACK": "1",
-        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "2",
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_WORKERS": "1",
         "DIFFUSERS_DYNAMIC_WEIGHTS_AUTO_BUDGET_POLICY": "off",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_BUDGET_GB": "3",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_PATTERNS": "auto",
         "DIFFUSERS_DYNAMIC_WEIGHTS_RESIDENT_MODULE_SELECTION": "spread",
         "DIFFUSERS_DYNAMIC_WEIGHTS_SMALL_TENSOR_THRESHOLD_KB": "1024",
+    },
+    "low_ram": {
+        "DIFFUSERS_DYNAMIC_WEIGHTS_PRESET": "low_ram_safe",
     },
     "compat": {
         "DIFFUSERS_RUNNER_TRANSFORMER_MEMORY_MANAGER": "off",
@@ -252,14 +257,28 @@ def resolve_dynamic_weights_preset(requested_preset: str, *, running_on_wsl: boo
                 f"Invalid DIFFUSERS_DYNAMIC_WEIGHTS_PRESET/LTX_IMAGE_DYNAMIC_WEIGHTS_PRESET={requested_preset!r}. "
                 f"Valid values: {valid_presets}"
             )
-        return requested_preset
+        return _resolve_dynamic_weights_preset_alias(requested_preset)
 
     effective_running_on_wsl = is_wsl_environment() if running_on_wsl is None else running_on_wsl
     if effective_running_on_wsl:
         return "wsl_compat"
-    if os.name == "nt":
-        return "windows_fast"
-    return "linux_native_fast"
+    return "one_shot_fast"
+
+
+def _resolve_dynamic_weights_preset_alias(preset_name: str) -> str:
+    seen: set[str] = set()
+    while preset_name:
+        if preset_name in seen:
+            raise ValueError(f"Dynamic weights preset alias cycle detected at {preset_name!r}")
+        seen.add(preset_name)
+        preset_values = DYNAMIC_WEIGHTS_PRESETS.get(preset_name, {})
+        next_preset = preset_values.get("DIFFUSERS_DYNAMIC_WEIGHTS_PRESET", "").strip().lower()
+        if not next_preset or next_preset == preset_name:
+            return preset_name
+        if next_preset not in DYNAMIC_WEIGHTS_PRESETS:
+            raise ValueError(f"Dynamic weights preset {preset_name!r} aliases unknown preset {next_preset!r}")
+        preset_name = next_preset
+    return preset_name
 
 
 def dynamic_weights_preset_env_value(
@@ -317,6 +336,8 @@ class DynamicWeightsConfig:
     auto_budget_policy: str = _AUTO_BUDGET_DISABLED
     max_resident_module_budget_gb: float = 6.0
     max_pin_weight_budget_gb: float = 0.0
+    available_system_ram_gb: float = 0.0
+    system_ram_headroom_gb: float = 6.0
     pin_weight_budget_gb: float = 0.0
     pin_weight_budget_ratio: float = 0.0
     pin_weight_selection: str = "spread"
@@ -376,6 +397,8 @@ class DynamicWeightsSettings:
             "dynamic_weights_auto_budget_policy": config.auto_budget_policy,
             "dynamic_weights_max_resident_module_budget_gb": config.max_resident_module_budget_gb,
             "dynamic_weights_max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
+            "dynamic_weights_available_system_ram_gb": config.available_system_ram_gb,
+            "dynamic_weights_system_ram_headroom_gb": config.system_ram_headroom_gb,
             "dynamic_weights_pin_weight_budget_gb": config.pin_weight_budget_gb,
             "dynamic_weights_pin_weight_budget_ratio": config.pin_weight_budget_ratio,
             "dynamic_weights_pin_weight_selection": config.pin_weight_selection,
@@ -413,6 +436,8 @@ def build_dynamic_weights_event_payload(
         "auto_budget_policy": config.auto_budget_policy,
         "max_resident_module_budget_gb": config.max_resident_module_budget_gb,
         "max_pin_weight_budget_gb": config.max_pin_weight_budget_gb,
+        "available_system_ram_gb": config.available_system_ram_gb,
+        "system_ram_headroom_gb": config.system_ram_headroom_gb,
         "pin_weight_budget_gb": config.pin_weight_budget_gb,
         "pin_weight_budget_ratio": config.pin_weight_budget_ratio,
         "pin_weight_selection": config.pin_weight_selection,
@@ -530,6 +555,7 @@ class DynamicWeightsHook(ModelHook):
         self.state = DynamicWeightsState()
         self._patched_modules: list[tuple[nn.Module, object]] = []
         self._pin_memory_disabled = False
+        self._skip_pin_weights = False
         self._resident_module_names: set[str] = set()
         self._pinned_weight_cache_namespace = ""
         self.execution_device = torch.device(config.execution_device)
@@ -541,6 +567,8 @@ class DynamicWeightsHook(ModelHook):
             raise ValueError("DynamicWeightsConfig.auto_budget_policy must be 'off' or 'balanced'")
         self.max_resident_module_budget_bytes = int(max(0.0, float(config.max_resident_module_budget_gb)) * 1024**3)
         self.max_pin_weight_budget_bytes = int(max(0.0, float(config.max_pin_weight_budget_gb)) * 1024**3)
+        self.available_system_ram_bytes = int(max(0.0, float(config.available_system_ram_gb)) * 1024**3)
+        self.system_ram_headroom_bytes = int(max(0.0, float(config.system_ram_headroom_gb)) * 1024**3)
         self.pin_weight_budget_bytes = int(max(0.0, float(config.pin_weight_budget_gb)) * 1024**3)
         self.pin_weight_selection = config.pin_weight_selection.lower()
         if self.pin_weight_selection not in {"first", "spread", "largest"}:
@@ -684,11 +712,13 @@ class DynamicWeightsHook(ModelHook):
             else:
                 self._move_small_local_tensors_to_device(submodule)
 
-        if self.config.pin_cpu_memory and modules_to_pin:
+        if self.config.pin_cpu_memory and modules_to_pin and not self._skip_pin_weights:
             start = time.perf_counter()
             selected_linears_to_pin = self._select_linear_weights_to_pin(modules_to_pin)
             pinned_bytes = self._pin_linear_weights(selected_linears_to_pin)
             self.state.add_setup("pin_linear_weights", time.perf_counter() - start, pinned_bytes)
+        elif self.config.pin_cpu_memory and modules_to_pin:
+            self.state.add_setup("pin_linear_weights_skipped", 0.0, 0)
 
     def _collect_linear_modules_to_pin(
         self,
@@ -815,6 +845,8 @@ class DynamicWeightsHook(ModelHook):
                 "auto_budget_policy": self.auto_budget_policy,
                 "candidate_weight_gb": round(candidate_weight_bytes / 1024**3, 4),
                 "candidate_resident_module_gb": round(candidate_module_bytes / 1024**3, 4),
+                "available_system_ram_gb": round(self.available_system_ram_bytes / 1024**3, 4),
+                "system_ram_headroom_gb": round(self.system_ram_headroom_bytes / 1024**3, 4),
             }
         )
 
@@ -835,8 +867,21 @@ class DynamicWeightsHook(ModelHook):
             budget = int(candidate_weight_bytes * ratio)
             if self.max_pin_weight_budget_bytes > 0:
                 budget = min(budget, self.max_pin_weight_budget_bytes)
+            if self.available_system_ram_bytes > 0:
+                usable_ram_bytes = max(0, self.available_system_ram_bytes - self.system_ram_headroom_bytes)
+                required_ram_bytes = candidate_weight_bytes + self.resident_module_budget_bytes
+                self.state.planner_decisions["auto_usable_system_ram_gb"] = round(usable_ram_bytes / 1024**3, 4)
+                self.state.planner_decisions["auto_required_system_ram_gb"] = round(required_ram_bytes / 1024**3, 4)
+                if usable_ram_bytes < required_ram_bytes:
+                    budget = 0
+                    ratio = 0.0
+                    self._skip_pin_weights = True
+                    self.state.planner_decisions["auto_pin_weight_decision"] = "skip_insufficient_ram"
+                else:
+                    self.state.planner_decisions["auto_pin_weight_decision"] = "budgeted"
+            else:
+                self.state.planner_decisions["auto_pin_weight_decision"] = "budgeted"
             self.pin_weight_budget_bytes = budget
-            self.state.planner_decisions["auto_pin_weight_decision"] = "budgeted"
             self.state.planner_decisions["auto_pin_weight_budget_gb"] = round(budget / 1024**3, 4)
             self.state.planner_decisions["auto_pin_weight_budget_ratio"] = ratio
 
@@ -1203,6 +1248,15 @@ def load_dynamic_weights_settings_from_env(
     if always_resident_modules_pattern is not None:
         default_always_resident_patterns = always_resident_modules_pattern
 
+    available_system_ram_override = preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_AVAILABLE_SYSTEM_RAM_GB", "").strip()
+    if not available_system_ram_override:
+        available_system_ram_override = preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_AVAILABLE_RAM_GB", "").strip()
+    available_system_ram_gb = (
+        float(available_system_ram_override)
+        if available_system_ram_override
+        else round(get_available_system_ram_gb(), 4)
+    )
+
     plan = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_PLAN")
     execution_mode = preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_EXECUTION_MODE", "plan").lower()
     requested_pin_cpu_memory = preset_bool("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_CPU_MEMORY")
@@ -1237,6 +1291,8 @@ def load_dynamic_weights_settings_from_env(
             preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_MAX_RESIDENT_MODULE_BUDGET_GB", "6.0")
         ),
         max_pin_weight_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_MAX_PIN_WEIGHT_BUDGET_GB", "0.0")),
+        available_system_ram_gb=available_system_ram_gb,
+        system_ram_headroom_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_SYSTEM_RAM_HEADROOM_GB", "6.0")),
         pin_weight_budget_gb=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_GB", "0.0")),
         pin_weight_budget_ratio=float(preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_BUDGET_RATIO", "0.0")),
         pin_weight_selection=preset_env("DIFFUSERS_DYNAMIC_WEIGHTS_PIN_WEIGHT_SELECTION", "spread").lower(),

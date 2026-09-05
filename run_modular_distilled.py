@@ -404,8 +404,8 @@ def purge_windows_standby_cache_event(record_event, event_name: str) -> None:
     print(f"  [windows-memory] {event_name}: standby cache purge requested", flush=True)
 
 
-def cleanup_before_vae_decode(record_event) -> None:
-    if PRE_VAE_CLEANUP_REPEATS <= 0:
+def cleanup_runtime_state(record_event, event_name: str, *, repeats: int = 1, collect_cuda_ipc: bool = False) -> None:
+    if repeats <= 0:
         return
 
     before_free_gb = before_total_gb = None
@@ -416,9 +416,9 @@ def cleanup_before_vae_decode(record_event) -> None:
         before_total_gb = before_total / 1024**3
 
     event_t0 = time.time()
-    for _ in range(PRE_VAE_CLEANUP_REPEATS):
+    for _ in range(repeats):
         flush()
-        if torch.cuda.is_available() and hasattr(torch.cuda, "ipc_collect"):
+        if collect_cuda_ipc and torch.cuda.is_available() and hasattr(torch.cuda, "ipc_collect"):
             torch.cuda.ipc_collect()
 
     if torch.cuda.is_available():
@@ -427,13 +427,23 @@ def cleanup_before_vae_decode(record_event) -> None:
         after_total_gb = after_total / 1024**3
 
     record_event(
-        "cleanup_before_vae_decode",
+        event_name,
         time.time() - event_t0,
-        repeats=PRE_VAE_CLEANUP_REPEATS,
+        repeats=repeats,
+        collect_cuda_ipc=collect_cuda_ipc,
         before_free_vram_gb=None if before_free_gb is None else round(before_free_gb, 4),
         before_total_vram_gb=None if before_total_gb is None else round(before_total_gb, 4),
         after_free_vram_gb=None if after_free_gb is None else round(after_free_gb, 4),
         after_total_vram_gb=None if after_total_gb is None else round(after_total_gb, 4),
+    )
+
+
+def cleanup_before_vae_decode(record_event) -> None:
+    cleanup_runtime_state(
+        record_event,
+        "cleanup_before_vae_decode",
+        repeats=PRE_VAE_CLEANUP_REPEATS,
+        collect_cuda_ipc=True,
     )
 
 
@@ -639,7 +649,7 @@ def main():
             del text_encoder_dynamic_weights_config
         del prompt_state
         del prompt_pipe, text_encoder, tokenizer
-        flush()
+        cleanup_runtime_state(record_event, "cleanup_after_text_encoder")
         if PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER:
             purge_windows_standby_cache_event(record_event, "purge_windows_standby_after_text_encoder")
 
@@ -689,8 +699,7 @@ def main():
 
     del prompt_embeds, prompt_attention_mask, connector_state
     del connector_pipe, connectors
-    flush()
-    record_event("offload_connector_outputs", 0.0)
+    cleanup_runtime_state(record_event, "cleanup_after_connectors")
 
     dynamic_weights_enabled = DYNAMIC_WEIGHTS_SETTINGS.enabled
     dynamic_weights_config = DYNAMIC_WEIGHTS_CONFIG if dynamic_weights_enabled else None
@@ -803,7 +812,7 @@ def main():
                 remove_dynamic_weights(transformer)
             del transformer
             dynamic_weights_hook = None
-            flush()
+            cleanup_runtime_state(record_event, transformer_prepare_event_name("cleanup_after_transformer_prepare", prepare_repeat_index))
 
     event_t0 = time.time()
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")
@@ -900,7 +909,6 @@ def main():
         dynamic_weights_hook = None
     del prepare_pipe, denoise_pipe, transformer, scheduler
     cleanup_before_vae_decode(record_event)
-    flush()
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
     t0 = step_start("Pass 2: Decode VAE")
 
@@ -931,7 +939,7 @@ def main():
     record_event("vae_decode_modular_call", time.time() - event_t0)
 
     del decode_pipe, vae, image_latent
-    flush()
+    cleanup_runtime_state(record_event, "cleanup_after_vae_decode")
     step_end("Pass 2: Decode VAE", t0)
 
     t0 = step_start("Save Image")
@@ -957,11 +965,7 @@ def main():
     if SAVE_METRICS:
         print(f"  Metrics JSON: {metrics_path}")
     if RESET_DYNAMIC_MEMORY_AFTER_RUN:
-        event_t0 = time.time()
-        flush()
-        if torch.cuda.is_available() and hasattr(torch.cuda, "ipc_collect"):
-            torch.cuda.ipc_collect()
-        record_event("reset_dynamic_memory_after_run", time.time() - event_t0)
+        cleanup_runtime_state(record_event, "reset_dynamic_memory_after_run", collect_cuda_ipc=True)
         if SAVE_METRICS:
             metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
         print("  Dynamic memory state reset after run.")
