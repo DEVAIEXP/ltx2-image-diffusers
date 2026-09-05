@@ -32,6 +32,7 @@ from diffusers_dynamic_offloader import (
     format_dynamic_offload_presets,
     from_pretrained_with_dynamic_offload,
     is_wsl_environment,
+    purge_windows_standby_cache_event,
     remove_dynamic_offload,
 )
 from inference_utils import RunTracker, flush
@@ -300,98 +301,6 @@ def apply_transformer_attention_backend(transformer):
             processor._attention_backend = backend
             patched += 1
     return patched, None if backend is None else backend.value, DROP_TRIVIAL_ATTENTION_MASK
-
-
-def purge_windows_standby_cache() -> dict:
-    if os.name != "nt":
-        raise RuntimeError("Windows standby cache purge is only available on Windows.")
-
-    import ctypes
-    from ctypes import wintypes
-
-    system_memory_list_information = 80
-    memory_purge_standby_list = 4
-    token_adjust_privileges = 0x0020
-    token_query = 0x0008
-    se_privilege_enabled = 0x00000002
-    error_not_all_assigned = 1300
-
-    class LUID(ctypes.Structure):
-        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
-
-    class TOKEN_PRIVILEGES(ctypes.Structure):
-        _fields_ = [
-            ("PrivilegeCount", wintypes.DWORD),
-            ("Luid", LUID),
-            ("Attributes", wintypes.DWORD),
-        ]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    ntdll = ctypes.WinDLL("ntdll")
-
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-
-    advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
-    advapi32.OpenProcessToken.restype = wintypes.BOOL
-    advapi32.LookupPrivilegeValueW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.POINTER(LUID)]
-    advapi32.LookupPrivilegeValueW.restype = wintypes.BOOL
-    advapi32.AdjustTokenPrivileges.argtypes = [
-        wintypes.HANDLE,
-        wintypes.BOOL,
-        ctypes.POINTER(TOKEN_PRIVILEGES),
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-    ]
-    advapi32.AdjustTokenPrivileges.restype = wintypes.BOOL
-
-    ntdll.NtSetSystemInformation.argtypes = [wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
-    ntdll.NtSetSystemInformation.restype = wintypes.LONG
-
-    token = wintypes.HANDLE()
-    process = kernel32.GetCurrentProcess()
-    if not advapi32.OpenProcessToken(process, token_adjust_privileges | token_query, ctypes.byref(token)):
-        raise ctypes.WinError(ctypes.get_last_error())
-
-    try:
-        luid = LUID()
-        if not advapi32.LookupPrivilegeValueW(None, "SeProfileSingleProcessPrivilege", ctypes.byref(luid)):
-            raise ctypes.WinError(ctypes.get_last_error())
-
-        privileges = TOKEN_PRIVILEGES(1, luid, se_privilege_enabled)
-        ctypes.set_last_error(0)
-        if not advapi32.AdjustTokenPrivileges(token, False, ctypes.byref(privileges), 0, None, None):
-            raise ctypes.WinError(ctypes.get_last_error())
-        last_error = ctypes.get_last_error()
-        if last_error == error_not_all_assigned:
-            raise PermissionError("SeProfileSingleProcessPrivilege is not assigned to this process token.")
-    finally:
-        kernel32.CloseHandle(token)
-
-    command = ctypes.c_int(memory_purge_standby_list)
-    status = ntdll.NtSetSystemInformation(
-        system_memory_list_information,
-        ctypes.byref(command),
-        ctypes.sizeof(command),
-    )
-    if status != 0:
-        raise OSError(f"NtSetSystemInformation failed with NTSTATUS 0x{status & 0xFFFFFFFF:08X}")
-
-    return {
-        "system_information_class": system_memory_list_information,
-        "command": memory_purge_standby_list,
-        "privilege": "SeProfileSingleProcessPrivilege",
-    }
-
-
-def purge_windows_standby_cache_event(record_event, event_name: str) -> None:
-    event_t0 = time.time()
-    result = purge_windows_standby_cache()
-    record_event(event_name, time.time() - event_t0, **result)
-    print(f"  [windows-memory] {event_name}: standby cache purge requested", flush=True)
 
 
 def cleanup_runtime_state(record_event, event_name: str, *, repeats: int = 1, collect_cuda_ipc: bool = False) -> None:
