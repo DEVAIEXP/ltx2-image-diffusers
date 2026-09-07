@@ -3,11 +3,9 @@ Local low-VRAM parity runner for the experimental LTX 2.3 distilled modular T2I 
 """
 
 import contextlib
-from dataclasses import replace
 import json
 import os
 from pathlib import Path
-import re
 import time
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -30,7 +28,7 @@ from diffusers_dynamic_offloader import (
     format_dynamic_offload_presets,
     from_pretrained_with_dynamic_offload,
     is_wsl_environment,
-    purge_windows_standby_cache_event,
+    maybe_purge_windows_standby_cache,
     remove_dynamic_offload,
 )
 from inference_utils import RunTracker, flush
@@ -93,53 +91,8 @@ def parse_bool_preset_env(name: str, default: str = "0") -> bool:
     return preset_env(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def parse_pattern_list_env(name: str, default: str = "") -> tuple[str, ...]:
-    return tuple(item.strip() for item in re.split(r"[;,]", preset_env(name, default)) if item.strip())
-
-
-def parse_float_preset_env(name: str, default: str = "0.0") -> float:
-    return float(preset_env(name, default))
-
-
 TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
 TEXT_ENCODER_DYNAMIC_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD")
-TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY = parse_bool_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY",
-    "0",
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB",
-    "3.0",
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB",
-    "0.0",
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO",
-    "0.0",
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION = preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION",
-    DYNAMIC_OFFLOAD_SETTINGS.config.pin_weight_selection,
-).lower()
-TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY = preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY",
-    DYNAMIC_OFFLOAD_SETTINGS.config.auto_budget_policy,
-).lower()
-TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB",
-    str(DYNAMIC_OFFLOAD_SETTINGS.config.max_resident_module_budget_gb),
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB",
-    str(DYNAMIC_OFFLOAD_SETTINGS.config.max_pin_weight_budget_gb),
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES = parse_pattern_list_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULE_PATTERNS",
-    r"(^|\.)vision_tower(\.|$)",
-)
-TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD")
 TRANSFORMER_MEMORY_MANAGER = preset_env("DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER", "off").lower()
 DYNAMIC_OFFLOAD_CONFIG = DYNAMIC_OFFLOAD_SETTINGS.config
 DYNAMIC_OFFLOAD_EXECUTION_MODE = DYNAMIC_OFFLOAD_CONFIG.execution_mode
@@ -148,10 +101,6 @@ DYNAMIC_OFFLOAD_SHOW_PROFILE = DYNAMIC_OFFLOAD_CONFIG.show_profile
 DYNAMIC_OFFLOAD_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_OFFLOAD_SETTINGS.effective_pin_cpu_memory
 PRE_VAE_CLEANUP_REPEATS = int(preset_env("DDO_RUNNER_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
 RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("DDO_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN")
-PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
-PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER")
-PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
-PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_RUN")
 METRICS_LEVEL = parse_metrics_level()
 SHOW_METRICS = METRICS_LEVEL >= 1 or parse_bool_env("DDO_RUNNER_SHOW_METRICS")
 SAVE_METRICS = METRICS_LEVEL >= 2 or parse_bool_env("DDO_RUNNER_SAVE_METRICS")
@@ -361,22 +310,10 @@ def main():
         "dtype": str(DTYPE),
         "text_encoder_low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE,
         "text_encoder_dynamic_offload": TEXT_ENCODER_DYNAMIC_OFFLOAD,
-        "text_encoder_dynamic_offload_pin_cpu_memory": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY,
-        "text_encoder_dynamic_offload_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB,
-        "text_encoder_dynamic_offload_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB,
-        "text_encoder_dynamic_offload_pin_weight_budget_ratio": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO,
-        "text_encoder_dynamic_offload_pin_weight_selection": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION,
-        "text_encoder_dynamic_offload_auto_budget_policy": TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY,
-        "text_encoder_dynamic_offload_max_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB,
-        "text_encoder_dynamic_offload_max_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB,
-        "text_encoder_dynamic_offload_skip_modules": TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES,
+        "text_encoder_group_offload": TEXT_ENCODER_GROUP_OFFLOAD,
         "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
         "running_on_wsl": RUNNING_ON_WSL,
         "reset_dynamic_memory_after_run": RESET_DYNAMIC_MEMORY_AFTER_RUN,
-        "purge_windows_standby_before_run": PURGE_WINDOWS_STANDBY_BEFORE_RUN,
-        "purge_windows_standby_after_text_encoder": PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER,
-        "purge_windows_standby_before_transformer": PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER,
-        "purge_windows_standby_after_run": PURGE_WINDOWS_STANDBY_AFTER_RUN,
         "metrics_level": METRICS_LEVEL,
         "show_metrics": SHOW_METRICS,
         "save_metrics": SAVE_METRICS,
@@ -421,8 +358,11 @@ def main():
     step_start = tracker.step_start
     step_end = tracker.step_end
 
-    if PURGE_WINDOWS_STANDBY_BEFORE_RUN:
-        purge_windows_standby_cache_event(record_event, "purge_windows_standby_before_run")
+    run_metrics["purge_windows_standby_before_run"] = maybe_purge_windows_standby_cache(
+        DYNAMIC_OFFLOAD_SETTINGS,
+        "before_run",
+        record_event=record_event,
+    )
 
     t0 = step_start("Pass 0: Encode prompts")
     if FAKE_PROMPT_EMBEDS:
@@ -440,29 +380,9 @@ def main():
         record_event("load_text_encoder", time.time() - event_t0, source=MODEL_PATH)
 
         event_t0 = time.time()
-        text_encoder_dynamic_offload_hook = None
-        text_encoder_dynamic_offload_config = None
-        if TEXT_ENCODER_DYNAMIC_OFFLOAD:
-            text_encoder_dynamic_offload_config = replace(
-                DYNAMIC_OFFLOAD_CONFIG,
-                pin_cpu_memory=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY,
-                pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB,
-                pin_weight_budget_ratio=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO,
-                pin_weight_selection=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION,
-                auto_budget_policy=TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY,
-                max_resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB,
-                max_pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB,
-                resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB,
-                skip_modules_pattern=(
-                    *DYNAMIC_OFFLOAD_CONFIG.skip_modules_pattern,
-                    *TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES,
-                ),
-            )
-
         text_encoder_offload = enable_offload(
             text_encoder,
             settings=DYNAMIC_OFFLOAD_SETTINGS,
-            config=text_encoder_dynamic_offload_config,
             component="text_encoder",
             execution_device=DEVICE,
             offload_device=OFFLOAD_DEVICE,
@@ -472,6 +392,7 @@ def main():
             group_event_name="setup_text_encoder_group_offload",
         )
         text_encoder_dynamic_offload_hook = text_encoder_offload.hook
+        run_metrics["text_encoder_offload_route"] = text_encoder_offload.route
         if text_encoder_offload.should_move_to_execution_device:
             text_encoder.to(DEVICE)
             record_event("load_text_encoder_to_cuda", time.time() - event_t0)
@@ -503,12 +424,15 @@ def main():
                 text_encoder_dynamic_offload_hook.print_profile_summary()
             remove_dynamic_offload(text_encoder)
             text_encoder_dynamic_offload_hook = None
-            del text_encoder_dynamic_offload_config
+        del text_encoder_offload
         del prompt_state
         del prompt_pipe, text_encoder, tokenizer
         cleanup_runtime_state(record_event, "cleanup_after_text_encoder")
-        if PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER:
-            purge_windows_standby_cache_event(record_event, "purge_windows_standby_after_text_encoder")
+        run_metrics["purge_windows_standby_after_text_encoder"] = maybe_purge_windows_standby_cache(
+            DYNAMIC_OFFLOAD_SETTINGS,
+            "after_text_encoder",
+            record_event=record_event,
+        )
 
     if SHOW_METRICS:
         print(f"  prompt_embeds shape: {prompt_embeds.shape}")
@@ -573,11 +497,14 @@ def main():
             "low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
         }
 
-        if PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER:
-            purge_windows_standby_cache_event(
-                record_event,
-                transformer_prepare_event_name("purge_windows_standby_before_transformer", repeat_index),
+        run_metrics[f"purge_windows_standby_before_transformer_{repeat_index + 1}"] = (
+            maybe_purge_windows_standby_cache(
+                DYNAMIC_OFFLOAD_SETTINGS,
+                "before_transformer",
+                record_event=record_event,
+                event_name=transformer_prepare_event_name("purge_windows_standby_before_transformer", repeat_index),
             )
+        )
 
         event_t0 = time.time()
         if MODEL_LOW_CPU_MEM_USAGE:
@@ -821,10 +748,13 @@ def main():
         if SAVE_METRICS:
             metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
         print("  Dynamic memory state reset after run.")
-    if PURGE_WINDOWS_STANDBY_AFTER_RUN:
-        purge_windows_standby_cache_event(record_event, "purge_windows_standby_after_run")
-        if SAVE_METRICS:
-            metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
+    run_metrics["purge_windows_standby_after_run"] = maybe_purge_windows_standby_cache(
+        DYNAMIC_OFFLOAD_SETTINGS,
+        "after_run",
+        record_event=record_event,
+    )
+    if SAVE_METRICS:
+        metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
     print("=" * 70)
 
 
