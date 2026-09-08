@@ -187,9 +187,22 @@ def main():
     record_event("load_modular_pipeline", time.time() - event_t0, custom_blocks_path=CUSTOM_BLOCKS_PATH)
 
     event_t0 = time.time()
+    pipe.load_components(
+        names=["text_encoder"],
+        pretrained_model_name_or_path=text_encoder_src,
+        torch_dtype=DTYPE,
+        low_cpu_mem_usage=True,
+    )
+    record_event(
+        "load_text_encoder",
+        time.time() - event_t0,
+        source=text_encoder_src,
+        kind=text_encoder_kind,
+        dtype=str(DTYPE),
+    )
+
+    event_t0 = time.time()
     base_component_names = ["tokenizer", "connectors", "vae", "scheduler"]
-    if args.text_encoder_bits is None:
-        base_component_names.insert(0, "text_encoder")
     pipe.load_components(
         names=base_component_names,
         pretrained_model_name_or_path=MODEL_PATH,
@@ -197,7 +210,7 @@ def main():
         low_cpu_mem_usage=True,
     )
     record_event(
-        "load_base_components",
+        "load_base_runtime_components",
         time.time() - event_t0,
         source=MODEL_PATH,
         names=base_component_names,
@@ -205,22 +218,18 @@ def main():
     )
 
     event_t0 = time.time()
-    sdnq_component_names = ["transformer"]
-    if args.text_encoder_bits is not None:
-        sdnq_component_names.insert(0, "text_encoder")
     pipe.load_components(
-        names=sdnq_component_names,
+        names=["transformer"],
         pretrained_model_name_or_path=sdnq_model_path,
         torch_dtype=DTYPE,
         low_cpu_mem_usage=True,
     )
     record_event(
-        "load_sdnq_components",
+        "load_sdnq_transformer",
         time.time() - event_t0,
         source=sdnq_model_path,
-        names=sdnq_component_names,
-        transformer_kind=transformer_kind,
-        text_encoder_kind=text_encoder_kind,
+        kind=transformer_kind,
+        dtype=str(DTYPE),
     )
 
     text_encoder = get_required_component(pipe, "text_encoder")
