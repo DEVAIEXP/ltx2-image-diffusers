@@ -16,12 +16,9 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_MODULES_CACHE", str((Path(__file__).parent / ".hf_modules").resolve()))
 
 import torch
-from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler, ModularPipeline
+from diffusers import ModularPipeline
 from diffusers.hooks import apply_group_offloading
-from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
 
-from custom_blocks.ltx2_image.connectors_ltx2_image import LTX2ImageTextConnectors
-from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer2DModel
 from inference_utils import RunTracker, flush, get_sdnq_version
 
 
@@ -87,6 +84,16 @@ def apply_leaf_group_offload(model) -> None:
         record_stream=False,
         low_cpu_mem_usage=True,
     )
+
+
+def get_required_component(pipe: ModularPipeline, name: str):
+    component = pipe.components.get(name)
+    if component is None:
+        component = getattr(pipe, name, None)
+    if component is None:
+        available = sorted(key for key, value in pipe.components.items() if value is not None)
+        raise RuntimeError(f"Component {name!r} was not loaded. Available components: {available}")
+    return component
 
 
 def build_run_slug(args, *, text_encoder_kind: str) -> str:
@@ -180,60 +187,52 @@ def main():
     record_event("load_modular_pipeline", time.time() - event_t0, custom_blocks_path=CUSTOM_BLOCKS_PATH)
 
     event_t0 = time.time()
-    text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
-        text_encoder_src,
-        subfolder="text_encoder",
+    base_component_names = ["tokenizer", "connectors", "vae", "scheduler"]
+    if args.text_encoder_bits is None:
+        base_component_names.insert(0, "text_encoder")
+    pipe.load_components(
+        names=base_component_names,
+        pretrained_model_name_or_path=MODEL_PATH,
         torch_dtype=DTYPE,
         low_cpu_mem_usage=True,
     )
-    record_event("load_text_encoder", time.time() - event_t0, source=text_encoder_src, kind=text_encoder_kind)
+    record_event(
+        "load_base_components",
+        time.time() - event_t0,
+        source=MODEL_PATH,
+        names=base_component_names,
+        dtype=str(DTYPE),
+    )
 
     event_t0 = time.time()
-    connectors = LTX2ImageTextConnectors.from_pretrained(
-        MODEL_PATH,
-        subfolder="connectors",
+    sdnq_component_names = ["transformer"]
+    if args.text_encoder_bits is not None:
+        sdnq_component_names.insert(0, "text_encoder")
+    pipe.load_components(
+        names=sdnq_component_names,
+        pretrained_model_name_or_path=sdnq_model_path,
         torch_dtype=DTYPE,
         low_cpu_mem_usage=True,
     )
-    record_event("load_connectors", time.time() - event_t0, source=MODEL_PATH)
-
-    event_t0 = time.time()
-    transformer = LTX2ImageTransformer2DModel.from_pretrained(
-        sdnq_model_path,
-        subfolder="transformer",
-        torch_dtype=DTYPE,
-        low_cpu_mem_usage=True,
+    record_event(
+        "load_sdnq_components",
+        time.time() - event_t0,
+        source=sdnq_model_path,
+        names=sdnq_component_names,
+        transformer_kind=transformer_kind,
+        text_encoder_kind=text_encoder_kind,
     )
-    record_event("load_transformer", time.time() - event_t0, source=sdnq_model_path, kind=transformer_kind)
 
-    event_t0 = time.time()
-    vae = AutoencoderKLLTX2Video.from_pretrained(
-        MODEL_PATH,
-        subfolder="vae",
-        torch_dtype=DTYPE,
-        low_cpu_mem_usage=True,
-    )
-    record_event("load_vae", time.time() - event_t0, source=MODEL_PATH)
-
-    event_t0 = time.time()
-    tokenizer = GemmaTokenizerFast.from_pretrained(MODEL_PATH, subfolder="tokenizer")
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")
-    record_event("load_tokenizer_scheduler", time.time() - event_t0, model_path=MODEL_PATH)
-
-    pipe.update_components(
-        text_encoder=text_encoder,
-        tokenizer=tokenizer,
-        connectors=connectors,
-        transformer=transformer,
-        vae=vae,
-        scheduler=scheduler,
-    )
+    text_encoder = get_required_component(pipe, "text_encoder")
+    connectors = get_required_component(pipe, "connectors")
+    transformer = get_required_component(pipe, "transformer")
+    vae = get_required_component(pipe, "vae")
 
     event_t0 = time.time()
     apply_leaf_group_offload(text_encoder)
     apply_leaf_group_offload(transformer)
+    apply_leaf_group_offload(vae)
     connectors.to(DEVICE)
-    vae.to(DEVICE)
     record_event("setup_components", time.time() - event_t0, offload_type="leaf_level", use_stream=True)
 
     generator = torch.Generator(device="cpu").manual_seed(args.seed)
