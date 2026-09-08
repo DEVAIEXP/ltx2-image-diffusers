@@ -16,9 +16,12 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_MODULES_CACHE", str((Path(__file__).parent / ".hf_modules").resolve()))
 
 import torch
-from diffusers import ModularPipeline
+from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler, ModularPipeline
 from diffusers.hooks import apply_group_offloading
+from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
 
+from custom_blocks.ltx2_image.connectors_ltx2_image import LTX2ImageTextConnectors
+from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer2DModel
 from inference_utils import RunTracker, flush, get_sdnq_version
 
 
@@ -73,6 +76,8 @@ def parse_args():
 
 
 def apply_leaf_group_offload(model) -> None:
+    if model is None:
+        raise RuntimeError("Cannot apply group offload because the component was not loaded.")
     apply_group_offloading(
         model,
         onload_device=DEVICE,
@@ -175,41 +180,60 @@ def main():
     record_event("load_modular_pipeline", time.time() - event_t0, custom_blocks_path=CUSTOM_BLOCKS_PATH)
 
     event_t0 = time.time()
-    pipe.load_components(
-        names=["connectors", "vae"],
-        pretrained_model_name_or_path=MODEL_PATH,
-        torch_dtype=DTYPE,
-        low_cpu_mem_usage=True,
-    )
-    record_event("load_base_model_components", time.time() - event_t0, model_path=MODEL_PATH, dtype=str(DTYPE))
-
-    event_t0 = time.time()
-    pipe.load_components(
-        names=["text_encoder"],
-        pretrained_model_name_or_path=text_encoder_src,
+    text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
+        text_encoder_src,
+        subfolder="text_encoder",
         torch_dtype=DTYPE,
         low_cpu_mem_usage=True,
     )
     record_event("load_text_encoder", time.time() - event_t0, source=text_encoder_src, kind=text_encoder_kind)
 
     event_t0 = time.time()
-    pipe.load_components(
-        names=["transformer"],
-        pretrained_model_name_or_path=sdnq_model_path,
+    connectors = LTX2ImageTextConnectors.from_pretrained(
+        MODEL_PATH,
+        subfolder="connectors",
+        torch_dtype=DTYPE,
+        low_cpu_mem_usage=True,
+    )
+    record_event("load_connectors", time.time() - event_t0, source=MODEL_PATH)
+
+    event_t0 = time.time()
+    transformer = LTX2ImageTransformer2DModel.from_pretrained(
+        sdnq_model_path,
+        subfolder="transformer",
         torch_dtype=DTYPE,
         low_cpu_mem_usage=True,
     )
     record_event("load_transformer", time.time() - event_t0, source=sdnq_model_path, kind=transformer_kind)
 
     event_t0 = time.time()
-    pipe.load_components(names=["tokenizer", "scheduler"], pretrained_model_name_or_path=MODEL_PATH)
-    record_event("load_tokenizer_scheduler", time.time() - event_t0, model_path=MODEL_PATH)
+    vae = AutoencoderKLLTX2Video.from_pretrained(
+        MODEL_PATH,
+        subfolder="vae",
+        torch_dtype=DTYPE,
+        low_cpu_mem_usage=True,
+    )
+    record_event("load_vae", time.time() - event_t0, source=MODEL_PATH)
 
     event_t0 = time.time()
-    apply_leaf_group_offload(pipe.text_encoder)
-    apply_leaf_group_offload(pipe.transformer)
-    pipe.connectors.to(DEVICE)
-    pipe.vae.to(DEVICE)
+    tokenizer = GemmaTokenizerFast.from_pretrained(MODEL_PATH, subfolder="tokenizer")
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")
+    record_event("load_tokenizer_scheduler", time.time() - event_t0, model_path=MODEL_PATH)
+
+    pipe.update_components(
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        connectors=connectors,
+        transformer=transformer,
+        vae=vae,
+        scheduler=scheduler,
+    )
+
+    event_t0 = time.time()
+    apply_leaf_group_offload(text_encoder)
+    apply_leaf_group_offload(transformer)
+    connectors.to(DEVICE)
+    vae.to(DEVICE)
     record_event("setup_components", time.time() - event_t0, offload_type="leaf_level", use_stream=True)
 
     generator = torch.Generator(device="cpu").manual_seed(args.seed)
