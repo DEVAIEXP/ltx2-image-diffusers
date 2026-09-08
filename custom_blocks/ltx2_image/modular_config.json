@@ -1,7 +1,0 @@
-{
-  "_class_name": "LTX2ImageAutoBlocks",
-  "_diffusers_version": "0.39.0.dev0",
-  "auto_map": {
-    "ModularPipelineBlocks": "modular_blocks_ltx2_image.LTX2ImageAutoBlocks"
-  }
-}

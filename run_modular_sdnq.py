@@ -21,7 +21,6 @@ from diffusers.hooks import apply_group_offloading
 
 from inference_utils import RunTracker, flush, get_sdnq_version
 
-
 DEVICE = torch.device("cuda:0")
 OFFLOAD_DEVICE = torch.device("cpu")
 DTYPE = torch.bfloat16
@@ -114,6 +113,8 @@ def build_run_slug(args, *, text_encoder_kind: str) -> str:
 
 def main():
     args = parse_args()
+    import sdnq  # noqa: F401 - registers SDNQ classes before Diffusers component loading.
+
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this runner.")
     if args.width % 32 != 0 or args.height % 32 != 0:
