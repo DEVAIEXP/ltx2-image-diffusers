@@ -1,11 +1,13 @@
 """
-Local low-VRAM parity runner for the experimental LTX 2.3 distilled modular T2I blocks.
+Modular LTX 2.3 distilled image runner using official Diffusers group offloading.
 """
 
 import json
 import os
 from pathlib import Path
 import time
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler
@@ -23,50 +25,46 @@ from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer
 from inference_utils import RunTracker, flush
 
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
-DEVICE = os.environ.get("LTX_IMAGE_DEVICE", "cuda:0")
+DEVICE = "cuda:0"
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
-MODEL_TAG = "distilled_modular"
-MODEL_PATH = os.environ.get("LTX_IMAGE_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
+MODEL_TAG = "distilled_modular_diffusers_group_offload"
+MODEL_PATH = r"E:\model\ltx2.3-image-distilled-1.1"
 LOW_CPU_MEM_USAGE = True
-AUTO_CPU_OFFLOAD = os.environ.get("LTX_IMAGE_AUTO_CPU_OFFLOAD", "0") == "1"
-TEXT_ENCODER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TEXT_ENCODER_GROUP_OFFLOAD", "1") == "1"
-TRANSFORMER_GROUP_OFFLOAD = os.environ.get("LTX_IMAGE_TRANSFORMER_GROUP_OFFLOAD", "1") == "1"
+
 GROUP_OFFLOAD_CONFIG = {
-    "mode": "components_manager_auto_cpu_offload" if AUTO_CPU_OFFLOAD else "disabled",
-    "device": DEVICE,
-    "text_encoder_group_offload": TEXT_ENCODER_GROUP_OFFLOAD,
-    "text_encoder_offload_type": os.environ.get("LTX_IMAGE_TEXT_ENCODER_OFFLOAD_TYPE", "leaf_level"),
-    "text_encoder_use_stream": os.environ.get("LTX_IMAGE_TEXT_ENCODER_OFFLOAD_STREAM", "1") == "1",
-    "text_encoder_num_blocks_per_group": int(os.environ.get("LTX_IMAGE_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
-    "transformer_group_offload": TRANSFORMER_GROUP_OFFLOAD,
-    "transformer_offload_type": os.environ.get("LTX_IMAGE_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
-    "transformer_use_stream": os.environ.get("LTX_IMAGE_TRANSFORMER_OFFLOAD_STREAM", "1") == "1",
-    "transformer_num_blocks_per_group": int(os.environ.get("LTX_IMAGE_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
+    "text_encoder_offload_type": "leaf_level",
+    "text_encoder_use_stream": True,
+    "text_encoder_record_stream": False,
+    "text_encoder_low_cpu_mem_usage": True,
+    "text_encoder_num_blocks_per_group": 1,
+    "transformer_offload_type": "leaf_level",
+    "transformer_use_stream": True,
+    "transformer_record_stream": False,
+    "transformer_low_cpu_mem_usage": True,
+    "transformer_num_blocks_per_group": 1,
 }
 
-WIDTH = int(os.environ.get("LTX_IMAGE_WIDTH", "1280"))
-HEIGHT = int(os.environ.get("LTX_IMAGE_HEIGHT", "704"))
-SEED = int(os.environ.get("LTX_IMAGE_SEED", "43"))
-NUM_INFERENCE_STEPS = int(os.environ.get("LTX_IMAGE_STEPS", "8"))
-GUIDANCE_SCALE = float(os.environ.get("LTX_IMAGE_GUIDANCE_SCALE", "1.0"))
-GUIDANCE_RESCALE = float(os.environ.get("LTX_IMAGE_GUIDANCE_RESCALE", "0.7"))
-DECODE_TIMESTEP = float(os.environ.get("LTX_IMAGE_DECODE_TIMESTEP", "0.0"))
-DECODE_NOISE_SCALE_ENV = os.environ.get("LTX_IMAGE_DECODE_NOISE_SCALE")
-DECODE_NOISE_SCALE = None if DECODE_NOISE_SCALE_ENV in (None, "") else float(DECODE_NOISE_SCALE_ENV)
-PAG_ENABLED = os.environ.get("LTX_IMAGE_PAG_ENABLED", "0") == "1"
-PAG_SCALE = float(os.environ.get("LTX_IMAGE_PAG_SCALE", "0.2"))
-PAG_APPLIED_LAYERS = [int(x) for x in os.environ.get("LTX_IMAGE_PAG_LAYERS", "28").split(",") if x]
-FAKE_PROMPT_EMBEDS = os.environ.get("LTX_IMAGE_FAKE_PROMPT", "0") == "1"
+WIDTH = 1280
+HEIGHT = 704
+SEED = 43
+NUM_INFERENCE_STEPS = 8
+GUIDANCE_SCALE = 1.0
+GUIDANCE_RESCALE = 0.7
+DECODE_TIMESTEP = 0.0
+DECODE_NOISE_SCALE = None
+PAG_ENABLED = False
+PAG_SCALE = 0.2
+PAG_APPLIED_LAYERS = [28]
+GENERATION_REPEATS = 1
 
-prompt = os.environ.get(
-    "LTX_IMAGE_PROMPT",
-    "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy.",
-)
-negative_prompt = os.environ.get("LTX_IMAGE_NEGATIVE_PROMPT", "")
+SHOW_METRICS = True
+SAVE_METRICS = True
+SHOW_DENOISE_STEPS = True
+
+prompt = "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy."
+negative_prompt = ""
 
 
 def build_run_slug(seed):
@@ -85,36 +83,60 @@ def build_run_slug(seed):
     )
 
 
-def apply_model_group_offload(model, *, prefix):
+def apply_model_group_offload(model, *, prefix: str):
     offload_type = GROUP_OFFLOAD_CONFIG[f"{prefix}_offload_type"]
     kwargs = {
         "onload_device": torch.device(DEVICE),
         "offload_device": torch.device(OFFLOAD_DEVICE),
         "offload_type": offload_type,
         "use_stream": GROUP_OFFLOAD_CONFIG[f"{prefix}_use_stream"],
-        "low_cpu_mem_usage": LOW_CPU_MEM_USAGE,
+        "record_stream": GROUP_OFFLOAD_CONFIG[f"{prefix}_record_stream"],
+        "low_cpu_mem_usage": GROUP_OFFLOAD_CONFIG[f"{prefix}_low_cpu_mem_usage"],
     }
     if offload_type == "block_level":
         kwargs["num_blocks_per_group"] = GROUP_OFFLOAD_CONFIG[f"{prefix}_num_blocks_per_group"]
     apply_group_offloading(model, **kwargs)
 
 
-def denoise_progress_callback(components, step_index, timestep, callback_kwargs):
-    used_gb = torch.cuda.memory_allocated(DEVICE) / 1024**3
-    reserved_gb = torch.cuda.memory_reserved(DEVICE) / 1024**3
-    total_steps = len(denoise_progress_callback.timesteps)
-    print(
-        f"  [denoise] step {step_index + 1}/{total_steps} timestep={float(timestep):.4f} "
-        f"torch_alloc={used_gb:.2f} GiB torch_reserved={reserved_gb:.2f} GiB",
-        flush=True,
-    )
-    return callback_kwargs
+def cleanup_runtime_state(record_event, event_name: str):
+    event_t0 = time.time()
+    flush()
+    record_event(event_name, time.time() - event_t0)
+
+
+def make_denoise_progress_callback(tracker):
+    def callback(pipe, step_index, timestep, callback_kwargs):
+        now = time.perf_counter()
+        elapsed = now - callback.last_time
+        callback.last_time = now
+        callback.step_times.append(elapsed)
+        if SHOW_DENOISE_STEPS:
+            avg = (now - callback.start_time) / (step_index + 1)
+            allocated = torch.cuda.memory_allocated(DEVICE) / (1024**3)
+            reserved = torch.cuda.memory_reserved(DEVICE) / (1024**3)
+            total_steps = len(callback.timesteps) if callback.timesteps is not None else NUM_INFERENCE_STEPS
+            print(
+                f"  [denoise] step {step_index + 1}/{total_steps} timestep={float(timestep):.4f} "
+                f"elapsed={elapsed:.4f}s avg={avg:.4f}s/it "
+                f"torch_alloc={allocated:.2f} GiB torch_reserved={reserved:.2f} GiB",
+                flush=True,
+            )
+        return callback_kwargs
+
+    callback.start_time = 0.0
+    callback.last_time = 0.0
+    callback.step_times = []
+    callback.timesteps = None
+    return callback
 
 
 def main():
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required for this runner.")
+
     seed = SEED or torch.randint(0, 2**32, (1,)).item()
     if not SEED:
-        print(f"Using random seed: {seed}")
+        print(f"  Using random seed: {seed}")
     generator = torch.Generator(device="cpu").manual_seed(seed)
 
     run_slug = build_run_slug(seed)
@@ -124,6 +146,8 @@ def main():
         "run_slug": run_slug,
         "model_tag": MODEL_TAG,
         "model_path": MODEL_PATH,
+        "text_encoder_kind": "original",
+        "transformer_kind": "custom_modular",
         "width": WIDTH,
         "height": HEIGHT,
         "seed": seed,
@@ -136,76 +160,94 @@ def main():
         "pag_scale": PAG_SCALE if PAG_ENABLED else 0.0,
         "pag_applied_layers": PAG_APPLIED_LAYERS if PAG_ENABLED else None,
         "dtype": str(DTYPE),
+        "offload_backend": "diffusers_group_offloading",
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
         "events": [],
         "steps": [],
     }
 
-    tracker = RunTracker(DEVICE, run_metrics, interval=0.1)
+    tracker = RunTracker(DEVICE, run_metrics, interval=0.1, show_metrics=SHOW_METRICS)
     record_event = tracker.record_event
     step_start = tracker.step_start
     step_end = tracker.step_end
+    denoise_progress_callback = make_denoise_progress_callback(tracker)
+
+    print("Using modular Diffusers group offload baseline", flush=True)
+    print(
+        f"  text_encoder=leaf group offload transformer=leaf group offload "
+        f"model_path={MODEL_PATH}",
+        flush=True,
+    )
+    print(f"  VRAM baseline: {torch.cuda.memory_allocated(DEVICE) / (1024**3):.2f} GB", flush=True)
 
     t0 = step_start("Pass 0: Encode prompts")
-    if FAKE_PROMPT_EMBEDS:
-        prompt_embeds = torch.zeros((1, 1024, 188160), dtype=DTYPE, device=OFFLOAD_DEVICE)
-        prompt_attention_mask = torch.ones((1, 1024), dtype=torch.long, device=OFFLOAD_DEVICE)
-        record_event("fake_prompt_embeds", 0.0, shape=list(prompt_embeds.shape))
-    else:
-        event_t0 = time.time()
-        text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
-            MODEL_PATH,
-            subfolder="text_encoder",
-            torch_dtype=DTYPE,
+
+    event_t0 = time.time()
+    text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
+        MODEL_PATH,
+        subfolder="text_encoder",
+        torch_dtype=DTYPE,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+    )
+    record_event("load_text_encoder", time.time() - event_t0, source=MODEL_PATH)
+
+    event_t0 = time.time()
+    apply_model_group_offload(text_encoder, prefix="text_encoder")
+    record_event(
+        "setup_text_encoder_group_offload",
+        time.time() - event_t0,
+        offload_type=GROUP_OFFLOAD_CONFIG["text_encoder_offload_type"],
+        use_stream=GROUP_OFFLOAD_CONFIG["text_encoder_use_stream"],
+        record_stream=GROUP_OFFLOAD_CONFIG["text_encoder_record_stream"],
+    )
+
+    event_t0 = time.time()
+    tokenizer = GemmaTokenizerFast.from_pretrained(MODEL_PATH, subfolder="tokenizer")
+    record_event("load_tokenizer", time.time() - event_t0, source=MODEL_PATH)
+
+    event_t0 = time.time()
+    prompt_pipe = LTX2ImageTextEncoderStep().init_pipeline()
+    prompt_pipe.update_components(text_encoder=text_encoder, tokenizer=tokenizer)
+    record_event("build_prompt_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
+
+    event_t0 = time.time()
+    with torch.inference_mode():
+        prompt_state = prompt_pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            guidance_scale=GUIDANCE_SCALE,
+            output=[
+                "prompt_embeds",
+                "prompt_attention_mask",
+                "negative_prompt_embeds",
+                "negative_prompt_attention_mask",
+                "batch_size",
+                "dtype",
+                "do_classifier_free_guidance",
+            ],
         )
-        record_event("load_text_encoder", time.time() - event_t0, source=MODEL_PATH)
+    record_event("encode_prompt_call", time.time() - event_t0, classifier_free_guidance=False)
 
-        event_t0 = time.time()
-        if TEXT_ENCODER_GROUP_OFFLOAD:
-            apply_model_group_offload(text_encoder, prefix="text_encoder")
-            record_event(
-                "setup_text_encoder_group_offload",
-                time.time() - event_t0,
-                offload_type=GROUP_OFFLOAD_CONFIG["text_encoder_offload_type"],
-                use_stream=GROUP_OFFLOAD_CONFIG["text_encoder_use_stream"],
-                low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
-            )
-        else:
-            text_encoder.to(DEVICE)
-            record_event("load_text_encoder_to_cuda", time.time() - event_t0)
+    prompt_embeds = prompt_state["prompt_embeds"].to(OFFLOAD_DEVICE)
+    prompt_attention_mask = prompt_state["prompt_attention_mask"].to(OFFLOAD_DEVICE)
+    latent_batch_size = prompt_state["batch_size"]
+    prompt_dtype = prompt_state["dtype"]
+    do_classifier_free_guidance = prompt_state["do_classifier_free_guidance"]
+    if SHOW_METRICS:
+        print(f"  prompt_embeds shape: {prompt_embeds.shape}")
 
-        event_t0 = time.time()
-        tokenizer = GemmaTokenizerFast.from_pretrained(MODEL_PATH, subfolder="tokenizer")
-        record_event("load_tokenizer", time.time() - event_t0, source=MODEL_PATH)
-
-        event_t0 = time.time()
-        prompt_pipe = LTX2ImageTextEncoderStep().init_pipeline()
-        prompt_pipe.update_components(text_encoder=text_encoder, tokenizer=tokenizer)
-        record_event("build_prompt_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
-
-        event_t0 = time.time()
-        with torch.inference_mode():
-            prompt_state = prompt_pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                guidance_scale=GUIDANCE_SCALE,
-                output=["prompt_embeds", "prompt_attention_mask"],
-            )
-        record_event("encode_prompt_call", time.time() - event_t0, classifier_free_guidance=False)
-
-        prompt_embeds = prompt_state["prompt_embeds"].to(OFFLOAD_DEVICE)
-        prompt_attention_mask = prompt_state["prompt_attention_mask"].to(OFFLOAD_DEVICE)
-        del prompt_pipe, text_encoder, tokenizer
-        flush()
-
-    print(f"  prompt_embeds shape: {prompt_embeds.shape}")
+    del prompt_state, prompt_pipe, text_encoder, tokenizer
+    cleanup_runtime_state(record_event, "cleanup_after_text_encoder")
     step_end("Pass 0: Encode prompts", t0)
 
     t0 = step_start(f"Pass 1: Generate at {WIDTH}x{HEIGHT}")
 
     event_t0 = time.time()
     connectors = LTX2ImageTextConnectors.from_pretrained(
-        MODEL_PATH, subfolder="connectors", torch_dtype=DTYPE
+        MODEL_PATH,
+        subfolder="connectors",
+        torch_dtype=DTYPE,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
     ).to(DEVICE)
     record_event("load_connectors_to_cuda", time.time() - event_t0, source=MODEL_PATH)
 
@@ -220,7 +262,7 @@ def main():
         prompt_attention_mask=prompt_attention_mask.to(device=DEVICE),
         negative_prompt_embeds=None,
         negative_prompt_attention_mask=None,
-        do_classifier_free_guidance=False,
+        do_classifier_free_guidance=do_classifier_free_guidance,
         pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
         output=[
             "connector_prompt_embeds",
@@ -238,33 +280,37 @@ def main():
     transformer_batch_multiplier = connector_state["transformer_batch_multiplier"]
     do_perturbed_attention_guidance = connector_state["do_perturbed_attention_guidance"]
 
-    del prompt_embeds, prompt_attention_mask, connector_state
-    del connector_pipe, connectors
-    flush()
-    record_event("offload_connector_outputs", 0.0)
+    del connector_state, connector_pipe, connectors, prompt_embeds, prompt_attention_mask
+    cleanup_runtime_state(record_event, "cleanup_after_connectors")
+
+    transformer_load_kwargs = {
+        "subfolder": "transformer",
+        "torch_dtype": prompt_dtype,
+        "low_cpu_mem_usage": LOW_CPU_MEM_USAGE,
+    }
+    if LOW_CPU_MEM_USAGE:
+        transformer_load_kwargs["device_map"] = "cpu"
 
     event_t0 = time.time()
-    transformer = LTX2ImageTransformer2DModel.from_pretrained(
-        MODEL_PATH,
-        subfolder="transformer",
-        torch_dtype=DTYPE,
-        device_map="cpu",
+    transformer = LTX2ImageTransformer2DModel.from_pretrained(MODEL_PATH, **transformer_load_kwargs)
+    record_event(
+        "load_transformer",
+        time.time() - event_t0,
+        source=MODEL_PATH,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+        device_map=transformer_load_kwargs.get("device_map"),
     )
-    record_event("load_transformer", time.time() - event_t0, source=MODEL_PATH)
 
     event_t0 = time.time()
-    if TRANSFORMER_GROUP_OFFLOAD:
-        apply_model_group_offload(transformer, prefix="transformer")
-        record_event(
-            "setup_transformer_group_offload",
-            time.time() - event_t0,
-            offload_type=GROUP_OFFLOAD_CONFIG["transformer_offload_type"],
-            use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
-            low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
-        )
-    else:
-        transformer.to(DEVICE)
-        record_event("load_transformer_to_cuda", time.time() - event_t0)
+    apply_model_group_offload(transformer, prefix="transformer")
+    record_event(
+        "setup_transformer_group_offload",
+        time.time() - event_t0,
+        offload_type=GROUP_OFFLOAD_CONFIG["transformer_offload_type"],
+        use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
+        record_stream=GROUP_OFFLOAD_CONFIG["transformer_record_stream"],
+        low_cpu_mem_usage=GROUP_OFFLOAD_CONFIG["transformer_low_cpu_mem_usage"],
+    )
 
     event_t0 = time.time()
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")
@@ -276,61 +322,91 @@ def main():
     record_event("build_prepare_latents_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
 
     event_t0 = time.time()
-    prepare_state = prepare_pipe(
-        width=WIDTH,
-        height=HEIGHT,
-        num_inference_steps=NUM_INFERENCE_STEPS,
-        batch_size=latent_batch_size,
-        transformer_batch_multiplier=transformer_batch_multiplier,
-        generator=generator,
-        output=["latents", "timesteps", "latent_height", "latent_width", "in_channels", "video_rotary_emb"],
-    )
-    record_event("prepare_latents_modular_pipe_call", time.time() - event_t0)
-
-    event_t0 = time.time()
     denoise_pipe = LTX2ImageDenoiseStep().init_pipeline()
     denoise_pipe.update_components(transformer=transformer, scheduler=scheduler)
     record_event("build_denoise_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
 
-    denoise_progress_callback.timesteps = prepare_state["timesteps"]
-    print("  Starting denoise loop...", flush=True)
-    event_t0 = time.time()
-    denoise_state = denoise_pipe(
-        latents=prepare_state["latents"],
-        timesteps=prepare_state["timesteps"],
-        connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
-        connector_attention_mask=connector_attention_mask.to(device=DEVICE),
-        latent_height=prepare_state["latent_height"],
-        latent_width=prepare_state["latent_width"],
-        video_rotary_emb=prepare_state["video_rotary_emb"],
-        batch_size=latent_batch_size,
-        transformer_batch_multiplier=transformer_batch_multiplier,
-        do_classifier_free_guidance=False,
-        do_perturbed_attention_guidance=do_perturbed_attention_guidance,
-        guidance_scale=GUIDANCE_SCALE,
-        guidance_rescale=GUIDANCE_RESCALE,
-        pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
-        pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
-        callback_on_step_end=denoise_progress_callback,
-        callback_on_step_end_tensor_inputs=["latents"],
-        output="latents",
-    )
-    record_event("denoise_modular_pipe_call", time.time() - event_t0)
+    image_latent = None
+    latent_height = None
+    latent_width = None
+    latent_channels = None
+    run_metrics["denoise_step_times_by_repeat"] = []
 
-    image_latent = denoise_state.to(OFFLOAD_DEVICE)
-    latent_height = prepare_state["latent_height"]
-    latent_width = prepare_state["latent_width"]
-    latent_channels = prepare_state["in_channels"]
-    print(f"  Image latent: {image_latent.shape}")
+    for repeat_index in range(GENERATION_REPEATS):
+        repeat_suffix = "" if GENERATION_REPEATS == 1 else f"_repeat_{repeat_index + 1}"
+        if GENERATION_REPEATS > 1:
+            print(f"  Warm generation repeat {repeat_index + 1}/{GENERATION_REPEATS}", flush=True)
+
+        event_t0 = time.time()
+        prepare_state = prepare_pipe(
+            width=WIDTH,
+            height=HEIGHT,
+            num_inference_steps=NUM_INFERENCE_STEPS,
+            batch_size=latent_batch_size,
+            transformer_batch_multiplier=transformer_batch_multiplier,
+            generator=generator,
+            output=["latents", "timesteps", "latent_height", "latent_width", "in_channels", "video_rotary_emb"],
+        )
+        record_event(f"prepare_latents_modular_pipe_call{repeat_suffix}", time.time() - event_t0)
+
+        denoise_progress_callback.timesteps = prepare_state["timesteps"]
+        denoise_progress_callback.start_time = time.perf_counter()
+        denoise_progress_callback.last_time = denoise_progress_callback.start_time
+        denoise_progress_callback.step_times = []
+        print(f"  Starting denoise loop{repeat_suffix}", flush=True)
+        event_t0 = time.time()
+        denoise_state = denoise_pipe(
+            latents=prepare_state["latents"],
+            timesteps=prepare_state["timesteps"],
+            connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
+            connector_attention_mask=connector_attention_mask.to(device=DEVICE),
+            latent_height=prepare_state["latent_height"],
+            latent_width=prepare_state["latent_width"],
+            video_rotary_emb=prepare_state["video_rotary_emb"],
+            batch_size=latent_batch_size,
+            transformer_batch_multiplier=transformer_batch_multiplier,
+            do_classifier_free_guidance=False,
+            do_perturbed_attention_guidance=do_perturbed_attention_guidance,
+            guidance_scale=GUIDANCE_SCALE,
+            guidance_rescale=GUIDANCE_RESCALE,
+            pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
+            pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
+            callback_on_step_end=denoise_progress_callback,
+            callback_on_step_end_tensor_inputs=["latents"],
+            output="latents",
+        )
+        record_event(
+            f"denoise_modular_pipe_call{repeat_suffix}",
+            time.time() - event_t0,
+            repeat_index=repeat_index,
+        )
+        run_metrics["denoise_step_times_by_repeat"].append(list(denoise_progress_callback.step_times))
+        run_metrics["denoise_step_times"] = denoise_progress_callback.step_times
+
+        if image_latent is not None:
+            del image_latent
+        image_latent = denoise_state.to(OFFLOAD_DEVICE)
+        latent_height = prepare_state["latent_height"]
+        latent_width = prepare_state["latent_width"]
+        latent_channels = prepare_state["in_channels"]
+        if SHOW_METRICS:
+            print(f"  Image latent: {image_latent.shape}")
+        del prepare_state, denoise_state
 
     del connector_prompt_embeds, connector_attention_mask
     del prepare_pipe, denoise_pipe, transformer, scheduler
-    flush()
+    cleanup_runtime_state(record_event, "cleanup_before_vae_decode")
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
+
     t0 = step_start("Pass 2: Decode VAE")
 
     event_t0 = time.time()
-    vae = AutoencoderKLLTX2Video.from_pretrained(MODEL_PATH, subfolder="vae", torch_dtype=DTYPE).to(DEVICE)
+    vae = AutoencoderKLLTX2Video.from_pretrained(
+        MODEL_PATH,
+        subfolder="vae",
+        torch_dtype=DTYPE,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+    ).to(DEVICE)
     record_event("load_vae_to_cuda", time.time() - event_t0, source=MODEL_PATH)
 
     event_t0 = time.time()
@@ -351,12 +427,11 @@ def main():
     record_event("vae_decode_modular_call", time.time() - event_t0)
 
     del decode_pipe, vae, image_latent
-    flush()
+    cleanup_runtime_state(record_event, "cleanup_after_vae_decode")
     step_end("Pass 2: Decode VAE", t0)
 
     t0 = step_start("Save Image")
     output_dir.mkdir(parents=True, exist_ok=True)
-    metrics_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{run_slug}.png"
     image.save(output_path)
     print(f"  Image saved successfully to: {output_path}")
@@ -368,12 +443,15 @@ def main():
     run_metrics["global_peak_ram_gb"] = round(tracker.global_peak_ram, 4)
 
     metrics_path = metrics_dir / f"{run_slug}.json"
-    metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
+    if SAVE_METRICS:
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
 
     print("\n" + "=" * 70)
     print(f"  TOTAL: {total_time:.1f}s | Peak VRAM: {tracker.global_peak_vram:.2f} GB | Peak RAM: {tracker.global_peak_ram:.2f} GB")
     print(f"  Output: {output_path}")
-    print(f"  Metrics JSON: {metrics_path}")
+    if SAVE_METRICS:
+        print(f"  Metrics JSON: {metrics_path}")
     print("=" * 70)
 
 

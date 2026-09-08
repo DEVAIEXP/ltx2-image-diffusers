@@ -1,0 +1,89 @@
+{
+  "_blocks_class_name": "LTX2ImageAutoBlocks",
+  "_class_name": "ModularPipeline",
+  "_diffusers_version": "0.40.0.dev0",
+  "connectors": [
+    null,
+    null,
+    {
+      "pretrained_model_name_or_path": null,
+      "revision": null,
+      "subfolder": "",
+      "type_hint": [
+        "diffusers_modules.local.connectors_ltx2_image",
+        "LTX2ImageTextConnectors"
+      ],
+      "variant": null
+    }
+  ],
+  "scheduler": [
+    null,
+    null,
+    {
+      "pretrained_model_name_or_path": null,
+      "revision": null,
+      "subfolder": "",
+      "type_hint": [
+        "diffusers",
+        "FlowMatchEulerDiscreteScheduler"
+      ],
+      "variant": null
+    }
+  ],
+  "text_encoder": [
+    null,
+    null,
+    {
+      "pretrained_model_name_or_path": null,
+      "revision": null,
+      "subfolder": "",
+      "type_hint": [
+        "transformers",
+        "PreTrainedModel"
+      ],
+      "variant": null
+    }
+  ],
+  "tokenizer": [
+    null,
+    null,
+    {
+      "pretrained_model_name_or_path": null,
+      "revision": null,
+      "subfolder": "",
+      "type_hint": [
+        "transformers",
+        "PreTrainedTokenizerBase"
+      ],
+      "variant": null
+    }
+  ],
+  "transformer": [
+    null,
+    null,
+    {
+      "pretrained_model_name_or_path": null,
+      "revision": null,
+      "subfolder": "",
+      "type_hint": [
+        "diffusers_modules.local.transformer_ltx2_image",
+        "LTX2ImageTransformer2DModel"
+      ],
+      "variant": null
+    }
+  ],
+  "vae": [
+    null,
+    null,
+    {
+      "pretrained_model_name_or_path": null,
+      "revision": null,
+      "subfolder": "",
+      "type_hint": [
+        "diffusers",
+        "AutoencoderKLLTX2Video"
+      ],
+      "variant": null
+    }
+  ]
+}

@@ -35,6 +35,7 @@ from diffusers.utils import apply_lora_scale, logging
 
 logger = logging.get_logger(__name__)
 
+
 class LTX2ImageTransformerBlock(nn.Module):
     r"""
     Transformer block used in LTX-2 Image (Visual-only) model.
@@ -266,6 +267,9 @@ class LTX2ImageTransformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, FromO
                 for _ in range(num_layers)
             ]
         )
+
+        for block_idx, block in enumerate(self.transformer_blocks):
+            block._ltx2_block_idx = block_idx
 
         self.norm_out = nn.LayerNorm(inner_dim, eps=1e-6, elementwise_affine=False)
         self.proj_out = nn.Linear(inner_dim, out_channels)

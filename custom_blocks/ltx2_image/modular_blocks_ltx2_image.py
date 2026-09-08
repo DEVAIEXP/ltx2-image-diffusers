@@ -3,17 +3,20 @@
 # Licensed under the Apache License, Version 2.0.
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Union
+from typing import Any, Callable, List, Optional, Union
 
 import numpy as np
 import PIL.Image
 import torch
+import torch.nn.functional as F
+from PIL import Image, ImageEnhance
 from transformers import Gemma3ForConditionalGeneration, PreTrainedModel, PreTrainedTokenizerBase
 
 from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.modular_pipelines import ComponentSpec, InputParam, ModularPipelineBlocks, OutputParam, PipelineState
-from diffusers.modular_pipelines import SequentialPipelineBlocks
+from diffusers.modular_pipelines.modular_pipeline import SequentialPipelineBlocks
+from diffusers.modular_pipelines.modular_pipeline_utils import InsertableDict
 from diffusers.utils import BaseOutput
 from diffusers.utils.torch_utils import randn_tensor
 
@@ -27,6 +30,8 @@ except ImportError:
 
 @dataclass
 class LTX2ImagePipelineOutput(BaseOutput):
+    """Output container matching the LTX image pipeline image result."""
+
     images: Union[List[PIL.Image.Image], np.ndarray, torch.Tensor]
 
 
@@ -38,6 +43,8 @@ def calculate_shift(
     base_shift: float = 0.5,
     max_shift: float = 1.15,
 ) -> float:
+    """Calculate FlowMatch timestep shift from the image sequence length."""
+
     m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
     b = base_shift - m * base_seq_len
     return image_seq_len * m + b
@@ -45,13 +52,15 @@ def calculate_shift(
 
 # Copied from diffusers.pipelines.ltx2.pipeline_ltx2_image.retrieve_timesteps.
 def retrieve_timesteps(
-    scheduler,
+    scheduler: FlowMatchEulerDiscreteScheduler,
     num_inference_steps: Optional[int] = None,
     device: Optional[Union[str, torch.device]] = None,
     timesteps: Optional[List[int]] = None,
     sigmas: Optional[List[float]] = None,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> tuple[torch.Tensor, int]:
+    """Set scheduler timesteps from custom timesteps, sigmas, or a step count."""
+
     if timesteps is not None and sigmas is not None:
         raise ValueError("Only one of `timesteps` or `sigmas` can be passed.")
     if timesteps is not None:
@@ -69,20 +78,148 @@ def retrieve_timesteps(
 
 
 # Copied from diffusers.pipelines.ltx2.pipeline_ltx2_image.rescale_noise_cfg.
-def rescale_noise_cfg(noise_cfg: torch.Tensor, noise_pred_text: torch.Tensor, guidance_rescale: float = 0.0):
+def rescale_noise_cfg(
+    noise_cfg: torch.Tensor, noise_pred_text: torch.Tensor, guidance_rescale: float = 0.0
+) -> torch.Tensor:
+    """Rescale guided noise using the text prediction standard deviation."""
+
     std_text = noise_pred_text.std(dim=list(range(1, noise_pred_text.ndim)), keepdim=True)
     std_cfg = noise_cfg.std(dim=list(range(1, noise_cfg.ndim)), keepdim=True)
     noise_pred_rescaled = noise_cfg * (std_text / std_cfg)
     return guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
 
 
+def normalize_vae_latents(vae: AutoencoderKLLTX2Video, latents: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Apply LTX VAE latent normalization."""
+
+    latents_mean = vae.latents_mean.view(1, -1, 1, 1, 1).to(device=device, dtype=latents.dtype)
+    latents_std = vae.latents_std.view(1, -1, 1, 1, 1).to(device=device, dtype=latents.dtype)
+    return (latents - latents_mean) * vae.config.scaling_factor / latents_std
+
+
+def get_strength_sigmas(num_inference_steps: int, strength: float) -> tuple[list[float], int]:
+    """Slice the default sigma schedule according to an img2img strength value."""
+
+    if strength < 0 or strength > 1:
+        raise ValueError(f"`strength` must be in [0.0, 1.0], got {strength}.")
+    sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps, dtype=np.float32)
+    init_timestep = min(num_inference_steps * strength, num_inference_steps)
+    t_start = int(max(num_inference_steps - init_timestep, 0))
+    selected_sigmas = sigmas[t_start:]
+    if len(selected_sigmas) == 0:
+        raise ValueError("The chosen strength leaves zero denoising steps. Increase `strength`.")
+    return selected_sigmas.tolist(), t_start
+
+
+def get_default_sigmas(
+    num_inference_steps: int, timesteps: Optional[List[int]], sigmas: Optional[List[float]]
+) -> Optional[Union[List[float], np.ndarray]]:
+    """Return the default sigma schedule unless custom timesteps or sigmas were provided."""
+
+    if timesteps is not None:
+        return sigmas
+    if sigmas is not None:
+        return sigmas
+    return np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+
+
+def add_deterministic_noise(
+    image: PIL.Image.Image, sigma: float, generator: Optional[torch.Generator] = None
+) -> PIL.Image.Image:
+    """Add deterministic RGB pixel noise before VAE encoding."""
+
+    if sigma is None or sigma <= 0:
+        return image
+    image_np = np.array(image.convert("RGB"))
+    image_tensor = torch.from_numpy(image_np).float()
+    noise = torch.randn(image_tensor.shape, generator=generator, dtype=image_tensor.dtype) * sigma
+    noisy_tensor = torch.clamp(image_tensor + noise, 0, 255).to(torch.uint8)
+    return Image.fromarray(noisy_tensor.numpy())
+
+
+def preprocess_refinement_image(
+    image: Union[str, PIL.Image.Image],
+    width: int,
+    height: int,
+    noise_sigma: float = 0.0,
+    sharpen: float = 1.0,
+    generator: Optional[torch.Generator] = None,
+) -> PIL.Image.Image:
+    """Load, resize, and optionally perturb a reference image for img2img."""
+
+    if isinstance(image, str):
+        image = Image.open(image)
+    if not isinstance(image, PIL.Image.Image):
+        raise ValueError("`image` must be a PIL image or a local image path for LTX2 image img2img.")
+
+    image = image.convert("RGB").resize((width, height), Image.Resampling.LANCZOS)
+    image = add_deterministic_noise(image, noise_sigma, generator)
+    if sharpen != 1.0:
+        image = ImageEnhance.Sharpness(image).enhance(sharpen)
+    return image
+
+
+def create_frequency_soft_cutoff_mask(
+    height: int,
+    width: int,
+    cutoff_radius: float,
+    transition_width: float = 5.0,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    """Create a radial soft cutoff mask in frequency space."""
+
+    u = torch.arange(height, device=device)
+    v = torch.arange(width, device=device)
+    u, v = torch.meshgrid(u, v, indexing="ij")
+    center_u, center_v = height // 2, width // 2
+    frequency_radius = torch.sqrt((u - center_u) ** 2 + (v - center_v) ** 2)
+    mask = torch.exp(-((frequency_radius - cutoff_radius) ** 2) / (2 * transition_width**2))
+    return torch.where(frequency_radius <= cutoff_radius, torch.ones_like(mask), mask)
+
+
+def generate_structured_noise(
+    latents: torch.Tensor,
+    input_noise: torch.Tensor,
+    cutoff_radius: Optional[float],
+    transition_width: float = 2.0,
+    pad_factor: float = 1.5,
+) -> torch.Tensor:
+    """Mix low-frequency image phase into the latent noise for img2img preservation."""
+
+    if cutoff_radius is None or cutoff_radius <= 0:
+        return input_noise
+
+    batch, channels, frames, height, width = latents.shape
+    latent_4d = latents.permute(0, 2, 1, 3, 4).reshape(batch * frames, channels, height, width).float()
+    noise_4d = input_noise.permute(0, 2, 1, 3, 4).reshape(batch * frames, channels, height, width).float()
+
+    pad_h = int(height * (pad_factor - 1)) // 2 * 2
+    pad_w = int(width * (pad_factor - 1)) // 2 * 2
+    padded_latents = F.pad(latent_4d, (pad_w // 2, pad_w // 2, pad_h // 2, pad_h // 2), mode="reflect")
+    padded_noise = F.pad(noise_4d, (pad_w // 2, pad_w // 2, pad_h // 2, pad_h // 2), mode="reflect")
+
+    padded_height, padded_width = padded_latents.shape[-2:]
+    fft_latents = torch.fft.fftshift(torch.fft.fft2(padded_latents, dim=(-2, -1)), dim=(-2, -1))
+    fft_noise = torch.fft.fftshift(torch.fft.fft2(padded_noise, dim=(-2, -1)), dim=(-2, -1))
+    mask = create_frequency_soft_cutoff_mask(
+        padded_height, padded_width, cutoff_radius, transition_width, latents.device
+    ).unsqueeze(0).unsqueeze(0)
+    mixed_phase = mask * torch.angle(fft_latents) + (1 - mask) * torch.angle(fft_noise)
+    fft_combined = torch.abs(fft_noise) * torch.exp(1j * mixed_phase)
+    structured_noise = torch.real(torch.fft.ifft2(torch.fft.ifftshift(fft_combined, dim=(-2, -1)), dim=(-2, -1)))
+    structured_noise = structured_noise[..., pad_h // 2 : pad_h // 2 + height, pad_w // 2 : pad_w // 2 + width]
+    return structured_noise.reshape(batch, frames, channels, height, width).permute(0, 2, 1, 3, 4).to(input_noise.dtype)
+
+
 def _get_gemma_prompt_embeds(
-    components,
+    components: Any,
     prompt: Union[str, List[str]],
     max_sequence_length: int = 1024,
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
-):
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Encode prompts with Gemma and pack hidden states for the LTX connectors."""
+
     device = device or components._execution_device
     dtype = dtype or components.text_encoder.dtype
 
@@ -113,6 +250,8 @@ def _get_gemma_prompt_embeds(
 
 
 class LTX2ImageTextEncoderStep(ModularPipelineBlocks):
+    """Encode prompts into packed Gemma hidden states for LTX 2 image."""
+
     model_name = None
 
     @property
@@ -154,7 +293,7 @@ class LTX2ImageTextEncoderStep(ModularPipelineBlocks):
         ]
 
     @torch.no_grad()
-    def __call__(self, components, state: PipelineState) -> PipelineState:
+    def __call__(self, components: Any, state: PipelineState) -> tuple[Any, PipelineState]:
         block_state = self.get_block_state(state)
         device = components._execution_device
         dtype = components.text_encoder.dtype if getattr(components, "text_encoder", None) is not None else torch.bfloat16
@@ -195,6 +334,8 @@ class LTX2ImageTextEncoderStep(ModularPipelineBlocks):
 
 
 class LTX2ImageConnectorStep(ModularPipelineBlocks):
+    """Run the LTX 2 image text connectors and expand batches for CFG/PAG."""
+
     model_name = None
 
     @property
@@ -227,7 +368,7 @@ class LTX2ImageConnectorStep(ModularPipelineBlocks):
         ]
 
     @torch.no_grad()
-    def __call__(self, components, state: PipelineState) -> PipelineState:
+    def __call__(self, components: Any, state: PipelineState) -> tuple[Any, PipelineState]:
         block_state = self.get_block_state(state)
         do_pag = block_state.pag_scale > 0.0
         prompt_embeds = block_state.prompt_embeds
@@ -278,7 +419,76 @@ class LTX2ImageConnectorStep(ModularPipelineBlocks):
         return components, state
 
 
+class LTX2ImageVaeEncoderStep(ModularPipelineBlocks):
+    """Encode an optional reference image into normalized one-frame VAE latents."""
+
+    model_name = None
+
+    @property
+    def description(self) -> str:
+        return "Optionally encodes an input image into normalized LTX image latents for img2img."
+
+    @property
+    def expected_components(self) -> list[ComponentSpec]:
+        return [ComponentSpec("vae", AutoencoderKLLTX2Video)]
+
+    @property
+    def inputs(self) -> list[InputParam]:
+        return [
+            InputParam("image", type_hint=Union[str, PIL.Image.Image], default=None),
+            InputParam.template("height", default=544),
+            InputParam.template("width", default=960),
+            InputParam.template("generator"),
+            InputParam("pixel_generator", type_hint=torch.Generator, default=None),
+            InputParam("image_latents", type_hint=torch.Tensor, default=None),
+            InputParam("input_noise_sigma", type_hint=float, default=0.0),
+            InputParam("input_sharpen", type_hint=float, default=1.0),
+        ]
+
+    @property
+    def intermediate_outputs(self) -> list[OutputParam]:
+        return [OutputParam("image_latents", type_hint=torch.Tensor, description="Encoded img2img latents.")]
+
+    @torch.no_grad()
+    def __call__(self, components: Any, state: PipelineState) -> tuple[Any, PipelineState]:
+        block_state = self.get_block_state(state)
+        if block_state.image_latents is not None:
+            block_state.image_latents = block_state.image_latents.to(components._execution_device, dtype=torch.float32)
+            self.set_block_state(state, block_state)
+            return components, state
+
+        if block_state.image is None:
+            block_state.image_latents = None
+            self.set_block_state(state, block_state)
+            return components, state
+
+        if block_state.height % 32 != 0 or block_state.width % 32 != 0:
+            raise ValueError(
+                f"`height` and `width` have to be divisible by 32 but are {block_state.height} and {block_state.width}."
+            )
+
+        device = components._execution_device
+        init_image = preprocess_refinement_image(
+            block_state.image,
+            block_state.width,
+            block_state.height,
+            noise_sigma=block_state.input_noise_sigma,
+            sharpen=block_state.input_sharpen,
+            generator=block_state.pixel_generator,
+        )
+        image_processor = VaeImageProcessor(vae_scale_factor=components.vae.spatial_compression_ratio)
+        image_tensor = image_processor.preprocess(init_image, height=block_state.height, width=block_state.width)
+        video_tensor = image_tensor.unsqueeze(2).to(device=device, dtype=components.vae.dtype)
+        image_latents = components.vae.encode(video_tensor, return_dict=False)[0].sample(generator=block_state.generator)
+        block_state.image_latents = normalize_vae_latents(components.vae, image_latents, device).to(dtype=torch.float32)
+
+        self.set_block_state(state, block_state)
+        return components, state
+
+
 class LTX2ImagePrepareLatentsStep(ModularPipelineBlocks):
+    """Prepare random or img2img latents, schedule timesteps, and rotary embeddings."""
+
     model_name = None
 
     @property
@@ -302,6 +512,11 @@ class LTX2ImagePrepareLatentsStep(ModularPipelineBlocks):
             InputParam.template("timesteps"),
             InputParam.template("generator"),
             InputParam("latents", type_hint=torch.Tensor, default=None),
+            InputParam("image_latents", type_hint=torch.Tensor, default=None),
+            InputParam("strength", type_hint=float, default=0.55),
+            InputParam("phase_cutoff", type_hint=float, default=None),
+            InputParam("phase_transition_width", type_hint=float, default=2.0),
+            InputParam("phase_pad_factor", type_hint=float, default=1.5),
             InputParam("batch_size", type_hint=int, required=True),
             InputParam("transformer_batch_multiplier", type_hint=int, required=True),
         ]
@@ -319,7 +534,7 @@ class LTX2ImagePrepareLatentsStep(ModularPipelineBlocks):
         ]
 
     @torch.no_grad()
-    def __call__(self, components, state: PipelineState) -> PipelineState:
+    def __call__(self, components: Any, state: PipelineState) -> tuple[Any, PipelineState]:
         block_state = self.get_block_state(state)
         if block_state.height % 32 != 0 or block_state.width % 32 != 0:
             raise ValueError(
@@ -334,18 +549,65 @@ class LTX2ImagePrepareLatentsStep(ModularPipelineBlocks):
         in_channels = components.transformer.config.in_channels
         latent_shape = (block_state.batch_size, in_channels, 1, latent_height, latent_width)
 
-        if block_state.latents is None:
+        if block_state.image_latents is not None:
+            if block_state.timesteps is None and block_state.sigmas is None:
+                sigmas, _ = get_strength_sigmas(block_state.num_inference_steps, block_state.strength)
+            else:
+                sigmas = block_state.sigmas
+            scheduler_num_steps = len(sigmas) if sigmas is not None else block_state.num_inference_steps
+
+            init_latents = block_state.image_latents.to(device=device, dtype=torch.float32)
+            if init_latents.shape[0] != block_state.batch_size:
+                if block_state.batch_size % init_latents.shape[0] != 0:
+                    raise ValueError(
+                        f"`image_latents` batch size {init_latents.shape[0]} does not match prompt batch size "
+                        f"{block_state.batch_size}."
+                    )
+                init_latents = init_latents.repeat(block_state.batch_size // init_latents.shape[0], 1, 1, 1, 1)
+            if tuple(init_latents.shape) != latent_shape:
+                raise ValueError(f"`image_latents` must have shape {latent_shape}, got {tuple(init_latents.shape)}.")
+
+            seq_len = latent_height * latent_width
+            mu = calculate_shift(
+                seq_len,
+                components.scheduler.config.get("base_image_seq_len", 1024),
+                components.scheduler.config.get("max_image_seq_len", 4096),
+                components.scheduler.config.get("base_shift", 0.95),
+                components.scheduler.config.get("max_shift", 2.05),
+            )
+            prepare_timesteps, _ = retrieve_timesteps(
+                components.scheduler,
+                scheduler_num_steps,
+                device,
+                block_state.timesteps,
+                sigmas=sigmas,
+                mu=mu,
+            )
+            noise = randn_tensor(init_latents.shape, generator=block_state.generator, device=device, dtype=torch.float32)
+            noise = generate_structured_noise(
+                init_latents,
+                noise,
+                block_state.phase_cutoff,
+                transition_width=block_state.phase_transition_width,
+                pad_factor=block_state.phase_pad_factor,
+            )
+            latent_timestep = prepare_timesteps[:1].repeat(init_latents.shape[0])
+            latents = components.scheduler.scale_noise(init_latents, latent_timestep, noise)
+        elif block_state.latents is None:
             latents = randn_tensor(latent_shape, generator=block_state.generator, device=device, dtype=torch.float32)
+            sigmas = get_default_sigmas(
+                block_state.num_inference_steps, block_state.timesteps, block_state.sigmas
+            )
+            scheduler_num_steps = len(sigmas) if sigmas is not None else block_state.num_inference_steps
         else:
             latents = block_state.latents.to(device=device, dtype=torch.float32)
+            sigmas = get_default_sigmas(
+                block_state.num_inference_steps, block_state.timesteps, block_state.sigmas
+            )
+            scheduler_num_steps = len(sigmas) if sigmas is not None else block_state.num_inference_steps
 
         latents = latents.permute(0, 2, 3, 4, 1).flatten(1, 3)
 
-        sigmas = (
-            np.linspace(1.0, 1 / block_state.num_inference_steps, block_state.num_inference_steps)
-            if block_state.sigmas is None
-            else block_state.sigmas
-        )
         mu = calculate_shift(
             latents.shape[1],
             components.scheduler.config.get("base_image_seq_len", 1024),
@@ -355,7 +617,7 @@ class LTX2ImagePrepareLatentsStep(ModularPipelineBlocks):
         )
         timesteps, num_inference_steps = retrieve_timesteps(
             components.scheduler,
-            block_state.num_inference_steps,
+            scheduler_num_steps,
             device,
             block_state.timesteps,
             sigmas=sigmas,
@@ -381,6 +643,8 @@ class LTX2ImagePrepareLatentsStep(ModularPipelineBlocks):
 
 
 class LTX2ImageDenoiseStep(ModularPipelineBlocks):
+    """Denoise flattened one-frame LTX 2 image latents."""
+
     model_name = None
 
     @property
@@ -421,15 +685,19 @@ class LTX2ImageDenoiseStep(ModularPipelineBlocks):
         return [OutputParam("latents", type_hint=torch.Tensor, description="Denoised flattened image latents.")]
 
     @staticmethod
-    def convert_velocity_to_x0(sample: torch.Tensor, denoised_output: torch.Tensor, step_idx: int, scheduler):
+    def convert_velocity_to_x0(
+        sample: torch.Tensor, denoised_output: torch.Tensor, step_idx: int, scheduler: FlowMatchEulerDiscreteScheduler
+    ) -> torch.Tensor:
         return sample - denoised_output * scheduler.sigmas[step_idx]
 
     @staticmethod
-    def convert_x0_to_velocity(sample: torch.Tensor, denoised_output: torch.Tensor, step_idx: int, scheduler):
+    def convert_x0_to_velocity(
+        sample: torch.Tensor, denoised_output: torch.Tensor, step_idx: int, scheduler: FlowMatchEulerDiscreteScheduler
+    ) -> torch.Tensor:
         return (sample - denoised_output) / scheduler.sigmas[step_idx]
 
     @torch.no_grad()
-    def __call__(self, components, state: PipelineState) -> PipelineState:
+    def __call__(self, components: Any, state: PipelineState) -> tuple[Any, PipelineState]:
         block_state = self.get_block_state(state)
         dtype = components.transformer.dtype
         device = components._execution_device
@@ -526,6 +794,8 @@ class LTX2ImageDenoiseStep(ModularPipelineBlocks):
 
 
 class LTX2ImageDecodeStep(ModularPipelineBlocks):
+    """Decode flattened one-frame LTX 2 image latents into images."""
+
     model_name = None
 
     @property
@@ -555,7 +825,7 @@ class LTX2ImageDecodeStep(ModularPipelineBlocks):
         return [OutputParam("images", type_hint=Union[list, np.ndarray, torch.Tensor], description="Generated images.")]
 
     @torch.no_grad()
-    def __call__(self, components, state: PipelineState) -> PipelineState:
+    def __call__(self, components: Any, state: PipelineState) -> tuple[Any, PipelineState]:
         block_state = self.get_block_state(state)
         device = components._execution_device
         dtype = components.vae.dtype
@@ -602,6 +872,8 @@ class LTX2ImageDecodeStep(ModularPipelineBlocks):
 
 
 class LTX2ImageDistilledBlocks(SequentialPipelineBlocks):
+    """Sequential text-to-image blocks kept for step-by-step modular runners."""
+
     block_classes = [
         LTX2ImageTextEncoderStep,
         LTX2ImageConnectorStep,
@@ -619,7 +891,42 @@ class LTX2ImageDistilledBlocks(SequentialPipelineBlocks):
     def outputs(self) -> list[OutputParam]:
         return [OutputParam("images", type_hint=Union[list, np.ndarray, torch.Tensor], description="Generated images.")]
 
+
+LTX2_IMAGE_AUTO_BLOCKS = InsertableDict(
+    [
+        ("text_encoder", LTX2ImageTextEncoderStep()),
+        ("connectors", LTX2ImageConnectorStep()),
+        ("vae_encoder", LTX2ImageVaeEncoderStep()),
+        ("prepare_latents", LTX2ImagePrepareLatentsStep()),
+        ("denoise", LTX2ImageDenoiseStep()),
+        ("decode", LTX2ImageDecodeStep()),
+    ]
+)
+
+
+class LTX2ImageAutoBlocks(SequentialPipelineBlocks):
+    """Unified AutoBlocks for text-to-image and image-to-image LTX 2 image workflows."""
+
+    model_name = "ltx2_image"
+    block_classes = list(LTX2_IMAGE_AUTO_BLOCKS.values())
+    block_names = list(LTX2_IMAGE_AUTO_BLOCKS.keys())
+    _workflow_map = {
+        "text2image": {"prompt": True},
+        "image2image": {"prompt": True, "image": True},
+    }
+
+    @property
+    def description(self) -> str:
+        return "Unified LTX 2 image modular blocks for text-to-image and image-to-image."
+
+    @property
+    def outputs(self) -> list[OutputParam]:
+        return [OutputParam("images", type_hint=Union[list, np.ndarray, torch.Tensor], description="Generated images.")]
+
+
 class LTX2ImageDenoiseBlocks(SequentialPipelineBlocks):
+    """Denoise-only block group for runners with precomputed prompt embeddings."""
+
     block_classes = [
         LTX2ImageConnectorStep,
         LTX2ImagePrepareLatentsStep,
