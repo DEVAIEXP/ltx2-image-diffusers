@@ -1,9 +1,8 @@
 """
-Local low-VRAM parity runner for the experimental LTX 2.3 distilled modular T2I blocks.
+Modular LTX 2.3 distilled image runner using official Diffusers group offloading.
 """
 
-import contextlib
-from dataclasses import replace
+import argparse
 import json
 import os
 from pathlib import Path
@@ -11,11 +10,12 @@ import re
 import time
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("HF_MODULES_CACHE", str((Path(__file__).parent / ".hf_modules").resolve()))
 
 import torch
 from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler
 from diffusers.hooks import apply_group_offloading
-from diffusers.models.attention_dispatch import AttentionBackendName, _AttentionBackendRegistry, attention_backend
+from diffusers.loaders.lora_pipeline import LTX2LoraLoaderMixin
 from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
 
 from custom_blocks.ltx2_image import LTX2ImageDistilledBlocks, LTX2ImageTextEncoderStep
@@ -37,176 +37,100 @@ from diffusers_dynamic_offloader import (
 from inference_utils import RunTracker, flush
 
 
-def env_value(name: str, default: str = "") -> str:
-    return os.environ.get(name, default)
-
-
-def parse_bool_env(name: str, default: str = "0") -> bool:
-    return env_value(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def parse_metrics_level() -> int:
-    value = env_value("DDO_RUNNER_METRICS_LEVEL", "0").strip()
-    try:
-        level = int(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid DDO_RUNNER_METRICS_LEVEL={value!r}. "
-            "Valid values: 0, 1, 2."
-        ) from exc
-    if level not in {0, 1, 2}:
-        raise ValueError(
-            f"Invalid DDO_RUNNER_METRICS_LEVEL={value!r}. "
-            "Valid values: 0, 1, 2."
-        )
-    return level
-
-
-RUNNING_ON_WSL = is_wsl_environment()
-DEVICE = env_value("DDO_RUNNER_DEVICE", "cuda:0")
+DEVICE = "cuda:0"
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
-MODEL_TAG = "distilled_modular"
-MODEL_PATH = env_value("DDO_RUNNER_MODEL_PATH", r"E:\model\ltx2.3-image-distilled-1.1")
-TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
-MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("DDO_RUNNER_LOW_CPU_MEM_USAGE", "1")
-DYNAMIC_OFFLOAD_SETTINGS = DynamicOffloadSettings.from_env(
-    execution_device=DEVICE,
-    offload_device=OFFLOAD_DEVICE,
-    running_on_wsl=RUNNING_ON_WSL,
-    default_preset="auto",
-)
-REQUESTED_DYNAMIC_OFFLOAD_PRESET = DYNAMIC_OFFLOAD_SETTINGS.requested_preset
-DYNAMIC_OFFLOAD_PRESET = DYNAMIC_OFFLOAD_SETTINGS.effective_preset
+MODEL_TAG = "distilled_modular_diffusers_group_offload"
+MODEL_PATH = r"elismasilva/ltx2.3-image-distilled-1.1"
+LOW_CPU_MEM_USAGE = True
 
-
-def preset_env(name: str, default: str = "") -> str:
-    if name in os.environ:
-        return os.environ[name]
-    value = DYNAMIC_OFFLOAD_SETTINGS.preset_value(name)
-    if value != "":
-        return value
-    return default
-
-
-def parse_bool_preset_env(name: str, default: str = "0") -> bool:
-    return preset_env(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def parse_pattern_list_env(name: str, default: str = "") -> tuple[str, ...]:
-    return tuple(item.strip() for item in re.split(r"[;,]", preset_env(name, default)) if item.strip())
-
-
-def parse_float_preset_env(name: str, default: str = "0.0") -> float:
-    return float(preset_env(name, default))
-
-
-AUTO_CPU_OFFLOAD = parse_bool_env("DDO_RUNNER_AUTO_CPU_OFFLOAD")
-TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
-TEXT_ENCODER_DYNAMIC_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD")
-TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY = parse_bool_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY",
-    "0",
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB",
-    "3.0",
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB",
-    "0.0",
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO",
-    "0.0",
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION = preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION",
-    DYNAMIC_OFFLOAD_SETTINGS.config.pin_weight_selection,
-).lower()
-TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY = preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY",
-    DYNAMIC_OFFLOAD_SETTINGS.config.auto_budget_policy,
-).lower()
-TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB",
-    str(DYNAMIC_OFFLOAD_SETTINGS.config.max_resident_module_budget_gb),
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB = parse_float_preset_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB",
-    str(DYNAMIC_OFFLOAD_SETTINGS.config.max_pin_weight_budget_gb),
-)
-TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES = parse_pattern_list_env(
-    "DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULE_PATTERNS",
-    r"(^|\.)vision_tower(\.|$)",
-)
-TRANSFORMER_GROUP_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TRANSFORMER_GROUP_OFFLOAD")
-TRANSFORMER_MEMORY_MANAGER = preset_env("DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER", "off").lower()
-DYNAMIC_OFFLOAD_CONFIG = DYNAMIC_OFFLOAD_SETTINGS.config
-DYNAMIC_OFFLOAD_EXECUTION_MODE = DYNAMIC_OFFLOAD_CONFIG.execution_mode
-DYNAMIC_OFFLOAD_PIN_CPU_MEMORY = DYNAMIC_OFFLOAD_SETTINGS.requested_pin_cpu_memory
-DYNAMIC_OFFLOAD_SHOW_PROFILE = DYNAMIC_OFFLOAD_CONFIG.show_profile
-DYNAMIC_OFFLOAD_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_OFFLOAD_SETTINGS.effective_pin_cpu_memory
-PRE_VAE_CLEANUP_REPEATS = int(preset_env("DDO_RUNNER_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
-RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("DDO_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN")
-PURGE_WINDOWS_STANDBY_BEFORE_RUN = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_RUN")
-PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER")
-PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER")
-PURGE_WINDOWS_STANDBY_AFTER_RUN = parse_bool_env("DDO_RUNNER_PURGE_WINDOWS_STANDBY_AFTER_RUN")
-METRICS_LEVEL = parse_metrics_level()
-SHOW_METRICS = METRICS_LEVEL >= 1 or parse_bool_env("DDO_RUNNER_SHOW_METRICS")
-SAVE_METRICS = METRICS_LEVEL >= 2 or parse_bool_env("DDO_RUNNER_SAVE_METRICS")
-ATTENTION_BACKEND = preset_env("DDO_RUNNER_ATTENTION_BACKEND", "native").lower()
-FLASH_COMPATIBLE_ATTENTION_BACKENDS = {"flash", "flash_hub", "_native_flash", "_flash_3", "_flash_3_hub"}
-DROP_TRIVIAL_ATTENTION_MASK = (
-    parse_bool_env("DDO_RUNNER_DROP_TRIVIAL_ATTENTION_MASK")
-    or ATTENTION_BACKEND in FLASH_COMPATIBLE_ATTENTION_BACKENDS
-)
 GROUP_OFFLOAD_CONFIG = {
-    "mode": "components_manager_auto_cpu_offload" if AUTO_CPU_OFFLOAD else "disabled",
-    "device": DEVICE,
-    "text_encoder_group_offload": TEXT_ENCODER_GROUP_OFFLOAD,
-    "text_encoder_offload_type": preset_env("DDO_RUNNER_TEXT_ENCODER_OFFLOAD_TYPE", "leaf_level"),
-    "text_encoder_use_stream": parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_OFFLOAD_STREAM", "1"),
-    "text_encoder_record_stream": parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_OFFLOAD_RECORD_STREAM"),
-    "text_encoder_num_blocks_per_group": int(preset_env("DDO_RUNNER_TEXT_ENCODER_NUM_BLOCKS_PER_GROUP", "1")),
-    "transformer_group_offload": TRANSFORMER_GROUP_OFFLOAD,
-    "transformer_offload_type": preset_env("DDO_RUNNER_TRANSFORMER_OFFLOAD_TYPE", "leaf_level"),
-    "transformer_use_stream": parse_bool_preset_env("DDO_RUNNER_TRANSFORMER_OFFLOAD_STREAM", "1"),
-    "transformer_record_stream": parse_bool_preset_env("DDO_RUNNER_TRANSFORMER_OFFLOAD_RECORD_STREAM"),
-    "transformer_low_cpu_mem_usage": parse_bool_preset_env(
-        "DDO_RUNNER_TRANSFORMER_OFFLOAD_LOW_CPU_MEM_USAGE",
-        "1" if MODEL_LOW_CPU_MEM_USAGE else "0",
-    ),
-    "transformer_num_blocks_per_group": int(preset_env("DDO_RUNNER_TRANSFORMER_NUM_BLOCKS_PER_GROUP", "1")),
+    "text_encoder_offload_type": "leaf_level",
+    "text_encoder_use_stream": True,
+    "text_encoder_record_stream": False,
+    "text_encoder_low_cpu_mem_usage": True,
+    "text_encoder_num_blocks_per_group": 1,
+    "transformer_offload_type": "leaf_level",
+    "transformer_use_stream": True,
+    "transformer_record_stream": False,
+    "transformer_low_cpu_mem_usage": True,
+    "transformer_num_blocks_per_group": 1,
 }
 
-WIDTH = int(env_value("DDO_RUNNER_WIDTH", "1280"))
-HEIGHT = int(env_value("DDO_RUNNER_HEIGHT", "704"))
-SEED = int(env_value("DDO_RUNNER_SEED", "43"))
-NUM_INFERENCE_STEPS = int(env_value("DDO_RUNNER_STEPS", "8"))
-GUIDANCE_SCALE = float(env_value("DDO_RUNNER_GUIDANCE_SCALE", "1.0"))
-GUIDANCE_RESCALE = float(env_value("DDO_RUNNER_GUIDANCE_RESCALE", "0.7"))
-DECODE_TIMESTEP = float(env_value("DDO_RUNNER_DECODE_TIMESTEP", "0.0"))
-DECODE_NOISE_SCALE_ENV = env_value("DDO_RUNNER_DECODE_NOISE_SCALE")
-DECODE_NOISE_SCALE = None if DECODE_NOISE_SCALE_ENV in (None, "") else float(DECODE_NOISE_SCALE_ENV)
-PAG_ENABLED = parse_bool_env("DDO_RUNNER_PAG_ENABLED")
-PAG_SCALE = float(env_value("DDO_RUNNER_PAG_SCALE", "0.2"))
-PAG_APPLIED_LAYERS = [int(x) for x in env_value("DDO_RUNNER_PAG_LAYERS", "28").split(",") if x]
-FAKE_PROMPT_EMBEDS = parse_bool_env("DDO_RUNNER_FAKE_PROMPT")
-GENERATION_REPEATS = max(1, int(preset_env("DDO_RUNNER_GENERATION_REPEATS", "1")))
-TRANSFORMER_PREPARE_REPEATS = max(1, int(preset_env("DDO_RUNNER_TRANSFORMER_PREPARE_REPEATS", "1")))
+WIDTH = 1280
+HEIGHT = 704
+SEED = 43
+NUM_INFERENCE_STEPS = 8
+GUIDANCE_SCALE = 1.0
+GUIDANCE_RESCALE = 0.7
+DECODE_TIMESTEP = 0.0
+DECODE_NOISE_SCALE = None
+PAG_ENABLED = False
+PAG_SCALE = 0.2
+PAG_APPLIED_LAYERS = [28]
+GENERATION_REPEATS = 1
 
-prompt = env_value(
-    "DDO_RUNNER_PROMPT",
-    "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy.",
-)
-negative_prompt = env_value("DDO_RUNNER_NEGATIVE_PROMPT", "")
+SHOW_METRICS = True
+SAVE_METRICS = True
+SHOW_DENOISE_STEPS = True
+
+CRISP_LORA_ENABLED = False
+CRISP_LORA_PATH = "vrgamedevgirl84/LTX_2.3_Crisp_Enhance_Style_LoRa"
+CRISP_LORA_WEIGHT_NAME = "LTX2.3_Crisp_Enhance.safetensors"
+CRISP_LORA_ADAPTER_NAME = "crisp"
+CRISP_LORA_SCALE = 0.3
+SOFT_LORA_ENABLED = True
+SOFT_LORA_PATH = "vrgamedevgirl84/LTX_2.3_Soft_Enhance_Style_LoRa"
+SOFT_LORA_WEIGHT_NAME = "LTX2.3_Soft_Enhance.safetensors"
+SOFT_LORA_ADAPTER_NAME = "soft"
+SOFT_LORA_SCALE = 0.8
+
+prompt = "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy."
+negative_prompt = ""
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prompt", default=prompt)
+    parser.add_argument("--negative-prompt", default=negative_prompt)
+    parser.add_argument("--width", type=int, default=WIDTH)
+    parser.add_argument("--height", type=int, default=HEIGHT)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--steps", type=int, default=NUM_INFERENCE_STEPS)
+    parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
+    parser.add_argument("--guidance-rescale", type=float, default=GUIDANCE_RESCALE)
+    parser.add_argument("--decode-timestep", type=float, default=DECODE_TIMESTEP)
+    parser.add_argument("--decode-noise-scale", type=float, default=DECODE_NOISE_SCALE)
+    parser.add_argument("--pag", action="store_true", default=PAG_ENABLED)
+    parser.add_argument("--pag-scale", type=float, default=PAG_SCALE)
+    parser.add_argument("--pag-layers", default=",".join(map(str, PAG_APPLIED_LAYERS)))
+    parser.add_argument("--generation-repeats", type=int, default=GENERATION_REPEATS)
+    parser.add_argument("--output-dir", default="outputs/ltx_image_modular")
+    parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=SHOW_METRICS)
+    parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
+    parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=SHOW_DENOISE_STEPS)
+    parser.add_argument("--crisp-lora", action=argparse.BooleanOptionalAction, default=CRISP_LORA_ENABLED)
+    parser.add_argument("--crisp-lora-path", default=CRISP_LORA_PATH)
+    parser.add_argument("--crisp-lora-weight-name", default=CRISP_LORA_WEIGHT_NAME)
+    parser.add_argument("--crisp-lora-adapter-name", default=CRISP_LORA_ADAPTER_NAME)
+    parser.add_argument("--crisp-lora-scale", type=float, default=CRISP_LORA_SCALE)
+    parser.add_argument("--soft-lora", action=argparse.BooleanOptionalAction, default=SOFT_LORA_ENABLED)
+    parser.add_argument("--soft-lora-path", default=SOFT_LORA_PATH)
+    parser.add_argument("--soft-lora-weight-name", default=SOFT_LORA_WEIGHT_NAME)
+    parser.add_argument("--soft-lora-adapter-name", default=SOFT_LORA_ADAPTER_NAME)
+    parser.add_argument("--soft-lora-scale", type=float, default=SOFT_LORA_SCALE)
+    return parser.parse_args()
 
 
 def build_run_slug(seed):
     pag_tag = f"pag{PAG_SCALE:g}_layers{'-'.join(map(str, PAG_APPLIED_LAYERS))}" if PAG_ENABLED else "nopag"
+    lora_tags = []
+    if SOFT_LORA_ENABLED:
+        lora_tags.append(f"{SOFT_LORA_ADAPTER_NAME}{SOFT_LORA_SCALE:g}")
+    if CRISP_LORA_ENABLED:
+        lora_tags.append(f"{CRISP_LORA_ADAPTER_NAME}{CRISP_LORA_SCALE:g}")
+    lora_tag = "lora_" + "-".join(lora_tags) if lora_tags else "nolora"
     return "_".join(
         [
             "ltx23_image",
@@ -214,6 +138,7 @@ def build_run_slug(seed):
             "bf16",
             "text_encoder_original",
             pag_tag,
+            lora_tag,
             f"{WIDTH}x{HEIGHT}",
             f"steps{NUM_INFERENCE_STEPS}",
             f"seed{seed}",
@@ -221,7 +146,7 @@ def build_run_slug(seed):
     )
 
 
-def apply_model_group_offload(model, *, prefix):
+def apply_model_group_offload(model, *, prefix: str):
     offload_type = GROUP_OFFLOAD_CONFIG[f"{prefix}_offload_type"]
     kwargs = {
         "onload_device": torch.device(DEVICE),
@@ -229,11 +154,7 @@ def apply_model_group_offload(model, *, prefix):
         "offload_type": offload_type,
         "use_stream": GROUP_OFFLOAD_CONFIG[f"{prefix}_use_stream"],
         "record_stream": GROUP_OFFLOAD_CONFIG[f"{prefix}_record_stream"],
-        "low_cpu_mem_usage": (
-            TEXT_ENCODER_LOW_CPU_MEM_USAGE
-            if prefix == "text_encoder"
-            else GROUP_OFFLOAD_CONFIG["transformer_low_cpu_mem_usage"]
-        ),
+        "low_cpu_mem_usage": GROUP_OFFLOAD_CONFIG[f"{prefix}_low_cpu_mem_usage"],
     }
     if offload_type == "block_level":
         kwargs["num_blocks_per_group"] = GROUP_OFFLOAD_CONFIG[f"{prefix}_num_blocks_per_group"]
@@ -345,46 +266,144 @@ def cleanup_before_vae_decode(record_event) -> None:
     )
 
 
-def denoise_progress_callback(components, step_index, timestep, callback_kwargs):
-    now = time.perf_counter()
-    last_time = getattr(denoise_progress_callback, "last_time", now)
-    start_time = getattr(denoise_progress_callback, "start_time", last_time)
-    step_elapsed = now - last_time
-    total_elapsed = now - start_time
-    denoise_progress_callback.last_time = now
-    denoise_progress_callback.step_times.append(step_elapsed)
+def cleanup_runtime_state(record_event, event_name: str):
+    event_t0 = time.time()
+    flush()
+    record_event(event_name, time.time() - event_t0)
 
-    used_gb = torch.cuda.memory_allocated(DEVICE) / 1024**3
-    reserved_gb = torch.cuda.memory_reserved(DEVICE) / 1024**3
-    total_steps = len(denoise_progress_callback.timesteps)
-    avg_elapsed = total_elapsed / (step_index + 1)
-    if SHOW_METRICS:
-        print(
-            f"  [denoise] step {step_index + 1}/{total_steps} timestep={float(timestep):.4f} "
-            f"elapsed={step_elapsed:.4f}s avg={avg_elapsed:.4f}s/it "
-            f"torch_alloc={used_gb:.2f} GiB torch_reserved={reserved_gb:.2f} GiB",
-            flush=True,
-        )
-    return callback_kwargs
+
+def load_lora_adapter(model, source: str, weight_name: str, adapter_name: str) -> str:
+    state_dict, metadata = LTX2LoraLoaderMixin.lora_state_dict(
+        source,
+        weight_name=weight_name,
+        return_lora_metadata=True,
+    )
+    model.load_lora_adapter(
+        state_dict,
+        prefix="transformer",
+        adapter_name=adapter_name,
+        metadata=metadata,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+    )
+    return adapter_name
+
+
+def maybe_load_lora(model, run_metrics, enabled, kind, path, weight_name, adapter_name, scale, record_event):
+    if not enabled:
+        return None
+    event_t0 = time.time()
+    actual_adapter_name = load_lora_adapter(model, path, weight_name, adapter_name)
+    run_metrics["lora_adapters"].append(
+        {
+            "kind": kind,
+            "path": path,
+            "weight_name": weight_name,
+            "adapter_name": actual_adapter_name,
+            "scale": scale,
+        }
+    )
+    record_event(
+        f"load_{kind}_lora",
+        time.time() - event_t0,
+        path=path,
+        weight_name=weight_name,
+        adapter_name=actual_adapter_name,
+        scale=scale,
+    )
+    return actual_adapter_name, scale
+
+
+def activate_loras(model, adapters, record_event):
+    if not adapters:
+        return
+    names, scales = zip(*adapters)
+    try:
+        model.set_adapters(list(names), weights=list(scales))
+    except TypeError:
+        model.set_adapters(list(names), adapter_weights=list(scales))
+    record_event("activate_loras", 0.0, adapters=dict(adapters))
+
+
+def make_denoise_progress_callback(tracker):
+    def callback(pipe, step_index, timestep, callback_kwargs):
+        now = time.perf_counter()
+        elapsed = now - callback.last_time
+        callback.last_time = now
+        callback.step_times.append(elapsed)
+        if SHOW_DENOISE_STEPS:
+            avg = (now - callback.start_time) / (step_index + 1)
+            allocated = torch.cuda.memory_allocated(DEVICE) / (1024**3)
+            reserved = torch.cuda.memory_reserved(DEVICE) / (1024**3)
+            total_steps = len(callback.timesteps) if callback.timesteps is not None else NUM_INFERENCE_STEPS
+            print(
+                f"  [denoise] step {step_index + 1}/{total_steps} timestep={float(timestep):.4f} "
+                f"elapsed={elapsed:.4f}s avg={avg:.4f}s/it "
+                f"torch_alloc={allocated:.2f} GiB torch_reserved={reserved:.2f} GiB",
+                flush=True,
+            )
+        return callback_kwargs
+
+    callback.start_time = 0.0
+    callback.last_time = 0.0
+    callback.step_times = []
+    callback.timesteps = None
+    return callback
 
 
 def main():
-    if parse_bool_env("DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS"):
-        print(format_dynamic_offload_presets(default_preset="auto", running_on_wsl=RUNNING_ON_WSL))
-        return
+    global WIDTH, HEIGHT, SEED, NUM_INFERENCE_STEPS, GUIDANCE_SCALE, GUIDANCE_RESCALE
+    global DECODE_TIMESTEP, DECODE_NOISE_SCALE, PAG_ENABLED, PAG_SCALE, PAG_APPLIED_LAYERS
+    global GENERATION_REPEATS, SHOW_METRICS, SAVE_METRICS, SHOW_DENOISE_STEPS
+    global CRISP_LORA_ENABLED, CRISP_LORA_PATH, CRISP_LORA_WEIGHT_NAME, CRISP_LORA_ADAPTER_NAME, CRISP_LORA_SCALE
+    global SOFT_LORA_ENABLED, SOFT_LORA_PATH, SOFT_LORA_WEIGHT_NAME, SOFT_LORA_ADAPTER_NAME, SOFT_LORA_SCALE
+    global prompt, negative_prompt
+
+    args = parse_args()
+    WIDTH = args.width
+    HEIGHT = args.height
+    SEED = args.seed
+    NUM_INFERENCE_STEPS = args.steps
+    GUIDANCE_SCALE = args.guidance_scale
+    GUIDANCE_RESCALE = args.guidance_rescale
+    DECODE_TIMESTEP = args.decode_timestep
+    DECODE_NOISE_SCALE = args.decode_noise_scale
+    PAG_ENABLED = args.pag
+    PAG_SCALE = args.pag_scale
+    PAG_APPLIED_LAYERS = [int(item.strip()) for item in args.pag_layers.split(",") if item.strip()]
+    GENERATION_REPEATS = args.generation_repeats
+    SHOW_METRICS = args.show_metrics
+    SAVE_METRICS = args.save_metrics
+    SHOW_DENOISE_STEPS = args.show_denoise_steps
+    CRISP_LORA_ENABLED = args.crisp_lora
+    CRISP_LORA_PATH = args.crisp_lora_path
+    CRISP_LORA_WEIGHT_NAME = args.crisp_lora_weight_name
+    CRISP_LORA_ADAPTER_NAME = args.crisp_lora_adapter_name
+    CRISP_LORA_SCALE = args.crisp_lora_scale
+    SOFT_LORA_ENABLED = args.soft_lora
+    SOFT_LORA_PATH = args.soft_lora_path
+    SOFT_LORA_WEIGHT_NAME = args.soft_lora_weight_name
+    SOFT_LORA_ADAPTER_NAME = args.soft_lora_adapter_name
+    SOFT_LORA_SCALE = args.soft_lora_scale
+    prompt = args.prompt
+    negative_prompt = args.negative_prompt
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required for this runner.")
 
     seed = SEED or torch.randint(0, 2**32, (1,)).item()
     if not SEED:
-        print(f"Using random seed: {seed}")
+        print(f"  Using random seed: {seed}")
     generator = torch.Generator(device="cpu").manual_seed(seed)
 
     run_slug = build_run_slug(seed)
-    output_dir = Path("outputs/ltx_image_modular")
+    output_dir = Path(args.output_dir)
     metrics_dir = output_dir / "metrics"
     run_metrics = {
         "run_slug": run_slug,
         "model_tag": MODEL_TAG,
         "model_path": MODEL_PATH,
+        "text_encoder_kind": "original",
+        "transformer_kind": "custom_modular",
         "width": WIDTH,
         "height": HEIGHT,
         "seed": seed,
@@ -398,28 +417,10 @@ def main():
         "pag_enabled": PAG_ENABLED,
         "pag_scale": PAG_SCALE if PAG_ENABLED else 0.0,
         "pag_applied_layers": PAG_APPLIED_LAYERS if PAG_ENABLED else None,
+        "lora_enabled": SOFT_LORA_ENABLED or CRISP_LORA_ENABLED,
+        "lora_adapters": [],
         "dtype": str(DTYPE),
-        "text_encoder_low_cpu_mem_usage": TEXT_ENCODER_LOW_CPU_MEM_USAGE,
-        "text_encoder_dynamic_offload": TEXT_ENCODER_DYNAMIC_OFFLOAD,
-        "text_encoder_dynamic_offload_pin_cpu_memory": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY,
-        "text_encoder_dynamic_offload_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB,
-        "text_encoder_dynamic_offload_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB,
-        "text_encoder_dynamic_offload_pin_weight_budget_ratio": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO,
-        "text_encoder_dynamic_offload_pin_weight_selection": TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION,
-        "text_encoder_dynamic_offload_auto_budget_policy": TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY,
-        "text_encoder_dynamic_offload_max_resident_module_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB,
-        "text_encoder_dynamic_offload_max_pin_weight_budget_gb": TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB,
-        "text_encoder_dynamic_offload_skip_modules": TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES,
-        "model_low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
-        "running_on_wsl": RUNNING_ON_WSL,
-        "reset_dynamic_memory_after_run": RESET_DYNAMIC_MEMORY_AFTER_RUN,
-        "purge_windows_standby_before_run": PURGE_WINDOWS_STANDBY_BEFORE_RUN,
-        "purge_windows_standby_after_text_encoder": PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER,
-        "purge_windows_standby_before_transformer": PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER,
-        "purge_windows_standby_after_run": PURGE_WINDOWS_STANDBY_AFTER_RUN,
-        "metrics_level": METRICS_LEVEL,
-        "show_metrics": SHOW_METRICS,
-        "save_metrics": SAVE_METRICS,
+        "offload_backend": "diffusers_group_offloading",
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
         "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
         **DYNAMIC_OFFLOAD_SETTINGS.as_metrics(),
@@ -430,132 +431,81 @@ def main():
         "steps": [],
     }
 
-    flash_mask_wrapper_installed = install_trivial_mask_flash_wrapper()
-    run_metrics["flash_trivial_mask_wrapper_installed"] = flash_mask_wrapper_installed
-    if DYNAMIC_OFFLOAD_PRESET:
-        if REQUESTED_DYNAMIC_OFFLOAD_PRESET == "auto":
-            print(f"Using DDO preset: auto -> {DYNAMIC_OFFLOAD_PRESET}", flush=True)
-        else:
-            print(f"Using DDO preset: {DYNAMIC_OFFLOAD_PRESET}", flush=True)
-    if DYNAMIC_OFFLOAD_PIN_CPU_MEMORY and not DYNAMIC_OFFLOAD_EFFECTIVE_PIN_CPU_MEMORY:
-        print("  [dynamic-offload] disabling pinned CPU memory on WSL; set DDO_DISABLE_PIN_ON_WSL=0 to force it.", flush=True)
-    text_encoder_route = (
-        "dynamic_offload"
-        if TEXT_ENCODER_DYNAMIC_OFFLOAD
-        else "group_offload"
-        if TEXT_ENCODER_GROUP_OFFLOAD
-        else "cuda_to"
-    )
-    transformer_route = "dynamic_offload" if DYNAMIC_OFFLOAD_SETTINGS.enabled else "standard"
-    print(
-        "  [runner] "
-        f"text_encoder_route={text_encoder_route} "
-        f"text_encoder_group_offload={TEXT_ENCODER_GROUP_OFFLOAD} "
-        f"text_encoder_dynamic_offload={TEXT_ENCODER_DYNAMIC_OFFLOAD} "
-        f"transformer_route={transformer_route} "
-        f"preset={DYNAMIC_OFFLOAD_PRESET or 'none'}",
-        flush=True,
-    )
-
     tracker = RunTracker(DEVICE, run_metrics, interval=0.1, show_metrics=SHOW_METRICS)
     record_event = tracker.record_event
     step_start = tracker.step_start
     step_end = tracker.step_end
+     denoise_progress_callback = make_denoise_progress_callback(tracker)
+
+    print("Using modular Diffusers group offload baseline", flush=True)
+    print(
+        f"  text_encoder=leaf group offload transformer=leaf group offload "
+        f"model_path={MODEL_PATH}",
+        flush=True,
+    )
+    print(f"  VRAM baseline: {torch.cuda.memory_allocated(DEVICE) / (1024**3):.2f} GB", flush=True)
 
     if PURGE_WINDOWS_STANDBY_BEFORE_RUN:
         purge_windows_standby_cache_event(record_event, "purge_windows_standby_before_run")
 
     t0 = step_start("Pass 0: Encode prompts")
-    if FAKE_PROMPT_EMBEDS:
-        prompt_embeds = torch.zeros((1, 1024, 188160), dtype=DTYPE, device=OFFLOAD_DEVICE)
-        prompt_attention_mask = torch.ones((1, 1024), dtype=torch.long, device=OFFLOAD_DEVICE)
-        record_event("fake_prompt_embeds", 0.0, shape=list(prompt_embeds.shape))
-    else:
-        event_t0 = time.time()
-        text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
-            MODEL_PATH,
-            subfolder="text_encoder",
-            torch_dtype=DTYPE,
-            low_cpu_mem_usage=TEXT_ENCODER_LOW_CPU_MEM_USAGE,
+
+    event_t0 = time.time()
+    text_encoder = Gemma3ForConditionalGeneration.from_pretrained(
+        MODEL_PATH,
+        subfolder="text_encoder",
+        torch_dtype=DTYPE,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+    )
+    record_event("load_text_encoder", time.time() - event_t0, source=MODEL_PATH)
+
+    event_t0 = time.time()
+    apply_model_group_offload(text_encoder, prefix="text_encoder")
+    record_event(
+        "setup_text_encoder_group_offload",
+        time.time() - event_t0,
+        offload_type=GROUP_OFFLOAD_CONFIG["text_encoder_offload_type"],
+        use_stream=GROUP_OFFLOAD_CONFIG["text_encoder_use_stream"],
+        record_stream=GROUP_OFFLOAD_CONFIG["text_encoder_record_stream"],
+    )
+
+    event_t0 = time.time()
+    tokenizer = GemmaTokenizerFast.from_pretrained(MODEL_PATH, subfolder="tokenizer")
+    record_event("load_tokenizer", time.time() - event_t0, source=MODEL_PATH)
+
+    event_t0 = time.time()
+    prompt_pipe = LTX2ImageTextEncoderStep().init_pipeline()
+    prompt_pipe.update_components(text_encoder=text_encoder, tokenizer=tokenizer)
+    record_event("build_prompt_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
+
+    event_t0 = time.time()
+    with torch.inference_mode():
+        prompt_state = prompt_pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            guidance_scale=GUIDANCE_SCALE,
+            output=[
+                "prompt_embeds",
+                "prompt_attention_mask",
+                "negative_prompt_embeds",
+                "negative_prompt_attention_mask",
+                "batch_size",
+                "dtype",
+                "do_classifier_free_guidance",
+            ],
         )
-        record_event("load_text_encoder", time.time() - event_t0, source=MODEL_PATH)
+    record_event("encode_prompt_call", time.time() - event_t0, classifier_free_guidance=False)
 
-        event_t0 = time.time()
-        text_encoder_dynamic_offload_hook = None
-        if TEXT_ENCODER_DYNAMIC_OFFLOAD:
-            text_encoder_dynamic_offload_config = replace(
-                DYNAMIC_OFFLOAD_CONFIG,
-                pin_cpu_memory=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_CPU_MEMORY,
-                pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_GB,
-                pin_weight_budget_ratio=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_BUDGET_RATIO,
-                pin_weight_selection=TEXT_ENCODER_DYNAMIC_OFFLOAD_PIN_WEIGHT_SELECTION,
-                auto_budget_policy=TEXT_ENCODER_DYNAMIC_OFFLOAD_AUTO_BUDGET_POLICY,
-                max_resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_RESIDENT_MODULE_BUDGET_GB,
-                max_pin_weight_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_MAX_PIN_WEIGHT_BUDGET_GB,
-                resident_module_budget_gb=TEXT_ENCODER_DYNAMIC_OFFLOAD_RESIDENT_MODULE_BUDGET_GB,
-                skip_modules_pattern=(
-                    *DYNAMIC_OFFLOAD_CONFIG.skip_modules_pattern,
-                    *TEXT_ENCODER_DYNAMIC_OFFLOAD_SKIP_MODULES,
-                ),
-            )
-            text_encoder_dynamic_offload = enable_dynamic_offload(
-                text_encoder,
-                settings=DYNAMIC_OFFLOAD_SETTINGS,
-                config=text_encoder_dynamic_offload_config,
-                record_event=record_event,
-                event_name="setup_text_encoder_dynamic_offload",
-            )
-            text_encoder_dynamic_offload_hook = text_encoder_dynamic_offload.hook
-        elif TEXT_ENCODER_GROUP_OFFLOAD:
-            apply_model_group_offload(text_encoder, prefix="text_encoder")
-            record_event(
-                "setup_text_encoder_group_offload",
-                time.time() - event_t0,
-                offload_type=GROUP_OFFLOAD_CONFIG["text_encoder_offload_type"],
-                use_stream=GROUP_OFFLOAD_CONFIG["text_encoder_use_stream"],
-                record_stream=GROUP_OFFLOAD_CONFIG["text_encoder_record_stream"],
-                low_cpu_mem_usage=TEXT_ENCODER_LOW_CPU_MEM_USAGE,
-            )
-        else:
-            text_encoder.to(DEVICE)
-            record_event("load_text_encoder_to_cuda", time.time() - event_t0)
-
-        event_t0 = time.time()
-        tokenizer = GemmaTokenizerFast.from_pretrained(MODEL_PATH, subfolder="tokenizer")
-        record_event("load_tokenizer", time.time() - event_t0, source=MODEL_PATH)
-
-        event_t0 = time.time()
-        prompt_pipe = LTX2ImageTextEncoderStep().init_pipeline()
-        prompt_pipe.update_components(text_encoder=text_encoder, tokenizer=tokenizer)
-        record_event("build_prompt_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
-
-        event_t0 = time.time()
-        with torch.inference_mode():
-            prompt_state = prompt_pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                guidance_scale=GUIDANCE_SCALE,
-                output=["prompt_embeds", "prompt_attention_mask"],
-            )
-        record_event("encode_prompt_call", time.time() - event_t0, classifier_free_guidance=False)
-
-        prompt_embeds = prompt_state["prompt_embeds"].to(OFFLOAD_DEVICE)
-        prompt_attention_mask = prompt_state["prompt_attention_mask"].to(OFFLOAD_DEVICE)
-        if text_encoder_dynamic_offload_hook is not None:
-            run_metrics["text_encoder_dynamic_offload_runtime_summary"] = text_encoder_dynamic_offload_hook.state.as_dict()
-            if DYNAMIC_OFFLOAD_SHOW_PROFILE:
-                text_encoder_dynamic_offload_hook.print_profile_summary()
-            remove_dynamic_offload(text_encoder)
-            text_encoder_dynamic_offload_hook = None
-            del text_encoder_dynamic_offload_config
-        del prompt_state
-        del prompt_pipe, text_encoder, tokenizer
-        cleanup_runtime_state(record_event, "cleanup_after_text_encoder")
-        if PURGE_WINDOWS_STANDBY_AFTER_TEXT_ENCODER:
-            purge_windows_standby_cache_event(record_event, "purge_windows_standby_after_text_encoder")
-
+    prompt_embeds = prompt_state["prompt_embeds"].to(OFFLOAD_DEVICE)
+    prompt_attention_mask = prompt_state["prompt_attention_mask"].to(OFFLOAD_DEVICE)
+    latent_batch_size = prompt_state["batch_size"]
+    prompt_dtype = prompt_state["dtype"]
+    do_classifier_free_guidance = prompt_state["do_classifier_free_guidance"]
     if SHOW_METRICS:
         print(f"  prompt_embeds shape: {prompt_embeds.shape}")
+
+    del prompt_state, prompt_pipe, text_encoder, tokenizer
+    cleanup_runtime_state(record_event, "cleanup_after_text_encoder")
     step_end("Pass 0: Encode prompts", t0)
 
     t0 = step_start(f"Pass 1: Generate at {WIDTH}x{HEIGHT}")
@@ -565,7 +515,7 @@ def main():
         MODEL_PATH,
         subfolder="connectors",
         torch_dtype=DTYPE,
-        low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
     ).to(DEVICE)
     record_event("load_connectors_to_cuda", time.time() - event_t0, source=MODEL_PATH)
 
@@ -580,7 +530,7 @@ def main():
         prompt_attention_mask=prompt_attention_mask.to(device=DEVICE),
         negative_prompt_embeds=None,
         negative_prompt_attention_mask=None,
-        do_classifier_free_guidance=False,
+        do_classifier_free_guidance=do_classifier_free_guidance,
         pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
         output=[
             "connector_prompt_embeds",
@@ -598,124 +548,61 @@ def main():
     transformer_batch_multiplier = connector_state["transformer_batch_multiplier"]
     do_perturbed_attention_guidance = connector_state["do_perturbed_attention_guidance"]
 
-    del prompt_embeds, prompt_attention_mask, connector_state
-    del connector_pipe, connectors
+    del connector_state, connector_pipe, connectors, prompt_embeds, prompt_attention_mask
     cleanup_runtime_state(record_event, "cleanup_after_connectors")
 
-    dynamic_offload_enabled = DYNAMIC_OFFLOAD_SETTINGS.enabled
-    dynamic_offload_config = DYNAMIC_OFFLOAD_CONFIG if dynamic_offload_enabled else None
+    transformer_load_kwargs = {
+        "subfolder": "transformer",
+        "torch_dtype": prompt_dtype,
+        "low_cpu_mem_usage": LOW_CPU_MEM_USAGE,
+    }
+    if LOW_CPU_MEM_USAGE:
+        transformer_load_kwargs["device_map"] = "cpu"
 
-    def transformer_prepare_event_name(name: str, repeat_index: int) -> str:
-        if TRANSFORMER_PREPARE_REPEATS == 1:
-            return name
-        return f"{name}_prepare_{repeat_index + 1}"
+    event_t0 = time.time()
+    transformer = LTX2ImageTransformer2DModel.from_pretrained(MODEL_PATH, **transformer_load_kwargs)
+    record_event(
+        "load_transformer",
+        time.time() - event_t0,
+        source=MODEL_PATH,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+        device_map=transformer_load_kwargs.get("device_map"),
+    )
 
-    def load_and_prepare_transformer(repeat_index: int):
-        transformer_load_kwargs = {
-            "subfolder": "transformer",
-            "torch_dtype": DTYPE,
-            "low_cpu_mem_usage": MODEL_LOW_CPU_MEM_USAGE,
-        }
+    active_adapters = []
+    for item in [
+        (
+            SOFT_LORA_ENABLED,
+            "soft",
+            SOFT_LORA_PATH,
+            SOFT_LORA_WEIGHT_NAME,
+            SOFT_LORA_ADAPTER_NAME,
+            SOFT_LORA_SCALE,
+        ),
+        (
+            CRISP_LORA_ENABLED,
+            "crisp",
+            CRISP_LORA_PATH,
+            CRISP_LORA_WEIGHT_NAME,
+            CRISP_LORA_ADAPTER_NAME,
+            CRISP_LORA_SCALE,
+        ),
+    ]:
+        adapter = maybe_load_lora(transformer, run_metrics, *item, record_event=record_event)
+        if adapter is not None:
+            active_adapters.append(adapter)
+    activate_loras(transformer, active_adapters, record_event)
 
-        if PURGE_WINDOWS_STANDBY_BEFORE_TRANSFORMER:
-            purge_windows_standby_cache_event(
-                record_event,
-                transformer_prepare_event_name("purge_windows_standby_before_transformer", repeat_index),
-            )
-
-        event_t0 = time.time()
-        if MODEL_LOW_CPU_MEM_USAGE:
-            transformer_load_kwargs["device_map"] = "cpu"
-        transformer_load = from_pretrained_with_dynamic_offload(
-            MODEL_PATH,
-            dynamic_offload_config=dynamic_offload_config,
-            apply_dynamic=False,
-            **transformer_load_kwargs,
-        )
-        prepared_transformer = transformer_load.module
-        prepared_dynamic_offload_hook = transformer_load.hook
-        record_event(
-            transformer_prepare_event_name("load_transformer", repeat_index),
-            time.time() - event_t0,
-            source=MODEL_PATH,
-            low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
-            device_map=transformer_load_kwargs.get("device_map"),
-            loader="AutoModel",
-            resolved_class=prepared_transformer.__class__.__name__,
-        )
-
-        event_t0 = time.time()
-        patched_attention_processors, resolved_attention_backend, drop_trivial_attention_mask = (
-            apply_transformer_attention_backend(prepared_transformer)
-        )
-        record_event(
-            transformer_prepare_event_name("set_transformer_attention_backend", repeat_index),
-            time.time() - event_t0,
-            requested_backend=ATTENTION_BACKEND,
-            resolved_backend=resolved_attention_backend,
-            patched_processors=patched_attention_processors,
-            drop_trivial_attention_mask=drop_trivial_attention_mask,
-        )
-
-        if dynamic_offload_enabled and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan" and TRANSFORMER_MEMORY_MANAGER != "off":
-            raise ValueError(
-                "Dynamic offload execution currently requires "
-                "DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER='off'. "
-                "Use execution_mode='plan' with the block manager."
-            )
-
-        if dynamic_offload_enabled:
-            prepared_dynamic_offload = enable_dynamic_offload(
-                prepared_transformer,
-                settings=DYNAMIC_OFFLOAD_SETTINGS,
-                config=dynamic_offload_config,
-                record_event=record_event,
-                event_name=transformer_prepare_event_name("build_dynamic_offload_plan", repeat_index),
-            )
-            prepared_dynamic_offload_hook = prepared_dynamic_offload.hook
-
-        event_t0 = time.time()
-        if TRANSFORMER_MEMORY_MANAGER != "off":
-            raise ValueError(
-                "The transformer block manager is no longer used by this runner. "
-                "Use DDO_PRESET or transformer group offload."
-            )
-        if TRANSFORMER_GROUP_OFFLOAD:
-            apply_model_group_offload(prepared_transformer, prefix="transformer")
-            record_event(
-                transformer_prepare_event_name("setup_transformer_group_offload", repeat_index),
-                time.time() - event_t0,
-                offload_type=GROUP_OFFLOAD_CONFIG["transformer_offload_type"],
-                use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
-                record_stream=GROUP_OFFLOAD_CONFIG["transformer_record_stream"],
-                low_cpu_mem_usage=GROUP_OFFLOAD_CONFIG["transformer_low_cpu_mem_usage"],
-            )
-        elif dynamic_offload_enabled and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan":
-            record_event(
-                transformer_prepare_event_name("skip_transformer_to_cuda", repeat_index),
-                time.time() - event_t0,
-                reason=f"dynamic_offload_{DYNAMIC_OFFLOAD_EXECUTION_MODE}",
-            )
-        else:
-            prepared_transformer.to(DEVICE)
-            record_event(transformer_prepare_event_name("load_transformer_to_cuda", repeat_index), time.time() - event_t0)
-        return prepared_transformer, prepared_dynamic_offload_hook
-
-    transformer = None
-    dynamic_offload_hook = None
-    for prepare_repeat_index in range(TRANSFORMER_PREPARE_REPEATS):
-        if TRANSFORMER_PREPARE_REPEATS > 1:
-            print(
-                f"  Transformer prepare repeat {prepare_repeat_index + 1}/{TRANSFORMER_PREPARE_REPEATS}",
-                flush=True,
-            )
-        transformer, dynamic_offload_hook = load_and_prepare_transformer(prepare_repeat_index)
-        if prepare_repeat_index + 1 < TRANSFORMER_PREPARE_REPEATS:
-            if dynamic_offload_enabled:
-                remove_dynamic_offload(transformer)
-            del transformer
-            dynamic_offload_hook = None
-            cleanup_runtime_state(record_event, transformer_prepare_event_name("cleanup_after_transformer_prepare", prepare_repeat_index))
+    event_t0 = time.time()
+    apply_model_group_offload(transformer, prefix="transformer")
+    record_event(
+        "setup_transformer_group_offload",
+        time.time() - event_t0,
+        offload_type=GROUP_OFFLOAD_CONFIG["transformer_offload_type"],
+        use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
+        record_stream=GROUP_OFFLOAD_CONFIG["transformer_record_stream"],
+        low_cpu_mem_usage=GROUP_OFFLOAD_CONFIG["transformer_low_cpu_mem_usage"],
+    )
 
     event_t0 = time.time()
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")
@@ -758,33 +645,31 @@ def main():
         denoise_progress_callback.start_time = time.perf_counter()
         denoise_progress_callback.last_time = denoise_progress_callback.start_time
         denoise_progress_callback.step_times = []
-        print(f"  Starting denoise loop{repeat_suffix} with attention backend: {ATTENTION_BACKEND}", flush=True)
+        print(f"  Starting denoise loop{repeat_suffix}", flush=True)
         event_t0 = time.time()
-        with get_attention_backend_context():
-            denoise_state = denoise_pipe(
-                latents=prepare_state["latents"],
-                timesteps=prepare_state["timesteps"],
-                connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
-                connector_attention_mask=connector_attention_mask.to(device=DEVICE),
-                latent_height=prepare_state["latent_height"],
-                latent_width=prepare_state["latent_width"],
-                video_rotary_emb=prepare_state["video_rotary_emb"],
-                batch_size=latent_batch_size,
-                transformer_batch_multiplier=transformer_batch_multiplier,
-                do_classifier_free_guidance=False,
-                do_perturbed_attention_guidance=do_perturbed_attention_guidance,
-                guidance_scale=GUIDANCE_SCALE,
-                guidance_rescale=GUIDANCE_RESCALE,
-                pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
-                pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
-                callback_on_step_end=denoise_progress_callback,
-                callback_on_step_end_tensor_inputs=["latents"],
-                output="latents",
-            )
+        denoise_state = denoise_pipe(
+            latents=prepare_state["latents"],
+            timesteps=prepare_state["timesteps"],
+            connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
+            connector_attention_mask=connector_attention_mask.to(device=DEVICE),
+            latent_height=prepare_state["latent_height"],
+            latent_width=prepare_state["latent_width"],
+            video_rotary_emb=prepare_state["video_rotary_emb"],
+            batch_size=latent_batch_size,
+            transformer_batch_multiplier=transformer_batch_multiplier,
+            do_classifier_free_guidance=False,
+            do_perturbed_attention_guidance=do_perturbed_attention_guidance,
+            guidance_scale=GUIDANCE_SCALE,
+            guidance_rescale=GUIDANCE_RESCALE,
+            pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
+            pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
+            callback_on_step_end=denoise_progress_callback,
+            callback_on_step_end_tensor_inputs=["latents"],
+            output="latents",
+        )
         record_event(
             f"denoise_modular_pipe_call{repeat_suffix}",
             time.time() - event_t0,
-            attention_backend=ATTENTION_BACKEND,
             repeat_index=repeat_index,
         )
         run_metrics["denoise_step_times_by_repeat"].append(list(denoise_progress_callback.step_times))
@@ -811,8 +696,9 @@ def main():
         remove_dynamic_offload(transformer)
         dynamic_offload_hook = None
     del prepare_pipe, denoise_pipe, transformer, scheduler
-    cleanup_before_vae_decode(record_event)
+    cleanup_runtime_state(record_event, "cleanup_before_vae_decode")
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
+
     t0 = step_start("Pass 2: Decode VAE")
 
     event_t0 = time.time()
@@ -820,7 +706,7 @@ def main():
         MODEL_PATH,
         subfolder="vae",
         torch_dtype=DTYPE,
-        low_cpu_mem_usage=MODEL_LOW_CPU_MEM_USAGE,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
     ).to(DEVICE)
     record_event("load_vae_to_cuda", time.time() - event_t0, source=MODEL_PATH)
 
@@ -867,15 +753,6 @@ def main():
     print(f"  Output: {output_path}")
     if SAVE_METRICS:
         print(f"  Metrics JSON: {metrics_path}")
-    if RESET_DYNAMIC_MEMORY_AFTER_RUN:
-        cleanup_runtime_state(record_event, "reset_dynamic_memory_after_run", collect_cuda_ipc=True)
-        if SAVE_METRICS:
-            metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
-        print("  Dynamic memory state reset after run.")
-    if PURGE_WINDOWS_STANDBY_AFTER_RUN:
-        purge_windows_standby_cache_event(record_event, "purge_windows_standby_after_run")
-        if SAVE_METRICS:
-            metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
     print("=" * 70)
 
 

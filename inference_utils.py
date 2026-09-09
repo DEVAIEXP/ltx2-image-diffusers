@@ -121,10 +121,18 @@ class RunTracker:
 
     def step_start(self, step_name):
         self.monitor.start()
-        print(f"\n{'-' * 70}")
-        print(f"  {step_name}")
-        print(f"{'-' * 70}")
+        if self.show_metrics:
+            print(f"\n{'-' * 70}")
+            print(f"  {step_name}")
+            print(f"{'-' * 70}")
         return time.time()
+
+    def sample_memory(self):
+        ram = get_ram_gb()
+        vram = get_gpu_used_gb(self.device) - self.vram_baseline
+        self.global_peak_ram = max(self.global_peak_ram, ram)
+        self.global_peak_vram = max(self.global_peak_vram, vram)
+        return vram, ram
 
     def step_end(self, step_name, t0):
         elapsed = time.time() - t0

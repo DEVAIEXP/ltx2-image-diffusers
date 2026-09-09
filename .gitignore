@@ -7,10 +7,13 @@ dist/
 wheels/
 checkpoints/
 *.egg-info
+ltx2.3-image-diffusers.code-workspace
 
 # Virtual environments
 .venv
 .python-version
+test
+.ubuntu
 
 # IDE settings
 .idea/
@@ -22,7 +25,10 @@ checkpoints/
 projects/
 outputs/
 tmp
+.hf_modules/
+.hf_home/
 wandb/
+custom_blocks/ltx2_image/
 
 # Model checkpoints
 *.ckpt
@@ -48,3 +54,5 @@ wandb/
 download.py
 # Binary files
 *.so
+
+EmptyStandbyList.exe

@@ -1,7 +1,6 @@
-"""
-Standalone LTX 2.3 distilled text-to-image inference script.
-"""
+"""Standalone LTX 2.3 distilled text-to-image inference script."""
 
+import argparse
 import json
 import logging
 import os
@@ -48,6 +47,49 @@ DECODE_NOISE_SCALE = None
 PAG_ENABLED = False
 PAG_SCALE = 0.2
 PAG_APPLIED_LAYERS = [28]
+OUTPUT_DIR = Path("outputs/ltx_image")
+SAVE_METRICS = True
+
+DEFAULT_PROMPT = """Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy."""
+DEFAULT_NEGATIVE_PROMPT = """"""
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="LTX 2.3 distilled bf16 text-to-image runner.")
+    parser.add_argument("--prompt", default=DEFAULT_PROMPT)
+    parser.add_argument("--negative-prompt", default=DEFAULT_NEGATIVE_PROMPT)
+    parser.add_argument("--width", type=int, default=WIDTH)
+    parser.add_argument("--height", type=int, default=HEIGHT)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--steps", type=int, default=NUM_INFERENCE_STEPS)
+    parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
+    parser.add_argument("--guidance-rescale", type=float, default=GUIDANCE_RESCALE)
+    parser.add_argument("--decode-timestep", type=float, default=DECODE_TIMESTEP)
+    parser.add_argument("--decode-noise-scale", type=float, default=DECODE_NOISE_SCALE)
+    parser.add_argument("--pag", action="store_true", default=PAG_ENABLED)
+    parser.add_argument("--pag-scale", type=float, default=PAG_SCALE)
+    parser.add_argument("--pag-layers", default=",".join(map(str, PAG_APPLIED_LAYERS)))
+    parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
+    return parser.parse_args()
+
+
+args = parse_args()
+WIDTH = args.width
+HEIGHT = args.height
+SEED = args.seed
+NUM_INFERENCE_STEPS = args.steps
+GUIDANCE_SCALE = args.guidance_scale
+GUIDANCE_RESCALE = args.guidance_rescale
+DECODE_TIMESTEP = args.decode_timestep
+DECODE_NOISE_SCALE = args.decode_noise_scale
+PAG_ENABLED = args.pag
+PAG_SCALE = args.pag_scale
+PAG_APPLIED_LAYERS = [int(item.strip()) for item in args.pag_layers.split(",") if item.strip()]
+OUTPUT_DIR = Path(args.output_dir)
+SAVE_METRICS = args.save_metrics
+prompt = args.prompt
+negative_prompt = args.negative_prompt
 
 
 def build_run_slug(seed):
@@ -71,7 +113,6 @@ def build_run_slug(seed):
 
 
 RUN_SLUG = build_run_slug(SEED)
-OUTPUT_DIR = Path("outputs/ltx_image")
 METRICS_DIR = OUTPUT_DIR / "metrics"
 run_metrics = {
     "run_slug": RUN_SLUG,
@@ -101,9 +142,6 @@ run_metrics = {
     "steps": [],
 }
 
-
-prompt = """Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy."""
-negative_prompt = """"""
 
 if not SEED:
     SEED = torch.randint(0, 2**32, (1,)).item()
@@ -290,7 +328,8 @@ step_end("Pass 2: Decode VAE", t0)
 
 t0 = step_start("Save Image")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-METRICS_DIR.mkdir(parents=True, exist_ok=True)
+if SAVE_METRICS:
+    METRICS_DIR.mkdir(parents=True, exist_ok=True)
 output_path = OUTPUT_DIR / f"{RUN_SLUG}.png"
 image.save(output_path)
 print(f"  Image saved successfully to: {output_path}")
@@ -303,7 +342,8 @@ run_metrics["global_peak_ram_gb"] = round(tracker.global_peak_ram, 4)
 run_metrics["output_path"] = str(output_path)
 metrics_json_path = METRICS_DIR / f"{RUN_SLUG}.json"
 metrics_txt_path = METRICS_DIR / f"{RUN_SLUG}.txt"
-metrics_json_path.write_text(json.dumps(run_metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+if SAVE_METRICS:
+    metrics_json_path.write_text(json.dumps(run_metrics, indent=2, ensure_ascii=False), encoding="utf-8")
 metrics_lines = [
     f"RUN: {RUN_SLUG}",
     f"OUTPUT: {output_path}",
@@ -342,10 +382,12 @@ metrics_lines.extend(
         f"GLOBAL_PEAK_RAM: {run_metrics['global_peak_ram_gb']:.4f} GB",
     ]
 )
-metrics_txt_path.write_text("\n".join(metrics_lines) + "\n", encoding="utf-8")
+if SAVE_METRICS:
+    metrics_txt_path.write_text("\n".join(metrics_lines) + "\n", encoding="utf-8")
 print(f"\n{'=' * 70}")
 print(f"  TOTAL: {total_time:.1f}s | Peak VRAM: {tracker.global_peak_vram:.2f} GB | Peak RAM: {tracker.global_peak_ram:.2f} GB")
 print(f"  Output: {output_path}")
-print(f"  Metrics JSON: {metrics_json_path}")
-print(f"  Metrics TXT: {metrics_txt_path}")
+if SAVE_METRICS:
+    print(f"  Metrics JSON: {metrics_json_path}")
+    print(f"  Metrics TXT: {metrics_txt_path}")
 print(f"{'=' * 70}")

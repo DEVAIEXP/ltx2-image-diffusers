@@ -22,7 +22,7 @@ from transformers import Gemma3ForConditionalGeneration
 
 from inference_utils import RunTracker, flush, get_sdnq_version
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
 warnings.filterwarnings("ignore", category=FutureWarning)
 logging.getLogger("diffusers").setLevel(logging.ERROR)
 
@@ -159,7 +159,13 @@ def maybe_load_lora(pipe, run_metrics, enabled, kind, path, weight_name, adapter
     return (actual_adapter_name, scale) if actual_adapter_name is not None else None
 
 
-def make_run_slug(args):
+def make_run_slug(
+    args,
+    *,
+    effective_input_noise_sigma: float,
+    effective_input_sharpen: float,
+    effective_phase_cutoff: float | None,
+):
     model_tag = f"sdnq{args.bits}"
     text_encoder_tag = f"text_encoder_sdnq{args.text_encoder_bits}" if args.text_encoder_bits is not None else "text_encoder_original"
     pag_tag = f"pag{args.pag_scale:g}_layers{args.pag_layers.replace(',', '-')}" if args.pag else "nopag"
@@ -209,7 +215,12 @@ def main():
     transformer_kind = f"sdnq{args.bits}"
     pag_layers = [int(item.strip()) for item in args.pag_layers.split(",") if item.strip()]
     selected_sigmas, t_start = get_strength_sigmas(args.steps, args.strength)
-    run_slug = make_run_slug(args)
+    run_slug = make_run_slug(
+        args,
+        effective_input_noise_sigma=effective_input_noise_sigma,
+        effective_input_sharpen=effective_input_sharpen,
+        effective_phase_cutoff=effective_phase_cutoff,
+    )
     output_dir = Path(args.output_dir)
     metrics_dir = output_dir / "metrics"
     generator = torch.Generator(device="cpu").manual_seed(args.seed)
