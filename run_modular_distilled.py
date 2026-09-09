@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import time
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -25,15 +24,7 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
     LTX2ImageDenoiseStep,
     LTX2ImagePrepareLatentsStep,
 )
-from diffusers_dynamic_offloader import (
-    DynamicOffloadSettings,
-    enable_dynamic_offload,
-    format_dynamic_offload_presets,
-    from_pretrained_with_dynamic_offload,
-    is_wsl_environment,
-    purge_windows_standby_cache_event,
-    remove_dynamic_offload,
-)
+from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer2DModel
 from inference_utils import RunTracker, flush
 
 
@@ -80,7 +71,7 @@ CRISP_LORA_PATH = "vrgamedevgirl84/LTX_2.3_Crisp_Enhance_Style_LoRa"
 CRISP_LORA_WEIGHT_NAME = "LTX2.3_Crisp_Enhance.safetensors"
 CRISP_LORA_ADAPTER_NAME = "crisp"
 CRISP_LORA_SCALE = 0.3
-SOFT_LORA_ENABLED = True
+SOFT_LORA_ENABLED = False
 SOFT_LORA_PATH = "vrgamedevgirl84/LTX_2.3_Soft_Enhance_Style_LoRa"
 SOFT_LORA_WEIGHT_NAME = "LTX2.3_Soft_Enhance.safetensors"
 SOFT_LORA_ADAPTER_NAME = "soft"
@@ -159,111 +150,6 @@ def apply_model_group_offload(model, *, prefix: str):
     if offload_type == "block_level":
         kwargs["num_blocks_per_group"] = GROUP_OFFLOAD_CONFIG[f"{prefix}_num_blocks_per_group"]
     apply_group_offloading(model, **kwargs)
-
-
-def get_attention_backend():
-    if ATTENTION_BACKEND in ("", "default", "none"):
-        return None
-    try:
-        return AttentionBackendName(ATTENTION_BACKEND)
-    except ValueError as exc:
-        valid = ", ".join(backend.value for backend in AttentionBackendName)
-        raise ValueError(
-            f"Invalid DDO_RUNNER_ATTENTION_BACKEND={ATTENTION_BACKEND!r}. "
-            f"Valid values: {valid}"
-        ) from exc
-
-
-def _is_trivial_zero_attention_mask(attn_mask):
-    if attn_mask is None:
-        return False
-    with torch.no_grad():
-        return bool(torch.all(attn_mask == 0).item())
-
-
-def install_trivial_mask_flash_wrapper():
-    if not DROP_TRIVIAL_ATTENTION_MASK:
-        return False
-
-    wrapped_any = False
-    for backend in (AttentionBackendName.FLASH, AttentionBackendName._NATIVE_FLASH):
-        backend_fn = _AttentionBackendRegistry._backends.get(backend)
-        if backend_fn is None or getattr(backend_fn, "_ltx2_trivial_mask_wrapper", False):
-            continue
-
-        def wrapped_backend_fn(*args, _backend_fn=backend_fn, _backend=backend, **kwargs):
-            attn_mask = kwargs.get("attn_mask")
-            if _is_trivial_zero_attention_mask(attn_mask):
-                if env_value("DDO_RUNNER_LOG_ATTENTION_MASK", "0") == "1":
-                    print(f"  [attention_mask] dropping trivial mask inside backend {_backend.value}", flush=True)
-                kwargs["attn_mask"] = None
-            return _backend_fn(*args, **kwargs)
-
-        wrapped_backend_fn._ltx2_trivial_mask_wrapper = True
-        _AttentionBackendRegistry._backends[backend] = wrapped_backend_fn
-        wrapped_any = True
-    return wrapped_any
-
-def get_attention_backend_context():
-    backend = get_attention_backend()
-    if backend is None:
-        return contextlib.nullcontext()
-    return attention_backend(backend)
-
-
-def apply_transformer_attention_backend(transformer):
-    backend = get_attention_backend()
-    transformer.drop_trivial_attention_mask = DROP_TRIVIAL_ATTENTION_MASK
-    patched = 0
-    for module in transformer.modules():
-        processor = getattr(module, "processor", None)
-        if processor is not None and hasattr(processor, "_attention_backend"):
-            processor._attention_backend = backend
-            patched += 1
-    return patched, None if backend is None else backend.value, DROP_TRIVIAL_ATTENTION_MASK
-
-
-def cleanup_runtime_state(record_event, event_name: str, *, repeats: int = 1, collect_cuda_ipc: bool = False) -> None:
-    if repeats <= 0:
-        return
-
-    before_free_gb = before_total_gb = None
-    after_free_gb = after_total_gb = None
-    if torch.cuda.is_available():
-        before_free, before_total = torch.cuda.mem_get_info(DEVICE)
-        before_free_gb = before_free / 1024**3
-        before_total_gb = before_total / 1024**3
-
-    event_t0 = time.time()
-    for _ in range(repeats):
-        flush()
-        if collect_cuda_ipc and torch.cuda.is_available() and hasattr(torch.cuda, "ipc_collect"):
-            torch.cuda.ipc_collect()
-
-    if torch.cuda.is_available():
-        after_free, after_total = torch.cuda.mem_get_info(DEVICE)
-        after_free_gb = after_free / 1024**3
-        after_total_gb = after_total / 1024**3
-
-    record_event(
-        event_name,
-        time.time() - event_t0,
-        repeats=repeats,
-        collect_cuda_ipc=collect_cuda_ipc,
-        before_free_vram_gb=None if before_free_gb is None else round(before_free_gb, 4),
-        before_total_vram_gb=None if before_total_gb is None else round(before_total_gb, 4),
-        after_free_vram_gb=None if after_free_gb is None else round(after_free_gb, 4),
-        after_total_vram_gb=None if after_total_gb is None else round(after_total_gb, 4),
-    )
-
-
-def cleanup_before_vae_decode(record_event) -> None:
-    cleanup_runtime_state(
-        record_event,
-        "cleanup_before_vae_decode",
-        repeats=PRE_VAE_CLEANUP_REPEATS,
-        collect_cuda_ipc=True,
-    )
 
 
 def cleanup_runtime_state(record_event, event_name: str):
@@ -408,8 +294,6 @@ def main():
         "height": HEIGHT,
         "seed": seed,
         "num_inference_steps": NUM_INFERENCE_STEPS,
-        "generation_repeats": GENERATION_REPEATS,
-        "transformer_prepare_repeats": TRANSFORMER_PREPARE_REPEATS,
         "guidance_scale": GUIDANCE_SCALE,
         "guidance_rescale": GUIDANCE_RESCALE,
         "vae_decode_timestep": DECODE_TIMESTEP,
@@ -422,11 +306,6 @@ def main():
         "dtype": str(DTYPE),
         "offload_backend": "diffusers_group_offloading",
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
-        "transformer_memory_manager": TRANSFORMER_MEMORY_MANAGER,
-        **DYNAMIC_OFFLOAD_SETTINGS.as_metrics(),
-        "pre_vae_cleanup_repeats": PRE_VAE_CLEANUP_REPEATS,
-        "attention_backend": ATTENTION_BACKEND,
-        "drop_trivial_attention_mask": DROP_TRIVIAL_ATTENTION_MASK,
         "events": [],
         "steps": [],
     }
@@ -435,7 +314,7 @@ def main():
     record_event = tracker.record_event
     step_start = tracker.step_start
     step_end = tracker.step_end
-     denoise_progress_callback = make_denoise_progress_callback(tracker)
+    denoise_progress_callback = make_denoise_progress_callback(tracker)
 
     print("Using modular Diffusers group offload baseline", flush=True)
     print(
@@ -444,9 +323,6 @@ def main():
         flush=True,
     )
     print(f"  VRAM baseline: {torch.cuda.memory_allocated(DEVICE) / (1024**3):.2f} GB", flush=True)
-
-    if PURGE_WINDOWS_STANDBY_BEFORE_RUN:
-        purge_windows_standby_cache_event(record_event, "purge_windows_standby_before_run")
 
     t0 = step_start("Pass 0: Encode prompts")
 
@@ -685,16 +561,7 @@ def main():
             print(f"  Image latent: {image_latent.shape}")
         del prepare_state, denoise_state
 
-    if dynamic_offload_enabled and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan":
-        run_metrics["dynamic_offload_runtime_summary"] = dynamic_offload_hook.state.as_dict()
-        if DYNAMIC_OFFLOAD_SHOW_PROFILE:
-            dynamic_offload_hook.print_profile_summary()
     del connector_prompt_embeds, connector_attention_mask
-    if dynamic_offload_enabled:
-        if DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan" and "dynamic_offload_runtime_summary" not in run_metrics:
-            run_metrics["dynamic_offload_runtime_summary"] = dynamic_offload_hook.state.as_dict()
-        remove_dynamic_offload(transformer)
-        dynamic_offload_hook = None
     del prepare_pipe, denoise_pipe, transformer, scheduler
     cleanup_runtime_state(record_event, "cleanup_before_vae_decode")
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
