@@ -78,36 +78,48 @@ class PeakMemoryMonitor:
 
 
 class RunTracker:
-    def __init__(self, device, run_metrics, interval=0.1):
+    def __init__(self, device, run_metrics, interval=0.1, show_metrics=True):
         self.device = device
         self.run_metrics = run_metrics
+        self.show_metrics = show_metrics
         self.monitor = PeakMemoryMonitor(device, interval=interval)
         torch.cuda.init()
         self.vram_baseline = get_gpu_used_gb(device)
         self.script_start = time.time()
         self.global_peak_vram = 0.0
         self.global_peak_ram = 0.0
-        print(f"VRAM baseline: {self.vram_baseline:.2f} GB")
+        if self.show_metrics:
+            print(f"VRAM baseline: {self.vram_baseline:.2f} GB")
 
     def record_event(self, name, elapsed, **metadata):
         event = {"name": name, "elapsed_sec": round(elapsed, 4)}
         event.update(metadata)
         self.run_metrics["events"].append(event)
-        print(f"  [event] {name}: {elapsed:.4f}s")
+        if self.show_metrics:
+            print(f"  [event] {name}: {elapsed:.4f}s")
         return event
 
     def step_start(self, step_name):
         self.monitor.start()
-        print(f"\n{'-' * 70}")
-        print(f"  {step_name}")
-        print(f"{'-' * 70}")
+        if self.show_metrics:
+            print(f"\n{'-' * 70}")
+            print(f"  {step_name}")
+            print(f"{'-' * 70}")
         return time.time()
+
+    def sample_memory(self):
+        ram = get_ram_gb()
+        vram = get_gpu_used_gb(self.device) - self.vram_baseline
+        self.global_peak_ram = max(self.global_peak_ram, ram)
+        self.global_peak_vram = max(self.global_peak_vram, vram)
+        return vram, ram
 
     def step_end(self, step_name, t0):
         elapsed = time.time() - t0
         peak_vram_abs, peak_ram = self.monitor.stop()
         peak_vram = peak_vram_abs - self.vram_baseline
-        print(f"  [{step_name}] {elapsed:.1f}s | Peak VRAM: {peak_vram:.2f} GB | Peak RAM: {peak_ram:.2f} GB")
+        if self.show_metrics:
+            print(f"  [{step_name}] {elapsed:.1f}s | Peak VRAM: {peak_vram:.2f} GB | Peak RAM: {peak_ram:.2f} GB")
         self.global_peak_vram = max(self.global_peak_vram, peak_vram)
         self.global_peak_ram = max(self.global_peak_ram, peak_ram)
         metric = {

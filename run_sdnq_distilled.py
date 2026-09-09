@@ -54,6 +54,21 @@ parser.add_argument("--soft-lora-path", default=SOFT_LORA_PATH, help="Soft Enhan
 parser.add_argument("--soft-lora-weight-name", default=SOFT_LORA_WEIGHT_NAME, help="Soft Enhance LoRA safetensors file name.")
 parser.add_argument("--soft-lora-adapter-name", default=SOFT_LORA_ADAPTER_NAME, help="Adapter name used by Diffusers.")
 parser.add_argument("--soft-lora-scale", type=float, default=SOFT_LORA_SCALE, help="Soft Enhance adapter scale.")
+parser.add_argument("--prompt", default="Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy.")
+parser.add_argument("--negative-prompt", default="")
+parser.add_argument("--width", type=int, default=1280)
+parser.add_argument("--height", type=int, default=704)
+parser.add_argument("--seed", type=int, default=43)
+parser.add_argument("--steps", type=int, default=8)
+parser.add_argument("--guidance-scale", type=float, default=1.0)
+parser.add_argument("--guidance-rescale", type=float, default=0.7)
+parser.add_argument("--decode-timestep", type=float, default=0.0)
+parser.add_argument("--decode-noise-scale", type=float, default=None)
+parser.add_argument("--pag", action="store_true")
+parser.add_argument("--pag-scale", type=float, default=0.2)
+parser.add_argument("--pag-layers", default="28")
+parser.add_argument("--output-dir", default="outputs/ltx_image")
+parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=True)
 args = parser.parse_args()
 
 SDNQ_ENABLED = True
@@ -73,18 +88,18 @@ GROUP_OFFLOAD_CONFIG = {
     "low_cpu_mem_usage": LOW_CPU_MEM_USAGE,
 }
 
-WIDTH = 1280
-HEIGHT = 704
-SEED = 43
+WIDTH = args.width
+HEIGHT = args.height
+SEED = args.seed
 
-NUM_INFERENCE_STEPS = 8
-GUIDANCE_SCALE = 1.0
-GUIDANCE_RESCALE = 0.7
-DECODE_TIMESTEP = 0.0
-DECODE_NOISE_SCALE = None
-PAG_ENABLED = False
-PAG_SCALE = 0.2
-PAG_APPLIED_LAYERS = [28]
+NUM_INFERENCE_STEPS = args.steps
+GUIDANCE_SCALE = args.guidance_scale
+GUIDANCE_RESCALE = args.guidance_rescale
+DECODE_TIMESTEP = args.decode_timestep
+DECODE_NOISE_SCALE = args.decode_noise_scale
+PAG_ENABLED = args.pag
+PAG_SCALE = args.pag_scale
+PAG_APPLIED_LAYERS = [int(item.strip()) for item in args.pag_layers.split(",") if item.strip()]
 
 
 def build_run_slug(seed):
@@ -121,7 +136,7 @@ def build_run_slug(seed):
 
 
 RUN_SLUG = build_run_slug(SEED)
-OUTPUT_DIR = Path("outputs/ltx_image")
+OUTPUT_DIR = Path(args.output_dir)
 METRICS_DIR = OUTPUT_DIR / "metrics"
 run_metrics = {
     "run_slug": RUN_SLUG,
@@ -169,8 +184,8 @@ run_metrics = {
 }
 
 
-prompt = """Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy."""
-negative_prompt = """"""
+prompt = args.prompt
+negative_prompt = args.negative_prompt
 
 if not SEED:
     SEED = torch.randint(0, 2**32, (1,)).item()
@@ -406,7 +421,6 @@ step_end("Pass 2: Decode VAE", t0)
 
 t0 = step_start("Save Image")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-METRICS_DIR.mkdir(parents=True, exist_ok=True)
 output_path = OUTPUT_DIR / f"{RUN_SLUG}.png"
 image.save(output_path)
 print(f"  Image saved successfully to: {output_path}")
@@ -419,63 +433,66 @@ run_metrics["global_peak_ram_gb"] = round(tracker.global_peak_ram, 4)
 run_metrics["output_path"] = str(output_path)
 metrics_json_path = METRICS_DIR / f"{RUN_SLUG}.json"
 metrics_txt_path = METRICS_DIR / f"{RUN_SLUG}.txt"
-metrics_json_path.write_text(json.dumps(run_metrics, indent=2, ensure_ascii=False), encoding="utf-8")
-metrics_lines = [
-    f"RUN: {RUN_SLUG}",
-    f"OUTPUT: {output_path}",
-    f"MODEL_TAG: {MODEL_TAG}",
-    f"MODEL_PATH: {MODEL_PATH}",
-    f"SDNQ_ENABLED: {SDNQ_ENABLED}",
-    f"SDNQ_BITS: {SDNQ_BITS if SDNQ_ENABLED else 'none'}",
-    f"SDNQ_VERSION: {run_metrics['sdnq_version']}",
-    f"TEXT_ENCODER_KIND: {run_metrics['text_encoder_kind']}",
-    f"TEXT_ENCODER_SOURCE: {run_metrics['text_encoder_source']}",
-    f"TEXT_ENCODER_OFFLOAD_MODE: {run_metrics['text_encoder_offload_mode']}",
-    f"TRANSFORMER_KIND: {run_metrics['transformer_kind']}",
-    f"TRANSFORMER_SOURCE: {run_metrics['transformer_source']}",
-    f"DIFFUSION_OFFLOAD_MODE: {run_metrics['diffusion_offload_mode']}",
-    f"GUIDANCE_RESCALE: {GUIDANCE_RESCALE}",
-    f"VAE_DECODE_TIMESTEP: {DECODE_TIMESTEP}",
-    f"VAE_DECODE_NOISE_SCALE: {DECODE_NOISE_SCALE}",
-    f"PAG_ENABLED: {PAG_ENABLED}",
-    f"PAG_SCALE: {PAG_SCALE if PAG_ENABLED else 0.0}",
-    f"PAG_APPLIED_LAYERS: {PAG_APPLIED_LAYERS if PAG_ENABLED else None}",
-    f"CRISP_LORA_ENABLED: {args.crisp_lora}",
-    f"CRISP_LORA_PATH: {args.crisp_lora_path if args.crisp_lora else None}",
-    f"CRISP_LORA_WEIGHT_NAME: {args.crisp_lora_weight_name if args.crisp_lora else None}",
-    f"CRISP_LORA_ADAPTER_NAME: {args.crisp_lora_adapter_name if args.crisp_lora else None}",
-    f"CRISP_LORA_SCALE: {args.crisp_lora_scale if args.crisp_lora else 0.0}",
-    f"SOFT_LORA_ENABLED: {args.soft_lora}",
-    f"SOFT_LORA_PATH: {args.soft_lora_path if args.soft_lora else None}",
-    f"SOFT_LORA_WEIGHT_NAME: {args.soft_lora_weight_name if args.soft_lora else None}",
-    f"SOFT_LORA_ADAPTER_NAME: {args.soft_lora_adapter_name if args.soft_lora else None}",
-    f"SOFT_LORA_SCALE: {args.soft_lora_scale if args.soft_lora else 0.0}",
-    f"LORA_ADAPTERS: {run_metrics['lora_adapters']}",
-    f"GROUP_OFFLOAD_CONFIG: {run_metrics['group_offload_config']}",
-    "",
-    "EVENTS:",
-]
-for item in run_metrics["events"]:
-    extras = {k: v for k, v in item.items() if k not in {"name", "elapsed_sec"}}
-    metrics_lines.append(f"- {item['name']}: {item['elapsed_sec']:.4f}s | {extras}")
-metrics_lines.append("")
-metrics_lines.append("STEPS:")
-for item in run_metrics["steps"]:
-    metrics_lines.append(
-        f"- {item['name']}: {item['elapsed_sec']:.4f}s | peak_vram={item['peak_vram_gb']:.4f} GB | peak_ram={item['peak_ram_gb']:.4f} GB"
-    )
-metrics_lines.extend(
-    [
+if args.save_metrics:
+    METRICS_DIR.mkdir(parents=True, exist_ok=True)
+    metrics_json_path.write_text(json.dumps(run_metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+    metrics_lines = [
+        f"RUN: {RUN_SLUG}",
+        f"OUTPUT: {output_path}",
+        f"MODEL_TAG: {MODEL_TAG}",
+        f"MODEL_PATH: {MODEL_PATH}",
+        f"SDNQ_ENABLED: {SDNQ_ENABLED}",
+        f"SDNQ_BITS: {SDNQ_BITS if SDNQ_ENABLED else 'none'}",
+        f"SDNQ_VERSION: {run_metrics['sdnq_version']}",
+        f"TEXT_ENCODER_KIND: {run_metrics['text_encoder_kind']}",
+        f"TEXT_ENCODER_SOURCE: {run_metrics['text_encoder_source']}",
+        f"TEXT_ENCODER_OFFLOAD_MODE: {run_metrics['text_encoder_offload_mode']}",
+        f"TRANSFORMER_KIND: {run_metrics['transformer_kind']}",
+        f"TRANSFORMER_SOURCE: {run_metrics['transformer_source']}",
+        f"DIFFUSION_OFFLOAD_MODE: {run_metrics['diffusion_offload_mode']}",
+        f"GUIDANCE_RESCALE: {GUIDANCE_RESCALE}",
+        f"VAE_DECODE_TIMESTEP: {DECODE_TIMESTEP}",
+        f"VAE_DECODE_NOISE_SCALE: {DECODE_NOISE_SCALE}",
+        f"PAG_ENABLED: {PAG_ENABLED}",
+        f"PAG_SCALE: {PAG_SCALE if PAG_ENABLED else 0.0}",
+        f"PAG_APPLIED_LAYERS: {PAG_APPLIED_LAYERS if PAG_ENABLED else None}",
+        f"CRISP_LORA_ENABLED: {args.crisp_lora}",
+        f"CRISP_LORA_PATH: {args.crisp_lora_path if args.crisp_lora else None}",
+        f"CRISP_LORA_WEIGHT_NAME: {args.crisp_lora_weight_name if args.crisp_lora else None}",
+        f"CRISP_LORA_ADAPTER_NAME: {args.crisp_lora_adapter_name if args.crisp_lora else None}",
+        f"CRISP_LORA_SCALE: {args.crisp_lora_scale if args.crisp_lora else 0.0}",
+        f"SOFT_LORA_ENABLED: {args.soft_lora}",
+        f"SOFT_LORA_PATH: {args.soft_lora_path if args.soft_lora else None}",
+        f"SOFT_LORA_WEIGHT_NAME: {args.soft_lora_weight_name if args.soft_lora else None}",
+        f"SOFT_LORA_ADAPTER_NAME: {args.soft_lora_adapter_name if args.soft_lora else None}",
+        f"SOFT_LORA_SCALE: {args.soft_lora_scale if args.soft_lora else 0.0}",
+        f"LORA_ADAPTERS: {run_metrics['lora_adapters']}",
+        f"GROUP_OFFLOAD_CONFIG: {run_metrics['group_offload_config']}",
         "",
-        f"TOTAL: {run_metrics['total_elapsed_sec']:.4f}s",
-        f"GLOBAL_PEAK_VRAM: {run_metrics['global_peak_vram_gb']:.4f} GB",
-        f"GLOBAL_PEAK_RAM: {run_metrics['global_peak_ram_gb']:.4f} GB",
+        "EVENTS:",
     ]
-)
-metrics_txt_path.write_text("\n".join(metrics_lines) + "\n", encoding="utf-8")
+    for item in run_metrics["events"]:
+        extras = {k: v for k, v in item.items() if k not in {"name", "elapsed_sec"}}
+        metrics_lines.append(f"- {item['name']}: {item['elapsed_sec']:.4f}s | {extras}")
+    metrics_lines.append("")
+    metrics_lines.append("STEPS:")
+    for item in run_metrics["steps"]:
+        metrics_lines.append(
+            f"- {item['name']}: {item['elapsed_sec']:.4f}s | peak_vram={item['peak_vram_gb']:.4f} GB | peak_ram={item['peak_ram_gb']:.4f} GB"
+        )
+    metrics_lines.extend(
+        [
+            "",
+            f"TOTAL: {run_metrics['total_elapsed_sec']:.4f}s",
+            f"GLOBAL_PEAK_VRAM: {run_metrics['global_peak_vram_gb']:.4f} GB",
+            f"GLOBAL_PEAK_RAM: {run_metrics['global_peak_ram_gb']:.4f} GB",
+        ]
+    )
+    metrics_txt_path.write_text("\n".join(metrics_lines) + "\n", encoding="utf-8")
 print(f"\n{'=' * 70}")
 print(f"  TOTAL: {total_time:.1f}s | Peak VRAM: {tracker.global_peak_vram:.2f} GB | Peak RAM: {tracker.global_peak_ram:.2f} GB")
 print(f"  Output: {output_path}")
-print(f"  Metrics JSON: {metrics_json_path}")
-print(f"  Metrics TXT: {metrics_txt_path}")
+if args.save_metrics:
+    print(f"  Metrics JSON: {metrics_json_path}")
+    print(f"  Metrics TXT: {metrics_txt_path}")
 print(f"{'=' * 70}")

@@ -7,11 +7,13 @@ dist/
 wheels/
 checkpoints/
 *.egg-info
-.code-workspace
+ltx2.3-image-diffusers.code-workspace
 
 # Virtual environments
 .venv
 .python-version
+test
+.ubuntu
 
 # IDE settings
 .idea/
@@ -53,3 +55,5 @@ wandb/
 download.py
 # Binary files
 *.so
+
+EmptyStandbyList.exe

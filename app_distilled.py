@@ -83,7 +83,6 @@ def ensure_size(width, height):
     return width, height
 
 
-
 def parse_pag_layers(layers_text):
     if not layers_text or not str(layers_text).strip():
         return [28]
@@ -199,7 +198,21 @@ def decode_latents(latents, seed, decode_timestep=0.0, decode_noise_scale=None):
     return image
 
 
-def run_stage1(prompt, width, height, seed, bits, pag_enabled, pag_scale, pag_layers, crisp_enabled, crisp_scale, soft_enabled, soft_scale, progress=gr.Progress()):
+def run_stage1(
+    prompt,
+    width,
+    height,
+    seed,
+    bits,
+    pag_enabled,
+    pag_scale,
+    pag_layers,
+    crisp_enabled,
+    crisp_scale,
+    soft_enabled,
+    soft_scale,
+    progress=gr.Progress(),
+):
     width, height = ensure_size(width, height)
     t0 = time.time()
     progress(0.05, desc="Encoding prompt")
@@ -224,7 +237,7 @@ def run_stage1(prompt, width, height, seed, bits, pag_enabled, pag_scale, pag_la
     active_loras = activate_loras(pipe, crisp_enabled, crisp_scale, soft_enabled, soft_scale)
     apply_offload(pipe, bits)
 
-    progress(0.45, desc="Generating T2I image")
+    progress(0.42, desc=f"Generating T2I latents at {width}x{height}")
     generator = torch.Generator(device="cpu").manual_seed(int(seed))
     latents = pipe(
         prompt_embeds=prompt_embeds.to(device=DEVICE, dtype=DTYPE),
@@ -245,7 +258,10 @@ def run_stage1(prompt, width, height, seed, bits, pag_enabled, pag_scale, pag_la
         return_dict=False,
     )[0].to(OFFLOAD_DEVICE)
 
-    del prompt_embeds, prompt_attention_mask, pipe, transformer
+    del pipe, transformer
+    flush()
+
+    del prompt_embeds, prompt_attention_mask
     flush()
 
     progress(0.90, desc="Decoding T2I image")
@@ -253,7 +269,15 @@ def run_stage1(prompt, width, height, seed, bits, pag_enabled, pag_scale, pag_la
     del latents
     flush()
     elapsed = time.time() - t0
-    return image, {"stage": "stage1", "bits": bits, "loras": active_loras, "pag_enabled": pag_enabled, "pag_scale": float(pag_scale) if pag_enabled else 0.0, "pag_layers": parse_pag_layers(pag_layers) if pag_enabled else None, "elapsed_sec": round(elapsed, 2)}
+    return image, {
+        "stage": "stage1",
+        "bits": bits,
+        "loras": active_loras,
+        "pag_enabled": pag_enabled,
+        "pag_scale": float(pag_scale) if pag_enabled else 0.0,
+        "pag_layers": parse_pag_layers(pag_layers) if pag_enabled else None,
+        "elapsed_sec": round(elapsed, 2),
+    }
 
 
 def run_stage2(
@@ -508,7 +532,6 @@ with gr.Blocks(title="LTX 2.3 Image - Distilled Model") as demo:
             stage1_crisp_scale = gr.Slider(label="Crisp Scale", minimum=0.0, maximum=2.0, value=0.3, step=0.05)
             stage1_enhance_lora = gr.Checkbox(label="Enhance LoRA", value=False)
             stage1_soft_scale = gr.Slider(label="Enhance Scale", minimum=0.0, maximum=2.0, value=0.15, step=0.05)
-
     with gr.Accordion("Image-to-Image", open=False):
         with gr.Row():
             enable_stage2 = gr.Checkbox(label="Enable I2I", value=False)

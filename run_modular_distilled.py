@@ -2,16 +2,19 @@
 Modular LTX 2.3 distilled image runner using official Diffusers group offloading.
 """
 
+import argparse
 import json
 import os
 from pathlib import Path
 import time
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("HF_MODULES_CACHE", str((Path(__file__).parent / ".hf_modules").resolve()))
 
 import torch
 from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler
 from diffusers.hooks import apply_group_offloading
+from diffusers.loaders.lora_pipeline import LTX2LoraLoaderMixin
 from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
 
 from custom_blocks.ltx2_image import LTX2ImageDistilledBlocks, LTX2ImageTextEncoderStep
@@ -30,7 +33,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_modular_diffusers_group_offload"
-MODEL_PATH = r"E:\model\ltx2.3-image-distilled-1.1"
+MODEL_PATH = r"elismasilva/ltx2.3-image-distilled-1.1"
 LOW_CPU_MEM_USAGE = True
 
 GROUP_OFFLOAD_CONFIG = {
@@ -63,12 +66,62 @@ SHOW_METRICS = True
 SAVE_METRICS = True
 SHOW_DENOISE_STEPS = True
 
+CRISP_LORA_ENABLED = False
+CRISP_LORA_PATH = "vrgamedevgirl84/LTX_2.3_Crisp_Enhance_Style_LoRa"
+CRISP_LORA_WEIGHT_NAME = "LTX2.3_Crisp_Enhance.safetensors"
+CRISP_LORA_ADAPTER_NAME = "crisp"
+CRISP_LORA_SCALE = 0.3
+SOFT_LORA_ENABLED = True
+SOFT_LORA_PATH = "vrgamedevgirl84/LTX_2.3_Soft_Enhance_Style_LoRa"
+SOFT_LORA_WEIGHT_NAME = "LTX2.3_Soft_Enhance.safetensors"
+SOFT_LORA_ADAPTER_NAME = "soft"
+SOFT_LORA_SCALE = 0.8
+
 prompt = "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy."
 negative_prompt = ""
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prompt", default=prompt)
+    parser.add_argument("--negative-prompt", default=negative_prompt)
+    parser.add_argument("--width", type=int, default=WIDTH)
+    parser.add_argument("--height", type=int, default=HEIGHT)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--steps", type=int, default=NUM_INFERENCE_STEPS)
+    parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
+    parser.add_argument("--guidance-rescale", type=float, default=GUIDANCE_RESCALE)
+    parser.add_argument("--decode-timestep", type=float, default=DECODE_TIMESTEP)
+    parser.add_argument("--decode-noise-scale", type=float, default=DECODE_NOISE_SCALE)
+    parser.add_argument("--pag", action="store_true", default=PAG_ENABLED)
+    parser.add_argument("--pag-scale", type=float, default=PAG_SCALE)
+    parser.add_argument("--pag-layers", default=",".join(map(str, PAG_APPLIED_LAYERS)))
+    parser.add_argument("--generation-repeats", type=int, default=GENERATION_REPEATS)
+    parser.add_argument("--output-dir", default="outputs/ltx_image_modular")
+    parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=SHOW_METRICS)
+    parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
+    parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=SHOW_DENOISE_STEPS)
+    parser.add_argument("--crisp-lora", action=argparse.BooleanOptionalAction, default=CRISP_LORA_ENABLED)
+    parser.add_argument("--crisp-lora-path", default=CRISP_LORA_PATH)
+    parser.add_argument("--crisp-lora-weight-name", default=CRISP_LORA_WEIGHT_NAME)
+    parser.add_argument("--crisp-lora-adapter-name", default=CRISP_LORA_ADAPTER_NAME)
+    parser.add_argument("--crisp-lora-scale", type=float, default=CRISP_LORA_SCALE)
+    parser.add_argument("--soft-lora", action=argparse.BooleanOptionalAction, default=SOFT_LORA_ENABLED)
+    parser.add_argument("--soft-lora-path", default=SOFT_LORA_PATH)
+    parser.add_argument("--soft-lora-weight-name", default=SOFT_LORA_WEIGHT_NAME)
+    parser.add_argument("--soft-lora-adapter-name", default=SOFT_LORA_ADAPTER_NAME)
+    parser.add_argument("--soft-lora-scale", type=float, default=SOFT_LORA_SCALE)
+    return parser.parse_args()
+
+
 def build_run_slug(seed):
     pag_tag = f"pag{PAG_SCALE:g}_layers{'-'.join(map(str, PAG_APPLIED_LAYERS))}" if PAG_ENABLED else "nopag"
+    lora_tags = []
+    if SOFT_LORA_ENABLED:
+        lora_tags.append(f"{SOFT_LORA_ADAPTER_NAME}{SOFT_LORA_SCALE:g}")
+    if CRISP_LORA_ENABLED:
+        lora_tags.append(f"{CRISP_LORA_ADAPTER_NAME}{CRISP_LORA_SCALE:g}")
+    lora_tag = "lora_" + "-".join(lora_tags) if lora_tags else "nolora"
     return "_".join(
         [
             "ltx23_image",
@@ -76,6 +129,7 @@ def build_run_slug(seed):
             "bf16",
             "text_encoder_original",
             pag_tag,
+            lora_tag,
             f"{WIDTH}x{HEIGHT}",
             f"steps{NUM_INFERENCE_STEPS}",
             f"seed{seed}",
@@ -102,6 +156,58 @@ def cleanup_runtime_state(record_event, event_name: str):
     event_t0 = time.time()
     flush()
     record_event(event_name, time.time() - event_t0)
+
+
+def load_lora_adapter(model, source: str, weight_name: str, adapter_name: str) -> str:
+    state_dict, metadata = LTX2LoraLoaderMixin.lora_state_dict(
+        source,
+        weight_name=weight_name,
+        return_lora_metadata=True,
+    )
+    model.load_lora_adapter(
+        state_dict,
+        prefix="transformer",
+        adapter_name=adapter_name,
+        metadata=metadata,
+        low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
+    )
+    return adapter_name
+
+
+def maybe_load_lora(model, run_metrics, enabled, kind, path, weight_name, adapter_name, scale, record_event):
+    if not enabled:
+        return None
+    event_t0 = time.time()
+    actual_adapter_name = load_lora_adapter(model, path, weight_name, adapter_name)
+    run_metrics["lora_adapters"].append(
+        {
+            "kind": kind,
+            "path": path,
+            "weight_name": weight_name,
+            "adapter_name": actual_adapter_name,
+            "scale": scale,
+        }
+    )
+    record_event(
+        f"load_{kind}_lora",
+        time.time() - event_t0,
+        path=path,
+        weight_name=weight_name,
+        adapter_name=actual_adapter_name,
+        scale=scale,
+    )
+    return actual_adapter_name, scale
+
+
+def activate_loras(model, adapters, record_event):
+    if not adapters:
+        return
+    names, scales = zip(*adapters)
+    try:
+        model.set_adapters(list(names), weights=list(scales))
+    except TypeError:
+        model.set_adapters(list(names), adapter_weights=list(scales))
+    record_event("activate_loras", 0.0, adapters=dict(adapters))
 
 
 def make_denoise_progress_callback(tracker):
@@ -131,6 +237,42 @@ def make_denoise_progress_callback(tracker):
 
 
 def main():
+    global WIDTH, HEIGHT, SEED, NUM_INFERENCE_STEPS, GUIDANCE_SCALE, GUIDANCE_RESCALE
+    global DECODE_TIMESTEP, DECODE_NOISE_SCALE, PAG_ENABLED, PAG_SCALE, PAG_APPLIED_LAYERS
+    global GENERATION_REPEATS, SHOW_METRICS, SAVE_METRICS, SHOW_DENOISE_STEPS
+    global CRISP_LORA_ENABLED, CRISP_LORA_PATH, CRISP_LORA_WEIGHT_NAME, CRISP_LORA_ADAPTER_NAME, CRISP_LORA_SCALE
+    global SOFT_LORA_ENABLED, SOFT_LORA_PATH, SOFT_LORA_WEIGHT_NAME, SOFT_LORA_ADAPTER_NAME, SOFT_LORA_SCALE
+    global prompt, negative_prompt
+
+    args = parse_args()
+    WIDTH = args.width
+    HEIGHT = args.height
+    SEED = args.seed
+    NUM_INFERENCE_STEPS = args.steps
+    GUIDANCE_SCALE = args.guidance_scale
+    GUIDANCE_RESCALE = args.guidance_rescale
+    DECODE_TIMESTEP = args.decode_timestep
+    DECODE_NOISE_SCALE = args.decode_noise_scale
+    PAG_ENABLED = args.pag
+    PAG_SCALE = args.pag_scale
+    PAG_APPLIED_LAYERS = [int(item.strip()) for item in args.pag_layers.split(",") if item.strip()]
+    GENERATION_REPEATS = args.generation_repeats
+    SHOW_METRICS = args.show_metrics
+    SAVE_METRICS = args.save_metrics
+    SHOW_DENOISE_STEPS = args.show_denoise_steps
+    CRISP_LORA_ENABLED = args.crisp_lora
+    CRISP_LORA_PATH = args.crisp_lora_path
+    CRISP_LORA_WEIGHT_NAME = args.crisp_lora_weight_name
+    CRISP_LORA_ADAPTER_NAME = args.crisp_lora_adapter_name
+    CRISP_LORA_SCALE = args.crisp_lora_scale
+    SOFT_LORA_ENABLED = args.soft_lora
+    SOFT_LORA_PATH = args.soft_lora_path
+    SOFT_LORA_WEIGHT_NAME = args.soft_lora_weight_name
+    SOFT_LORA_ADAPTER_NAME = args.soft_lora_adapter_name
+    SOFT_LORA_SCALE = args.soft_lora_scale
+    prompt = args.prompt
+    negative_prompt = args.negative_prompt
+
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this runner.")
 
@@ -140,7 +282,7 @@ def main():
     generator = torch.Generator(device="cpu").manual_seed(seed)
 
     run_slug = build_run_slug(seed)
-    output_dir = Path("outputs/ltx_image_modular")
+    output_dir = Path(args.output_dir)
     metrics_dir = output_dir / "metrics"
     run_metrics = {
         "run_slug": run_slug,
@@ -159,6 +301,8 @@ def main():
         "pag_enabled": PAG_ENABLED,
         "pag_scale": PAG_SCALE if PAG_ENABLED else 0.0,
         "pag_applied_layers": PAG_APPLIED_LAYERS if PAG_ENABLED else None,
+        "lora_enabled": SOFT_LORA_ENABLED or CRISP_LORA_ENABLED,
+        "lora_adapters": [],
         "dtype": str(DTYPE),
         "offload_backend": "diffusers_group_offloading",
         "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
@@ -300,6 +444,30 @@ def main():
         low_cpu_mem_usage=LOW_CPU_MEM_USAGE,
         device_map=transformer_load_kwargs.get("device_map"),
     )
+
+    active_adapters = []
+    for item in [
+        (
+            SOFT_LORA_ENABLED,
+            "soft",
+            SOFT_LORA_PATH,
+            SOFT_LORA_WEIGHT_NAME,
+            SOFT_LORA_ADAPTER_NAME,
+            SOFT_LORA_SCALE,
+        ),
+        (
+            CRISP_LORA_ENABLED,
+            "crisp",
+            CRISP_LORA_PATH,
+            CRISP_LORA_WEIGHT_NAME,
+            CRISP_LORA_ADAPTER_NAME,
+            CRISP_LORA_SCALE,
+        ),
+    ]:
+        adapter = maybe_load_lora(transformer, run_metrics, *item, record_event=record_event)
+        if adapter is not None:
+            active_adapters.append(adapter)
+    activate_loras(transformer, active_adapters, record_event)
 
     event_t0 = time.time()
     apply_model_group_offload(transformer, prefix="transformer")

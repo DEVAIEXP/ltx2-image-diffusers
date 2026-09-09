@@ -69,27 +69,29 @@ Update the `MODEL_PATH` / `SDNQ_MODEL_PATHS` constants in the scripts if your fo
 
 ## Quick Start
 
-Recommended distilled SDNQ T2I baseline:
-
-```powershell
-python run_sdnq_distilled.py
-```
-
-Recommended distilled bf16 T2I baseline:
+Traditional Diffusers distilled T2I:
 
 ```powershell
 python run_distilled.py
 ```
 
-Recommended distilled I2I baseline:
+Modular custom-block distilled T2I:
 
 ```powershell
-python run_sdnq_distilled_img2img.py --input-image path\to\input.png
+python run_modular_distilled.py
 ```
 
-These commands use the tested defaults. Extra flags are only needed when comparing model variants, LoRAs, PAG, or I2I strength.
+Modular custom-block distilled I2I:
 
-## Scripts
+```powershell
+python run_modular_distilled_img2img.py --input-image path\to\input.png
+```
+
+These commands use the tested defaults. Every `run*.py` script now accepts CLI arguments; use `--help` on any runner to see the supported prompt, size, seed, step, PAG, LoRA, metrics, and I2I options.
+
+## Traditional Runners
+
+These scripts use the regular Diffusers pipeline classes.
 
 | Script | Mode | Model family | Quantization |
 | --- | --- | --- | --- |
@@ -101,84 +103,54 @@ These commands use the tested defaults. Extra flags are only needed when compari
 | `run_sdnq_distilled_img2img.py` | I2I | distilled | bf16 by default, `--bits 4` / `--bits 8` optional |
 | `run_base_img2img.py` | I2I | base | bf16 |
 | `run_sdnq_base_img2img.py` | I2I | base | SDNQ int8 by default, `--bits 4` optional |
-| `app_distilled.py` | T2I + optional I2I | distilled | bf16 app defaults |
-| `app_base.py` | T2I + optional I2I | base | bf16 app defaults |
 
-## T2I Examples
-
-Distilled bf16:
+Traditional examples:
 
 ```powershell
-python run_distilled.py
-```
-
-Distilled SDNQ int8:
-
-```powershell
-python run_sdnq_distilled.py
-```
-
-Distilled SDNQ int4/uint4:
-
-```powershell
-python run_sdnq_distilled.py --bits 4
-```
-
-Base bf16:
-
-```powershell
-python run_base.py
-```
-
-Base SDNQ int8:
-
-```powershell
-python run_sdnq_base.py
-```
-
-Base SDNQ int4/uint4:
-
-```powershell
+python run_distilled.py --prompt "a cinematic portrait of a robot barista"
+python run_sdnq_distilled.py --bits 8
+python run_base.py --steps 28 --guidance-scale 3.0
 python run_sdnq_base.py --bits 4
-```
-
-## I2I Examples
-
-Distilled bf16 I2I:
-
-```powershell
-python run_distilled_img2img.py --input-image path\to\input.png
-```
-
-Distilled SDNQ int4 I2I:
-
-```powershell
-python run_sdnq_distilled_img2img.py --input-image path\to\input.png --bits 4
-```
-
-Distilled SDNQ int8 I2I:
-
-```powershell
-python run_sdnq_distilled_img2img.py --input-image path\to\input.png --bits 8
-```
-
-Base bf16 I2I:
-
-```powershell
+python run_distilled_img2img.py --input-image path\to\input.png --strength 0.2
+python run_sdnq_distilled_img2img.py --input-image path\to\input.png --bits 8 --soft-lora
 python run_base_img2img.py --input-image path\to\input.png
-```
-
-Base SDNQ int8 I2I:
-
-```powershell
-python run_sdnq_base_img2img.py --input-image path\to\input.png
-```
-
-Base SDNQ int4 I2I:
-
-```powershell
 python run_sdnq_base_img2img.py --input-image path\to\input.png --bits 4
 ```
+
+## Modular Runners
+
+These scripts use the custom Modular Diffusers blocks in `custom_blocks/ltx2_image` and load components step by step to keep memory pressure lower during local experiments.
+
+| Script | Mode | Model family | Quantization |
+| --- | --- | --- | --- |
+| `run_modular_distilled.py` | T2I | distilled | bf16 |
+| `run_modular_sdnq_distilled.py` | T2I | distilled | SDNQ int8 by default, `--bits 4` optional |
+| `run_modular_base.py` | T2I | base | bf16 |
+| `run_modular_sdnq_base.py` | T2I | base | SDNQ int8 by default, `--bits 4` optional |
+| `run_modular_distilled_img2img.py` | I2I | distilled | bf16 |
+| `run_modular_sdnq_distilled_img2img.py` | I2I | distilled | SDNQ int8 by default, `--bits 4` optional |
+| `run_modular_base_img2img.py` | I2I | base | bf16 |
+| `run_modular_sdnq_base_img2img.py` | I2I | base | SDNQ int8 by default, `--bits 4` optional |
+
+Modular examples:
+
+```powershell
+python run_modular_distilled.py
+python run_modular_sdnq_distilled.py --bits 8
+python run_modular_base.py --steps 28 --guidance-scale 3.0
+python run_modular_sdnq_base.py --bits 4
+python run_modular_distilled_img2img.py --input-image path\to\input.png --strength 0.2
+python run_modular_sdnq_distilled_img2img.py --input-image path\to\input.png --bits 8 --soft-lora
+python run_modular_base_img2img.py --input-image path\to\input.png
+python run_modular_sdnq_base_img2img.py --input-image path\to\input.png --bits 4
+```
+
+## Apps
+
+| Script | Mode | Model family | Quantization |
+| --- | --- | --- | --- |
+| `app_distilled.py` | T2I + optional I2I | distilled | bf16 app defaults |
+| `app_base.py` | T2I + optional I2I | base | bf16 app defaults |
 
 ## App Defaults
 
