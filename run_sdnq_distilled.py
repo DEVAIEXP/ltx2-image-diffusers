@@ -24,7 +24,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_sdnq"
-MODEL_PATH = r"elismasilva/ltx2.3-image-distilled-1.1"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-distilled-1.1")
 CRISP_LORA_PATH = "vrgamedevgirl84/LTX_2.3_Crisp_Enhance_Style_LoRa"
 CRISP_LORA_WEIGHT_NAME = "LTX2.3_Crisp_Enhance.safetensors"
 CRISP_LORA_ADAPTER_NAME = "crisp"

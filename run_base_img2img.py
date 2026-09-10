@@ -31,7 +31,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "base_img2img"
-MODEL_PATH = r"elismasilva/ltx2.3-image-base"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-base")
 SHOW_METRICS = True
 SAVE_METRICS = True
 SHOW_DENOISE_STEPS = True

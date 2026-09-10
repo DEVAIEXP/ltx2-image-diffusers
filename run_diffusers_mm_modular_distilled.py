@@ -33,7 +33,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_modular_diffusers_mm"
-MODEL_PATH = r"elismasilva/ltx2.3-image-distilled-1.1"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-distilled-1.1")
 LOW_CPU_MEM_USAGE = True
 
 DIFFUSERS_MM_STRATEGY = "auto"

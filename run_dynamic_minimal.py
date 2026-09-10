@@ -33,7 +33,7 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
 )
 from inference_utils import RunTracker, flush
 
-MODEL_PATH = r"E:\model\ltx2.3-image-distilled-1.1"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-distilled-1.1")
 OUTPUT_DIR = Path("outputs/ltx_image_modular")
 
 DEVICE = "cuda:0"

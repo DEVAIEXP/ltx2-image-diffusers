@@ -39,7 +39,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_modular"
-MODEL_PATH = "elismasilva/ltx2.3-image-distilled-1.1"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-distilled-1.1")
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
 MODEL_LOW_CPU_MEM_USAGE = True
 DYNAMIC_OFFLOAD_SETTINGS = None

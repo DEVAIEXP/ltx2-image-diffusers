@@ -27,7 +27,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_dynamic_old_pipeline"
-MODEL_PATH = "elismasilva/ltx2.3-image-distilled-1.1"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-distilled-1.1")
 DEFAULT_COMPONENTS = "auto"
 PIPELINE_COMPONENT_POLICIES = {
     "text_encoder": {"route": "diffusers_group_offload", "offload_type": "leaf_level", "offload_stream": "1"},

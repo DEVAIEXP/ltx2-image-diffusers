@@ -38,7 +38,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 LOW_CPU_MEM_USAGE = True
 
-MODEL_PATH = "elismasilva/ltx2.3-image-base"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-base")
 MODEL_TAG = "base_modular_sdnq_img2img_diffusers_group_offload"
 SDNQ_MODEL_PATHS = {
     4: "elismasilva/ltx2.3-image-base-sdnq-int4",

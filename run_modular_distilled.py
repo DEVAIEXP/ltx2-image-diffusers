@@ -32,7 +32,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_modular_diffusers_group_offload"
-MODEL_PATH = r"elismasilva/ltx2.3-image-distilled-1.1"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-distilled-1.1")
 LOW_CPU_MEM_USAGE = True
 
 GROUP_OFFLOAD_CONFIG = {

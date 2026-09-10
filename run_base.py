@@ -22,7 +22,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "base"
-MODEL_PATH = r"elismasilva/ltx2.3-image-base"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-base")
 
 LOW_CPU_MEM_USAGE = True
 GROUP_OFFLOAD_CONFIG = {

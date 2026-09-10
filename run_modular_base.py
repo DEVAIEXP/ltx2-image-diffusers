@@ -34,7 +34,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 LOW_CPU_MEM_USAGE = True
 
-MODEL_PATH = "elismasilva/ltx2.3-image-base"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-base")
 MODEL_TAG = "base_modular_diffusers_group_offload"
 
 GROUP_OFFLOAD_CONFIG = {

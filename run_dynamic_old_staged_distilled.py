@@ -37,7 +37,7 @@ OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_dynamic_old_staged"
-MODEL_PATH = "elismasilva/ltx2.3-image-distilled-1.1"
+MODEL_PATH = os.getenv("MODEL_PATH", r"elismasilva/ltx2.3-image-distilled-1.1")
 OUTPUT_DIR = Path("outputs/ltx_image_dynamic_old_staged")
 
 WIDTH = 1280
