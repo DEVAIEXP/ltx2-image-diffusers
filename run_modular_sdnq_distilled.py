@@ -10,8 +10,8 @@ group offloading instead of DDO dynamic offload.
 import argparse
 import json
 import os
-from pathlib import Path
 import time
+from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_MODULES_CACHE", str((Path(__file__).parent / ".hf_modules").resolve()))
@@ -31,7 +31,6 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
 )
 from custom_blocks.ltx2_image.transformer_ltx2_image import LTX2ImageTransformer2DModel
 from inference_utils import RunTracker, flush, get_sdnq_version
-
 
 DEVICE = "cuda:0"
 OFFLOAD_DEVICE = "cpu"
@@ -108,7 +107,9 @@ def parse_args():
     parser.add_argument("--crisp-lora-adapter-name", default=CRISP_LORA_ADAPTER_NAME)
     parser.add_argument("--crisp-lora-scale", type=float, default=CRISP_LORA_SCALE)
     parser.add_argument("--output-dir", default="outputs/ltx_image_modular_sdnq_distilled")
+    parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=SHOW_METRICS)
     parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
+    parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=SHOW_DENOISE_STEPS)
     return parser.parse_args()
 
 
@@ -171,7 +172,7 @@ def maybe_load_lora(model, run_metrics, enabled, kind, path, weight_name, adapte
 def activate_loras(model, adapters, record_event) -> None:
     if not adapters:
         return
-    names, scales = zip(*adapters)
+    names, scales = zip(*adapters, strict=False)
     try:
         model.set_adapters(list(names), weights=list(scales))
     except TypeError:
@@ -230,7 +231,12 @@ def make_denoise_progress_callback(args, run_metrics):
 
 
 def main():
+    global SHOW_METRICS, SAVE_METRICS, SHOW_DENOISE_STEPS
+
     args = parse_args()
+    SHOW_METRICS = args.show_metrics
+    SAVE_METRICS = args.save_metrics
+    SHOW_DENOISE_STEPS = args.show_denoise_steps
     import sdnq  # noqa: F401 - registers SDNQ model classes before loading components.
 
     if not torch.cuda.is_available():

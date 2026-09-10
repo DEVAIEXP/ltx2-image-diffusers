@@ -15,11 +15,13 @@ dependencies = [
     "psutil",
     "hf-xet",
     "peft",
-    "sdnq==0.2.4",
+    "sdnq",
     "openvino",
     "triton-windows<3.8 ; sys_platform == 'win32'",
     "triton<3.8 ; sys_platform == 'linux'",
     "diffusers",
+    "diffusers-dynamic-offloader",
+    "diffusers-mm",
     "gradio>=6.0.0",
     "flash-attn @ https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.9.1%2Bcu132torch2.12.1cxx11abiTRUE-cp312-cp312-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.12'",
 ]
@@ -28,10 +30,14 @@ dependencies = [
 audio = [
     "torchaudio==2.11.0",
 ]
-
+dev = [
+    "ruff>=0.14.3",
+]
 
 [tool.uv.sources]
 diffusers = { git = "https://github.com/DEVAIEXP/diffusers.git", branch = "ltx-image" }
+diffusers-dynamic-offloader = { git = "https://github.com/DEVAIEXP/diffusers-dynamic-offloader.git" }
+diffusers-mm = { git = "https://github.com/asomoza/diffusers-mm.git" }
 torch = { index = "pytorch-cu132" }
 torchvision = { index = "pytorch-cu132" }
 
@@ -43,3 +49,27 @@ explicit = true
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E", # pycodestyle
+    "F", # pyflakes
+    "W", # pycodestyle warnings
+    "I", # isort
+    "B", # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "RUF", # Ruff-specific rules
+]
+ignore = [
+    "B904", # Allow concise exception handling in small compatibility helpers.
+    "E501", # Let the formatter and local readability handle occasional long lines.
+    "RUF022", # Keep public __all__ grouped by API meaning instead of strict sorting.
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["custom_blocks", "inference_utils"]

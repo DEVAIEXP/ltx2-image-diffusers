@@ -6,15 +6,22 @@ This is the small integration shape a host app should need:
 - call enable_offload(...) for each large component
 """
 
+import argparse
 import os
-from pathlib import Path
 import time
+from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler
 from diffusers.models.attention_dispatch import AttentionBackendName, attention_backend
+from diffusers_dynamic_offloader import (
+    enable_offload,
+    from_pretrained_with_dynamic_offload,
+    maybe_purge_windows_standby_cache,
+    remove_dynamic_offload,
+)
 from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
 
 from custom_blocks.ltx2_image import LTX2ImageDistilledBlocks, LTX2ImageTextEncoderStep
@@ -24,14 +31,7 @@ from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
     LTX2ImageDenoiseStep,
     LTX2ImagePrepareLatentsStep,
 )
-from diffusers_dynamic_offloader import (
-    enable_offload,
-    from_pretrained_with_dynamic_offload,
-    maybe_purge_windows_standby_cache,
-    remove_dynamic_offload,
-)
 from inference_utils import RunTracker, flush
-
 
 MODEL_PATH = r"E:\model\ltx2.3-image-distilled-1.1"
 OUTPUT_DIR = Path("outputs/ltx_image_modular")
@@ -40,6 +40,9 @@ DEVICE = "cuda:0"
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 PRESET = "auto"
+SHOW_METRICS = True
+SAVE_METRICS = False
+SHOW_DENOISE_STEPS = True
 
 WIDTH = 1280
 HEIGHT = 704
@@ -53,6 +56,26 @@ PROMPT = (
     "in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy."
 )
 NEGATIVE_PROMPT = ""
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-path", default=MODEL_PATH)
+    parser.add_argument("--preset", default=PRESET)
+    parser.add_argument("--device", default=DEVICE)
+    parser.add_argument("--prompt", default=PROMPT)
+    parser.add_argument("--negative-prompt", default=NEGATIVE_PROMPT)
+    parser.add_argument("--width", type=int, default=WIDTH)
+    parser.add_argument("--height", type=int, default=HEIGHT)
+    parser.add_argument("--steps", type=int, default=STEPS)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
+    parser.add_argument("--guidance-rescale", type=float, default=GUIDANCE_RESCALE)
+    parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=SHOW_METRICS)
+    parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
+    parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=SHOW_DENOISE_STEPS)
+    return parser.parse_args()
 
 
 def cleanup(record_event, name: str, *, repeats: int = 1) -> None:
@@ -73,6 +96,8 @@ def denoise_callback(components, step_index, timestep, callback_kwargs):
     avg = (now - start_time) / (step_index + 1)
     alloc = torch.cuda.memory_allocated(DEVICE) / 1024**3
     reserved = torch.cuda.memory_reserved(DEVICE) / 1024**3
+    if not SHOW_DENOISE_STEPS:
+        return callback_kwargs
     print(
         f"  [denoise] step {step_index + 1}/{STEPS} elapsed={elapsed:.4f}s "
         f"avg={avg:.4f}s/it torch_alloc={alloc:.2f} GiB torch_reserved={reserved:.2f} GiB",
@@ -102,8 +127,29 @@ def print_offload_route(component: str, result) -> None:
 
 
 def main():
+    global MODEL_PATH, OUTPUT_DIR, DEVICE, PRESET, WIDTH, HEIGHT, STEPS, SEED
+    global GUIDANCE_SCALE, GUIDANCE_RESCALE, PROMPT, NEGATIVE_PROMPT
+    global SHOW_METRICS, SAVE_METRICS, SHOW_DENOISE_STEPS
+
+    args = parse_args()
+    MODEL_PATH = args.model_path
+    OUTPUT_DIR = Path(args.output_dir)
+    DEVICE = args.device
+    PRESET = args.preset
+    WIDTH = args.width
+    HEIGHT = args.height
+    STEPS = args.steps
+    SEED = args.seed
+    GUIDANCE_SCALE = args.guidance_scale
+    GUIDANCE_RESCALE = args.guidance_rescale
+    PROMPT = args.prompt
+    NEGATIVE_PROMPT = args.negative_prompt
+    SHOW_METRICS = args.show_metrics
+    SAVE_METRICS = args.save_metrics
+    SHOW_DENOISE_STEPS = args.show_denoise_steps
+
     run_metrics = {"events": [], "steps": []}
-    tracker = RunTracker(DEVICE, run_metrics, interval=0.1, show_metrics=True)
+    tracker = RunTracker(DEVICE, run_metrics, interval=0.1, show_metrics=SHOW_METRICS)
     record_event = tracker.record_event
 
     maybe_purge_windows_standby_cache("before_run", preset=PRESET, record_event=record_event)
@@ -131,10 +177,6 @@ def main():
     )
     text_encoder = text_encoder_result.module
     print_offload_route("text_encoder", text_encoder_result)
-    if text_encoder_result.should_move_to_execution_device:
-        event_t0 = time.time()
-        text_encoder.to(DEVICE)
-        record_event("load_text_encoder_to_cuda", time.time() - event_t0)
 
     event_t0 = time.time()
     tokenizer = GemmaTokenizerFast.from_pretrained(MODEL_PATH, subfolder="tokenizer")
@@ -235,9 +277,6 @@ def main():
     print_offload_route("transformer", transformer_result)
     transformer_hook = transformer_result.hook
     transformer_route = transformer_result.route
-    if transformer_result.should_move_to_execution_device:
-        transformer.to(DEVICE)
-        record_event("load_transformer_to_cuda", time.time() - event_t0)
     del transformer_result
 
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")

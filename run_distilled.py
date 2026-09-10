@@ -2,11 +2,9 @@
 
 import argparse
 import json
-import logging
 import os
-from pathlib import Path
 import time
-import warnings
+from pathlib import Path
 
 import torch
 from diffusers import AutoencoderKLLTX2Video
@@ -48,7 +46,9 @@ PAG_ENABLED = False
 PAG_SCALE = 0.2
 PAG_APPLIED_LAYERS = [28]
 OUTPUT_DIR = Path("outputs/ltx_image")
+SHOW_METRICS = True
 SAVE_METRICS = True
+SHOW_DENOISE_STEPS = True
 
 DEFAULT_PROMPT = """Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy."""
 DEFAULT_NEGATIVE_PROMPT = """"""
@@ -70,11 +70,16 @@ def parse_args():
     parser.add_argument("--pag-scale", type=float, default=PAG_SCALE)
     parser.add_argument("--pag-layers", default=",".join(map(str, PAG_APPLIED_LAYERS)))
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
+    parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=SHOW_METRICS)
     parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
+    parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=SHOW_DENOISE_STEPS)
     return parser.parse_args()
 
 
 args = parse_args()
+SHOW_METRICS = args.show_metrics
+SAVE_METRICS = args.save_metrics
+SHOW_DENOISE_STEPS = args.show_denoise_steps
 WIDTH = args.width
 HEIGHT = args.height
 SEED = args.seed

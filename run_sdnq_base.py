@@ -4,11 +4,9 @@ Standalone LTX 2.3 base SDNQ text-to-image inference script.
 
 import argparse
 import json
-import logging
 import os
-from pathlib import Path
 import time
-import warnings
+from pathlib import Path
 
 import torch
 from diffusers import AutoencoderKLLTX2Video
@@ -27,6 +25,9 @@ DTYPE = torch.bfloat16
 
 MODEL_TAG = "base_sdnq"
 MODEL_PATH = r"elismasilva/ltx2.3-image-base"
+SHOW_METRICS = True
+SAVE_METRICS = True
+SHOW_DENOISE_STEPS = True
 parser = argparse.ArgumentParser()
 parser.add_argument("--bits", type=int, choices=(4, 8), default=8, help="SDNQ transformer bit depth.")
 parser.add_argument(
@@ -50,7 +51,9 @@ parser.add_argument("--pag", action="store_true")
 parser.add_argument("--pag-scale", type=float, default=0.2)
 parser.add_argument("--pag-layers", default="28")
 parser.add_argument("--output-dir", default="outputs/ltx_image")
-parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=SHOW_METRICS)
+parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
+parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=SHOW_DENOISE_STEPS)
 args = parser.parse_args()
 
 SDNQ_ENABLED = True

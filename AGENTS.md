@@ -1,36 +1,88 @@
 # Repository Guidance
 
-This repository is currently focused on a generic Diffusers-style dynamic offload manager for low-VRAM inference.
+This repository is the LTX 2.3 image host project: local apps, traditional Diffusers runners, Modular Diffusers custom-block runners, SDNQ runners, and comparison runners used to validate memory/offload behavior.
 
-## Project Direction
+## Project Layout
 
-- Keep the dynamic offload implementation model-agnostic. It must not depend on LTX-specific class names or component types.
-- Prefer Diffusers conventions and architecture. Code should be easy to upstream or adapt into Diffusers internals later.
-- Keep runtime logic self-contained in the memory manager. Runners should mainly parse/pass parameters and orchestrate components.
-- Avoid native VBAR or hardware-specific low-level paths unless explicitly chosen later. The current priority is compatibility first, then performance.
-- Keep Windows standby purge as a Windows-only runner/system helper, not as a generic Linux requirement.
+- `app_base.py` and `app_distilled.py` are the Gradio apps.
+- `run_*.py` files are local CLI runners. Keep them thin, explicit, and runnable with `--help`.
+- `run_modular_*.py` files use the custom Modular Diffusers blocks in `custom_blocks/ltx2_image`.
+- `run_dynamic_*.py` files exercise the external `diffusers-dynamic-offloader` package against this LTX workload.
+- `run_diffusers_mm_modular_distilled.py` is only a comparison runner for `diffusers-mm`.
+- `custom_blocks/ltx2_image` contains the LTX 2.3 image custom blocks, connectors, and local transformer code needed before upstream Diffusers support is complete.
 
-## Experiment Tracking
+## External DDO Repository
 
-- `custom_blocks/ltx2_image/EXPERIMENTS.md` is the canonical experiment log. Update it whenever a benchmark changes the current recommendation or invalidates an older assumption.
-- `experiments/dynamic_offload_results.md` is a compact sidecar for current comparison tables and report-ready notes.
-- Historical results may stay in `EXPERIMENTS.md`, but stale recommendations must be marked as historical or corrected.
-- Use generic environment names in new docs and commands:
-  - `DDO_*`
-  - `DDO_RUNNER_*`
+The generic dynamic offload implementation lives in:
 
-## Current Preset Meaning
+`E:\ProjetosIA\diffusers-dynamic-offloader`
 
-- `auto` resolves to `one_shot_fast` on Windows, Linux, and WSL.
-- `one_shot_fast` is the default benchmark path: RAM-aware balanced planner, up to 6 GB resident modules, and pinned CPU weights only when enough usable system RAM is available.
-- `low_ram_safe` is an explicit low-VRAM fallback. It reduces accelerator pressure but can make denoise copy-bound and very slow.
-- `wsl_compat` is an explicit WSL/driver fallback for cases where pinned-memory or stream behavior is unstable.
-- `warm_process` is for process-lifetime cache/server-like comparisons.
-- `diffusers_offload_compat` uses official Diffusers block-level group offload as a compatibility baseline, not the current performance baseline.
-- `diffusers_leaf_offload_compat` keeps the official Diffusers leaf-level group offload path available for smaller/different models.
+This project should depend on DDO through `pyproject.toml` and import from `diffusers_dynamic_offloader`.
+
+DDO documentation and report-ready benchmark results belong in the DDO repo, especially:
+
+- `README.md`
+- `docs/`
+- `experiments/dynamic_offload_results.md`
+
+Local exploratory notes such as `ltx2_image_experiments.md` should remain local and ignored unless the user explicitly asks to publish them.
+
+## Runner Conventions
+
+- Prefer `argparse` for runner parameters. Avoid adding new environment-variable-only controls in this repo.
+- Keep module-level defaults visible near the top of each runner.
+- Keep metrics consistent across runners: total time, pass timing, peak VRAM/RAM, and optional per-denoise-step timing.
+- Use staged component loading when memory comparison matters: prompt encoding, connector/transformer denoise, VAE decode, then cleanup.
+- Do not hide DDO behavior inside LTX-specific helper code. The runner may choose a preset, but DDO should own offload policy decisions.
+- For Windows benchmark runners, standby purge should be used only when intentionally comparing that behavior. Do not add purge calls to unrelated comparison runners.
+
+## Current Runner Groups
+
+Traditional Diffusers runners:
+
+- `run_distilled.py`
+- `run_base.py`
+- `run_distilled_img2img.py`
+- `run_base_img2img.py`
+- `run_sdnq_distilled.py`
+- `run_sdnq_base.py`
+- `run_sdnq_distilled_img2img.py`
+- `run_sdnq_base_img2img.py`
+
+Modular custom-block runners:
+
+- `run_modular_distilled.py`
+- `run_modular_base.py`
+- `run_modular_distilled_img2img.py`
+- `run_modular_base_img2img.py`
+- `run_modular_sdnq_distilled.py`
+- `run_modular_sdnq_base.py`
+- `run_modular_sdnq_distilled_img2img.py`
+- `run_modular_sdnq_base_img2img.py`
+
+DDO runners:
+
+- `run_dynamic_minimal.py`
+- `run_dynamic_modular_distilled.py`
+- `run_dynamic_old_distilled.py`
+- `run_dynamic_old_staged_distilled.py`
+
+Comparison runners:
+
+- `run_diffusers_mm_modular_distilled.py`
+
+## DDO Benchmark Interpretation
+
+- `auto` currently resolves to the preferred DDO path for the detected platform and model/backend.
+- `one_shot_fast` is the primary BF16 performance preset for staged LTX tests.
+- `diffusers_offload_compat` and `diffusers_leaf_offload_compat` are compatibility baselines using official Diffusers group offload paths.
+- For SDNQ or other quantized layers, DDO should preserve backend-specific modules. Prefer SDNQ runners or Diffusers-compatible offload presets unless a dedicated quantized adapter is intentionally being tested.
+- `diffusers-mm` results are comparison data only. Keep them separate from the normal runner recommendations.
 
 ## Working Rules
 
-- Do not revert unrelated dirty files. `app_distilled.py`, `run_distilled.py`, local Ubuntu logs, and local helper binaries may be user-owned unless the task explicitly targets them.
+- Do not revert unrelated dirty files or local user experiments.
 - Use `apply_patch` for manual edits.
-- Before changing experiment conclusions, check the latest pasted benchmark numbers and avoid resurrecting older assumptions.
+- Prefer `Get-ChildItem` and `Select-String` on this Windows environment if `rg` fails.
+- Before changing README runner lists or benchmark conclusions, inspect the current files and latest pasted benchmark numbers.
+- Keep docs model-agnostic when describing DDO. Keep LTX-specific behavior in this host repo's README or runner comments.

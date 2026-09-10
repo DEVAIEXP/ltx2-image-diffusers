@@ -2,25 +2,17 @@
 Local low-VRAM parity runner for the experimental LTX 2.3 distilled modular T2I blocks.
 """
 
+import argparse
 import json
 import os
-from pathlib import Path
 import time
+from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_MODULES_CACHE", str((Path(__file__).parent / ".hf_modules").resolve()))
 
 import torch
 from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler
-from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
-
-from custom_blocks.ltx2_image import LTX2ImageDistilledBlocks, LTX2ImageTextEncoderStep
-from custom_blocks.ltx2_image.connectors_ltx2_image import LTX2ImageTextConnectors
-from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
-    LTX2ImageConnectorStep,
-    LTX2ImageDenoiseStep,
-    LTX2ImagePrepareLatentsStep,
-)
 from diffusers_dynamic_offloader import (
     DynamicOffloadSettings,
     enable_offload,
@@ -30,51 +22,29 @@ from diffusers_dynamic_offloader import (
     maybe_purge_windows_standby_cache,
     remove_dynamic_offload,
 )
+from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
+
+from custom_blocks.ltx2_image import LTX2ImageDistilledBlocks, LTX2ImageTextEncoderStep
+from custom_blocks.ltx2_image.connectors_ltx2_image import LTX2ImageTextConnectors
+from custom_blocks.ltx2_image.modular_blocks_ltx2_image import (
+    LTX2ImageConnectorStep,
+    LTX2ImageDenoiseStep,
+    LTX2ImagePrepareLatentsStep,
+)
 from inference_utils import RunTracker, flush
 
-
-def env_value(name: str, default: str = "") -> str:
-    return os.environ.get(name, default)
-
-
-def parse_bool_env(name: str, default: str = "0") -> bool:
-    return env_value(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def parse_metrics_level() -> int:
-    value = env_value("DDO_RUNNER_METRICS_LEVEL", "0").strip()
-    try:
-        level = int(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid DDO_RUNNER_METRICS_LEVEL={value!r}. "
-            "Valid values: 0, 1, 2."
-        ) from exc
-    if level not in {0, 1, 2}:
-        raise ValueError(
-            f"Invalid DDO_RUNNER_METRICS_LEVEL={value!r}. "
-            "Valid values: 0, 1, 2."
-        )
-    return level
-
-
-RUNNING_ON_WSL = is_wsl_environment()
-DEVICE = env_value("DDO_RUNNER_DEVICE", "cuda:0")
+RUNNING_ON_WSL = False
+DEVICE = "cuda:0"
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
 MODEL_TAG = "distilled_modular"
-MODEL_PATH = env_value("DDO_RUNNER_MODEL_PATH", "elismasilva/ltx2.3-image-distilled-1.1")
+MODEL_PATH = "elismasilva/ltx2.3-image-distilled-1.1"
 TEXT_ENCODER_LOW_CPU_MEM_USAGE = True
-MODEL_LOW_CPU_MEM_USAGE = parse_bool_env("DDO_RUNNER_LOW_CPU_MEM_USAGE", "1")
-DYNAMIC_OFFLOAD_SETTINGS = DynamicOffloadSettings.from_env(
-    execution_device=DEVICE,
-    offload_device=OFFLOAD_DEVICE,
-    running_on_wsl=RUNNING_ON_WSL,
-    default_preset="auto",
-)
-REQUESTED_DYNAMIC_OFFLOAD_PRESET = DYNAMIC_OFFLOAD_SETTINGS.requested_preset
-DYNAMIC_OFFLOAD_PRESET = DYNAMIC_OFFLOAD_SETTINGS.effective_preset
+MODEL_LOW_CPU_MEM_USAGE = True
+DYNAMIC_OFFLOAD_SETTINGS = None
+REQUESTED_DYNAMIC_OFFLOAD_PRESET = "auto"
+DYNAMIC_OFFLOAD_PRESET = "auto"
 
 
 def preset_env(name: str, default: str = "") -> str:
@@ -90,40 +60,85 @@ def parse_bool_preset_env(name: str, default: str = "0") -> bool:
     return preset_env(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-TEXT_ENCODER_GROUP_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
-TEXT_ENCODER_DYNAMIC_OFFLOAD = parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD")
-TRANSFORMER_MEMORY_MANAGER = preset_env("DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER", "off").lower()
-DYNAMIC_OFFLOAD_CONFIG = DYNAMIC_OFFLOAD_SETTINGS.config
-DYNAMIC_OFFLOAD_EXECUTION_MODE = DYNAMIC_OFFLOAD_CONFIG.execution_mode
-DYNAMIC_OFFLOAD_PIN_CPU_MEMORY = DYNAMIC_OFFLOAD_SETTINGS.requested_pin_cpu_memory
-DYNAMIC_OFFLOAD_SHOW_PROFILE = DYNAMIC_OFFLOAD_CONFIG.show_profile
-DYNAMIC_OFFLOAD_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_OFFLOAD_SETTINGS.effective_pin_cpu_memory
-PRE_VAE_CLEANUP_REPEATS = int(preset_env("DDO_RUNNER_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
-RESET_DYNAMIC_MEMORY_AFTER_RUN = parse_bool_env("DDO_RUNNER_RESET_DYNAMIC_MEMORY_AFTER_RUN")
-METRICS_LEVEL = parse_metrics_level()
-SHOW_METRICS = METRICS_LEVEL >= 1 or parse_bool_env("DDO_RUNNER_SHOW_METRICS")
-SAVE_METRICS = METRICS_LEVEL >= 2 or parse_bool_env("DDO_RUNNER_SAVE_METRICS")
-WIDTH = int(env_value("DDO_RUNNER_WIDTH", "1280"))
-HEIGHT = int(env_value("DDO_RUNNER_HEIGHT", "704"))
-SEED = int(env_value("DDO_RUNNER_SEED", "43"))
-NUM_INFERENCE_STEPS = int(env_value("DDO_RUNNER_STEPS", "8"))
-GUIDANCE_SCALE = float(env_value("DDO_RUNNER_GUIDANCE_SCALE", "1.0"))
-GUIDANCE_RESCALE = float(env_value("DDO_RUNNER_GUIDANCE_RESCALE", "0.7"))
-DECODE_TIMESTEP = float(env_value("DDO_RUNNER_DECODE_TIMESTEP", "0.0"))
-DECODE_NOISE_SCALE_ENV = env_value("DDO_RUNNER_DECODE_NOISE_SCALE")
-DECODE_NOISE_SCALE = None if DECODE_NOISE_SCALE_ENV in (None, "") else float(DECODE_NOISE_SCALE_ENV)
-PAG_ENABLED = parse_bool_env("DDO_RUNNER_PAG_ENABLED")
-PAG_SCALE = float(env_value("DDO_RUNNER_PAG_SCALE", "0.2"))
-PAG_APPLIED_LAYERS = [int(x) for x in env_value("DDO_RUNNER_PAG_LAYERS", "28").split(",") if x]
-FAKE_PROMPT_EMBEDS = parse_bool_env("DDO_RUNNER_FAKE_PROMPT")
-GENERATION_REPEATS = max(1, int(preset_env("DDO_RUNNER_GENERATION_REPEATS", "1")))
-TRANSFORMER_PREPARE_REPEATS = max(1, int(preset_env("DDO_RUNNER_TRANSFORMER_PREPARE_REPEATS", "1")))
+TEXT_ENCODER_GROUP_OFFLOAD = True
+TEXT_ENCODER_DYNAMIC_OFFLOAD = False
+TRANSFORMER_MEMORY_MANAGER = "off"
+DYNAMIC_OFFLOAD_CONFIG = None
+DYNAMIC_OFFLOAD_EXECUTION_MODE = "linear_runtime"
+DYNAMIC_OFFLOAD_PIN_CPU_MEMORY = None
+DYNAMIC_OFFLOAD_SHOW_PROFILE = False
+DYNAMIC_OFFLOAD_EFFECTIVE_PIN_CPU_MEMORY = None
+PRE_VAE_CLEANUP_REPEATS = 1
+RESET_DYNAMIC_MEMORY_AFTER_RUN = False
+METRICS_LEVEL = 1
+SHOW_METRICS = True
+SAVE_METRICS = False
+SHOW_DENOISE_STEPS = True
+WIDTH = 1280
+HEIGHT = 704
+SEED = 43
+NUM_INFERENCE_STEPS = 8
+GUIDANCE_SCALE = 1.0
+GUIDANCE_RESCALE = 0.7
+DECODE_TIMESTEP = 0.0
+DECODE_NOISE_SCALE = None
+PAG_ENABLED = False
+PAG_SCALE = 0.2
+PAG_APPLIED_LAYERS = [28]
+FAKE_PROMPT_EMBEDS = False
+GENERATION_REPEATS = 1
+TRANSFORMER_PREPARE_REPEATS = 1
 
-prompt = env_value(
-    "DDO_RUNNER_PROMPT",
-    "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, with bright colors, realistic fur detail, and playful viral-pet energy.",
+prompt = (
+    "Fisheye close-up of a calico cat wearing a tiny flower crown, sniffing the camera lens in a sunny park, "
+    "with bright colors, realistic fur detail, and playful viral-pet energy."
 )
-negative_prompt = env_value("DDO_RUNNER_NEGATIVE_PROMPT", "")
+negative_prompt = ""
+
+
+def parse_optional_float(value: str | None) -> float | None:
+    if value in (None, ""):
+        return None
+    return float(value)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-path", default=MODEL_PATH)
+    parser.add_argument("--preset", default="auto")
+    parser.add_argument("--device", default=DEVICE)
+    parser.add_argument("--prompt", default=prompt)
+    parser.add_argument("--negative-prompt", default=negative_prompt)
+    parser.add_argument("--width", type=int, default=WIDTH)
+    parser.add_argument("--height", type=int, default=HEIGHT)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--steps", type=int, default=NUM_INFERENCE_STEPS)
+    parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
+    parser.add_argument("--guidance-rescale", type=float, default=GUIDANCE_RESCALE)
+    parser.add_argument("--decode-timestep", type=float, default=DECODE_TIMESTEP)
+    parser.add_argument("--decode-noise-scale", type=parse_optional_float, default=DECODE_NOISE_SCALE)
+    parser.add_argument("--pag", action=argparse.BooleanOptionalAction, default=PAG_ENABLED)
+    parser.add_argument("--pag-scale", type=float, default=PAG_SCALE)
+    parser.add_argument("--pag-layers", default=",".join(str(layer) for layer in PAG_APPLIED_LAYERS))
+    parser.add_argument("--fake-prompt", action=argparse.BooleanOptionalAction, default=FAKE_PROMPT_EMBEDS)
+    parser.add_argument("--generation-repeats", type=int, default=GENERATION_REPEATS)
+    parser.add_argument("--transformer-prepare-repeats", type=int, default=TRANSFORMER_PREPARE_REPEATS)
+    parser.add_argument("--pre-vae-cleanup-repeats", type=int, default=None)
+    parser.add_argument("--output-dir", default="outputs/ltx_image_modular")
+    parser.add_argument("--metrics-level", type=int, choices=(0, 1, 2), default=METRICS_LEVEL)
+    parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=SHOW_DENOISE_STEPS)
+    parser.add_argument("--low-cpu-mem-usage", action=argparse.BooleanOptionalAction, default=MODEL_LOW_CPU_MEM_USAGE)
+    parser.add_argument("--text-encoder-low-cpu-mem-usage", action=argparse.BooleanOptionalAction, default=TEXT_ENCODER_LOW_CPU_MEM_USAGE)
+    parser.add_argument("--text-encoder-group-offload", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--text-encoder-dynamic-offload", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--resident-module-budget-gb", type=float, default=None)
+    parser.add_argument("--max-resident-module-budget-gb", type=float, default=None)
+    parser.add_argument("--pin-weight-budget-gb", type=float, default=None)
+    parser.add_argument("--reset-dynamic-memory-after-run", action=argparse.BooleanOptionalAction, default=RESET_DYNAMIC_MEMORY_AFTER_RUN)
+    parser.add_argument("--print-presets", action="store_true")
+    return parser.parse_args()
 
 
 def build_run_slug(seed):
@@ -198,7 +213,7 @@ def denoise_progress_callback(components, step_index, timestep, callback_kwargs)
     reserved_gb = torch.cuda.memory_reserved(DEVICE) / 1024**3
     total_steps = len(denoise_progress_callback.timesteps)
     avg_elapsed = total_elapsed / (step_index + 1)
-    if SHOW_METRICS:
+    if SHOW_DENOISE_STEPS:
         print(
             f"  [denoise] step {step_index + 1}/{total_steps} timestep={float(timestep):.4f} "
             f"elapsed={step_elapsed:.4f}s avg={avg_elapsed:.4f}s/it "
@@ -209,9 +224,92 @@ def denoise_progress_callback(components, step_index, timestep, callback_kwargs)
 
 
 def main():
-    if parse_bool_env("DDO_RUNNER_PRINT_DYNAMIC_OFFLOAD_PRESETS"):
-        print(format_dynamic_offload_presets(default_preset="auto", running_on_wsl=RUNNING_ON_WSL))
+    global RUNNING_ON_WSL, DEVICE, MODEL_PATH, TEXT_ENCODER_LOW_CPU_MEM_USAGE, MODEL_LOW_CPU_MEM_USAGE
+    global DYNAMIC_OFFLOAD_SETTINGS, REQUESTED_DYNAMIC_OFFLOAD_PRESET, DYNAMIC_OFFLOAD_PRESET
+    global TEXT_ENCODER_GROUP_OFFLOAD, TEXT_ENCODER_DYNAMIC_OFFLOAD, TRANSFORMER_MEMORY_MANAGER
+    global DYNAMIC_OFFLOAD_CONFIG, DYNAMIC_OFFLOAD_EXECUTION_MODE, DYNAMIC_OFFLOAD_PIN_CPU_MEMORY
+    global DYNAMIC_OFFLOAD_SHOW_PROFILE, DYNAMIC_OFFLOAD_EFFECTIVE_PIN_CPU_MEMORY
+    global PRE_VAE_CLEANUP_REPEATS, RESET_DYNAMIC_MEMORY_AFTER_RUN
+    global METRICS_LEVEL, SHOW_METRICS, SAVE_METRICS, SHOW_DENOISE_STEPS
+    global WIDTH, HEIGHT, SEED, NUM_INFERENCE_STEPS, GUIDANCE_SCALE, GUIDANCE_RESCALE
+    global DECODE_TIMESTEP, DECODE_NOISE_SCALE, PAG_ENABLED, PAG_SCALE, PAG_APPLIED_LAYERS
+    global FAKE_PROMPT_EMBEDS, GENERATION_REPEATS, TRANSFORMER_PREPARE_REPEATS
+    global prompt, negative_prompt
+
+    args = parse_args()
+
+    RUNNING_ON_WSL = is_wsl_environment()
+    if args.print_presets:
+        print(format_dynamic_offload_presets(default_preset=args.preset, running_on_wsl=RUNNING_ON_WSL))
         return
+
+    DEVICE = args.device
+    MODEL_PATH = args.model_path
+    TEXT_ENCODER_LOW_CPU_MEM_USAGE = args.text_encoder_low_cpu_mem_usage
+    MODEL_LOW_CPU_MEM_USAGE = args.low_cpu_mem_usage
+
+    settings_environ = os.environ.copy()
+    if args.resident_module_budget_gb is not None:
+        settings_environ["DDO_RESIDENT_MODULE_BUDGET_GB"] = str(args.resident_module_budget_gb)
+    if args.max_resident_module_budget_gb is not None:
+        settings_environ["DDO_MAX_RESIDENT_MODULE_BUDGET_GB"] = str(args.max_resident_module_budget_gb)
+    if args.pin_weight_budget_gb is not None:
+        settings_environ["DDO_PIN_WEIGHT_BUDGET_GB"] = str(args.pin_weight_budget_gb)
+
+    settings_kwargs = {
+        "execution_device": DEVICE,
+        "offload_device": OFFLOAD_DEVICE,
+        "running_on_wsl": RUNNING_ON_WSL,
+        "default_preset": args.preset,
+        "environ": settings_environ,
+    }
+
+    DYNAMIC_OFFLOAD_SETTINGS = DynamicOffloadSettings.from_env(**settings_kwargs)
+    REQUESTED_DYNAMIC_OFFLOAD_PRESET = DYNAMIC_OFFLOAD_SETTINGS.requested_preset
+    DYNAMIC_OFFLOAD_PRESET = DYNAMIC_OFFLOAD_SETTINGS.effective_preset
+    DYNAMIC_OFFLOAD_CONFIG = DYNAMIC_OFFLOAD_SETTINGS.config
+    DYNAMIC_OFFLOAD_EXECUTION_MODE = DYNAMIC_OFFLOAD_CONFIG.execution_mode
+    DYNAMIC_OFFLOAD_PIN_CPU_MEMORY = DYNAMIC_OFFLOAD_SETTINGS.requested_pin_cpu_memory
+    DYNAMIC_OFFLOAD_SHOW_PROFILE = DYNAMIC_OFFLOAD_CONFIG.show_profile
+    DYNAMIC_OFFLOAD_EFFECTIVE_PIN_CPU_MEMORY = DYNAMIC_OFFLOAD_SETTINGS.effective_pin_cpu_memory
+
+    TEXT_ENCODER_GROUP_OFFLOAD = (
+        args.text_encoder_group_offload
+        if args.text_encoder_group_offload is not None
+        else parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_GROUP_OFFLOAD", "1")
+    )
+    TEXT_ENCODER_DYNAMIC_OFFLOAD = (
+        args.text_encoder_dynamic_offload
+        if args.text_encoder_dynamic_offload is not None
+        else parse_bool_preset_env("DDO_RUNNER_TEXT_ENCODER_DYNAMIC_OFFLOAD")
+    )
+    TRANSFORMER_MEMORY_MANAGER = preset_env("DDO_RUNNER_TRANSFORMER_MEMORY_MANAGER", "off").lower()
+    PRE_VAE_CLEANUP_REPEATS = (
+        args.pre_vae_cleanup_repeats
+        if args.pre_vae_cleanup_repeats is not None
+        else int(preset_env("DDO_RUNNER_PRE_VAE_CLEANUP_REPEATS", "3" if RUNNING_ON_WSL else "1"))
+    )
+    RESET_DYNAMIC_MEMORY_AFTER_RUN = args.reset_dynamic_memory_after_run
+    METRICS_LEVEL = args.metrics_level
+    SHOW_METRICS = args.show_metrics if args.show_metrics is not None else METRICS_LEVEL >= 1
+    SAVE_METRICS = args.save_metrics if args.save_metrics is not None else METRICS_LEVEL >= 2
+    SHOW_DENOISE_STEPS = args.show_denoise_steps
+    WIDTH = args.width
+    HEIGHT = args.height
+    SEED = args.seed
+    NUM_INFERENCE_STEPS = args.steps
+    GUIDANCE_SCALE = args.guidance_scale
+    GUIDANCE_RESCALE = args.guidance_rescale
+    DECODE_TIMESTEP = args.decode_timestep
+    DECODE_NOISE_SCALE = args.decode_noise_scale
+    PAG_ENABLED = args.pag
+    PAG_SCALE = args.pag_scale
+    PAG_APPLIED_LAYERS = [int(item.strip()) for item in args.pag_layers.split(",") if item.strip()]
+    FAKE_PROMPT_EMBEDS = args.fake_prompt
+    GENERATION_REPEATS = max(1, args.generation_repeats)
+    TRANSFORMER_PREPARE_REPEATS = max(1, args.transformer_prepare_repeats)
+    prompt = args.prompt
+    negative_prompt = args.negative_prompt
 
     seed = SEED or torch.randint(0, 2**32, (1,)).item()
     if not SEED:
@@ -219,7 +317,7 @@ def main():
     generator = torch.Generator(device="cpu").manual_seed(seed)
 
     run_slug = build_run_slug(seed)
-    output_dir = Path("outputs/ltx_image_modular")
+    output_dir = Path(args.output_dir)
     metrics_dir = output_dir / "metrics"
     run_metrics = {
         "run_slug": run_slug,
@@ -320,9 +418,6 @@ def main():
         )
         text_encoder_dynamic_offload_hook = text_encoder_offload.hook
         run_metrics["text_encoder_offload_route"] = text_encoder_offload.route
-        if text_encoder_offload.should_move_to_execution_device:
-            text_encoder.to(DEVICE)
-            record_event("load_text_encoder_to_cuda", time.time() - event_t0)
 
         event_t0 = time.time()
         tokenizer = GemmaTokenizerFast.from_pretrained(MODEL_PATH, subfolder="tokenizer")
@@ -486,9 +581,6 @@ def main():
                 time.time() - event_t0,
                 reason=f"dynamic_offload_{DYNAMIC_OFFLOAD_EXECUTION_MODE}",
             )
-        elif transformer_offload.should_move_to_execution_device:
-            prepared_transformer.to(DEVICE)
-            record_event(transformer_prepare_event_name("load_transformer_to_cuda", repeat_index), time.time() - event_t0)
         return prepared_transformer, prepared_dynamic_offload_hook
 
     transformer = None

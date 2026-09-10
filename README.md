@@ -87,6 +87,12 @@ Modular custom-block distilled I2I:
 python run_modular_distilled_img2img.py --input-image path\to\input.png
 ```
 
+DDO dynamic-offload distilled T2I:
+
+```powershell
+python run_dynamic_modular_distilled.py --preset auto
+```
+
 These commands use the tested defaults. Every `run*.py` script now accepts CLI arguments; use `--help` on any runner to see the supported prompt, size, seed, step, PAG, LoRA, metrics, and I2I options.
 
 ## Traditional Runners
@@ -143,6 +149,44 @@ python run_modular_distilled_img2img.py --input-image path\to\input.png --streng
 python run_modular_sdnq_distilled_img2img.py --input-image path\to\input.png --bits 8 --soft-lora
 python run_modular_base_img2img.py --input-image path\to\input.png
 python run_modular_sdnq_base_img2img.py --input-image path\to\input.png --bits 4
+```
+
+## Dynamic Offload Runners
+
+These scripts exercise `diffusers-dynamic-offloader` against the same LTX 2.3 distilled workload. They are kept separate from the regular runners so DDO comparisons stay explicit and reproducible.
+
+| Script | Pipeline style | Mode | Default preset | Purpose |
+| --- | --- | --- | --- | --- |
+| `run_dynamic_minimal.py` | modular custom blocks | T2I | `auto` | Minimal integration example for host apps. |
+| `run_dynamic_modular_distilled.py` | modular custom blocks, staged | T2I | `auto` | Main DDO benchmark runner for the modular LTX distilled path. |
+| `run_dynamic_old_distilled.py` | traditional Diffusers full pipeline | T2I | `auto` | Checks DDO on a regular pipeline object with component policies. |
+| `run_dynamic_old_staged_distilled.py` | traditional Diffusers components, staged | T2I | `auto` | Compares staged orchestration without Modular Diffusers blocks. |
+
+Dynamic examples:
+
+```powershell
+python run_dynamic_minimal.py --preset auto
+python run_dynamic_modular_distilled.py --preset one_shot_fast
+python run_dynamic_modular_distilled.py --preset diffusers_offload_compat
+python run_dynamic_old_distilled.py --preset one_shot_fast
+python run_dynamic_old_staged_distilled.py --preset one_shot_fast
+```
+
+Use `--print-presets` on the non-minimal dynamic runners to list the presets exposed by the installed DDO package. For SDNQ and other quantized backends, prefer the SDNQ runners or DDO's Diffusers-compatible presets, because DDO preserves backend-specific linear layers instead of replacing their quantized forward paths.
+
+## Comparison Runners
+
+These scripts are for local comparison against external memory/offload projects and are not part of the normal LTX workflow.
+
+| Script | Compared project | Mode | Notes |
+| --- | --- | --- | --- |
+| `run_diffusers_mm_modular_distilled.py` | `diffusers-mm` | T2I | Modular staged LTX distilled benchmark with `--mm-strategy` controls. |
+
+Comparison example:
+
+```powershell
+python run_diffusers_mm_modular_distilled.py --mm-strategy auto
+python run_diffusers_mm_modular_distilled.py --mm-strategy block_pin
 ```
 
 ## Apps

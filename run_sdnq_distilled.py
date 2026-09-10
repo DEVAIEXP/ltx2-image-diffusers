@@ -4,11 +4,9 @@ Standalone LTX 2.3 distilled SDNQ text-to-image inference script.
 
 import argparse
 import json
-import logging
 import os
-from pathlib import Path
 import time
-import warnings
+from pathlib import Path
 
 import torch
 from diffusers import AutoencoderKLLTX2Video
@@ -35,6 +33,9 @@ SOFT_LORA_PATH = "vrgamedevgirl84/LTX_2.3_Soft_Enhance_Style_LoRa"
 SOFT_LORA_WEIGHT_NAME = "LTX2.3_Soft_Enhance.safetensors"
 SOFT_LORA_ADAPTER_NAME = "soft"
 SOFT_LORA_SCALE = 0.15
+SHOW_METRICS = True
+SAVE_METRICS = True
+SHOW_DENOISE_STEPS = True
 parser = argparse.ArgumentParser()
 parser.add_argument("--bits", type=int, choices=(4, 8), default=8, help="SDNQ transformer bit depth.")
 parser.add_argument(
@@ -68,7 +69,9 @@ parser.add_argument("--pag", action="store_true")
 parser.add_argument("--pag-scale", type=float, default=0.2)
 parser.add_argument("--pag-layers", default="28")
 parser.add_argument("--output-dir", default="outputs/ltx_image")
-parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=SHOW_METRICS)
+parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
+parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=SHOW_DENOISE_STEPS)
 args = parser.parse_args()
 
 SDNQ_ENABLED = True
@@ -333,7 +336,7 @@ if args.soft_lora:
     )
 if active_lora_names:
     pipe.set_adapters(active_lora_names, adapter_weights=active_lora_scales)
-    record_event("activate_loras", 0.0, adapters=dict(zip(active_lora_names, active_lora_scales)))
+    record_event("activate_loras", 0.0, adapters=dict(zip(active_lora_names, active_lora_scales, strict=False)))
 
 _event_t0 = time.time()
 if SDNQ_BITS == 4:

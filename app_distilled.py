@@ -10,10 +10,8 @@ import os
 import time
 from pathlib import Path
 
-import torch
-from PIL import Image
-
 import gradio as gr
+import torch
 from diffusers import AutoencoderKLLTX2Video
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.models.transformers import LTX2ImageTransformer2DModel
@@ -131,7 +129,7 @@ def activate_loras(pipe, crisp_enabled, crisp_scale, soft_enabled, soft_scale):
         available = available_lora_adapters(pipe)
         active_adapters = [(name, scale) for name, scale in active_adapters if name in available]
         if active_adapters:
-            names, scales = zip(*active_adapters)
+            names, scales = zip(*active_adapters, strict=False)
             pipe.set_adapters(list(names), adapter_weights=list(scales))
     return active_adapters
 
@@ -211,8 +209,9 @@ def run_stage1(
     crisp_scale,
     soft_enabled,
     soft_scale,
-    progress=gr.Progress(),
+    progress=None,
 ):
+    progress = progress or gr.Progress()
     width, height = ensure_size(width, height)
     t0 = time.time()
     progress(0.05, desc="Encoding prompt")
@@ -302,8 +301,9 @@ def run_stage2(
     crisp_scale,
     soft_enabled,
     soft_scale,
-    progress=gr.Progress(),
+    progress=None,
 ):
+    progress = progress or gr.Progress()
     if image is None:
         raise gr.Error("I2I needs either the T2I result or an uploaded reference image.")
     width, height = ensure_size(width, height)
@@ -422,8 +422,9 @@ def run_app(
     stage2_crisp_scale,
     stage2_enhance_lora,
     stage2_soft_scale,
-    progress=gr.Progress(),
+    progress=None,
 ):
+    progress = progress or gr.Progress()
     if not prompt or not prompt.strip():
         raise gr.Error("Prompt is required.")
 
@@ -522,16 +523,15 @@ with gr.Blocks(title="LTX 2.3 Image - Distilled Model") as demo:
         seed = gr.Number(label="Seed", value=43, precision=0)
         stage2_only = gr.Checkbox(label="I2I only", value=False)
 
-    with gr.Accordion("Text-to-Image", open=True):
-        with gr.Row():
-            #stage1_bits = gr.Radio(label="Transformer", choices=["int8", "int4", "bf16"], value="int8")
-            stage1_pag = gr.Checkbox(label="PAG", value=False)
-            stage1_pag_scale = gr.Slider(label="PAG Scale", minimum=0.0, maximum=1.5, value=0.2, step=0.05)
-            stage1_pag_layers = gr.Textbox(label="PAG Layers", value="28")
-            stage1_crisp_lora = gr.Checkbox(label="Crisp LoRA", value=False)
-            stage1_crisp_scale = gr.Slider(label="Crisp Scale", minimum=0.0, maximum=2.0, value=0.3, step=0.05)
-            stage1_enhance_lora = gr.Checkbox(label="Enhance LoRA", value=False)
-            stage1_soft_scale = gr.Slider(label="Enhance Scale", minimum=0.0, maximum=2.0, value=0.15, step=0.05)
+    with gr.Accordion("Text-to-Image", open=True), gr.Row():
+        #stage1_bits = gr.Radio(label="Transformer", choices=["int8", "int4", "bf16"], value="int8")
+        stage1_pag = gr.Checkbox(label="PAG", value=False)
+        stage1_pag_scale = gr.Slider(label="PAG Scale", minimum=0.0, maximum=1.5, value=0.2, step=0.05)
+        stage1_pag_layers = gr.Textbox(label="PAG Layers", value="28")
+        stage1_crisp_lora = gr.Checkbox(label="Crisp LoRA", value=False)
+        stage1_crisp_scale = gr.Slider(label="Crisp Scale", minimum=0.0, maximum=2.0, value=0.3, step=0.05)
+        stage1_enhance_lora = gr.Checkbox(label="Enhance LoRA", value=False)
+        stage1_soft_scale = gr.Slider(label="Enhance Scale", minimum=0.0, maximum=2.0, value=0.15, step=0.05)
     with gr.Accordion("Image-to-Image", open=False):
         with gr.Row():
             enable_stage2 = gr.Checkbox(label="Enable I2I", value=False)
@@ -572,7 +572,7 @@ with gr.Blocks(title="LTX 2.3 Image - Distilled Model") as demo:
         width,
         height,
         seed,
-        stage2_only,        
+        stage2_only,
         stage1_pag,
         stage1_pag_scale,
         stage1_pag_layers,

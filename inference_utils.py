@@ -1,10 +1,11 @@
+import contextlib
 import ctypes
 import gc
 import importlib.metadata
 import os
-from pathlib import Path
 import threading
 import time
+from pathlib import Path
 
 import psutil
 import torch
@@ -46,10 +47,8 @@ def flush():
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
     if should_malloc_trim():
-        try:
+        with contextlib.suppress(Exception):
             ctypes.CDLL("libc.so.6").malloc_trim(0)
-        except Exception:
-            pass
 
 
 def get_ram_gb():

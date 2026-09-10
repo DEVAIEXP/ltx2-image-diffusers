@@ -3,15 +3,14 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import time
+from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_MODULES_CACHE", str((Path(__file__).parent / ".hf_modules").resolve()))
 
 import torch
 from diffusers.pipelines.ltx2.pipeline_ltx2_image import LTX2ImagePipeline
-
 from diffusers_dynamic_offloader import (
     DynamicOffloadSettings,
     enable_pipeline_offload,
@@ -20,8 +19,8 @@ from diffusers_dynamic_offloader import (
     maybe_purge_windows_standby_cache,
     remove_dynamic_offload,
 )
-from inference_utils import RunTracker, flush
 
+from inference_utils import RunTracker, flush
 
 DEVICE = "cuda:0"
 OFFLOAD_DEVICE = "cpu"
@@ -79,6 +78,8 @@ def parse_args():
     parser.add_argument("--pag-layers", default=",".join(map(str, PAG_APPLIED_LAYERS)))
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
     parser.add_argument("--metrics-level", type=int, choices=(0, 1, 2), default=1)
+    parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--print-presets", action="store_true")
     return parser.parse_args()
@@ -146,17 +147,10 @@ def print_routes(results: dict) -> None:
         print(f"  [ddo] {name}: route={result.route} preset={preset}", flush=True)
 
 
-def move_unmanaged_components(results: dict, device: str) -> list[str]:
-    moved = []
-    for name, result in results.items():
-        if result.should_move_to_execution_device:
-            result.module.to(device)
-            moved.append(name)
-    return moved
-
-
 def main():
     args = parse_args()
+    show_metrics = args.show_metrics if args.show_metrics is not None else args.metrics_level >= 1
+    save_metrics = args.save_metrics if args.save_metrics is not None else args.metrics_level >= 2
     running_on_wsl = is_wsl_environment()
     if args.print_presets:
         print(format_dynamic_offload_presets(default_preset=args.preset, running_on_wsl=running_on_wsl))
@@ -201,7 +195,7 @@ def main():
         "events": [],
         "steps": [],
     }
-    tracker = RunTracker(DEVICE, run_metrics, interval=0.1, show_metrics=args.metrics_level >= 1)
+    tracker = RunTracker(DEVICE, run_metrics, interval=0.1, show_metrics=show_metrics)
     record_event = tracker.record_event
 
     print(f"Using DDO old-pipeline preset: {settings.effective_preset}", flush=True)
@@ -232,12 +226,6 @@ def main():
     )
     record_event("setup_pipeline_dynamic_offload", time.time() - event_t0, components="auto" if components is None else list(components))
     print_routes(offload_results)
-
-    event_t0 = time.time()
-    moved_components = move_unmanaged_components(offload_results, DEVICE)
-    record_event("move_unmanaged_components_to_cuda", time.time() - event_t0, components=moved_components)
-    if moved_components:
-        print(f"  [ddo] moved unmanaged components to cuda: {moved_components}", flush=True)
     tracker.step_end("Load Pipeline", t0)
 
     callback = make_denoise_callback(DEVICE, args.steps, args.show_denoise_steps)
@@ -289,7 +277,7 @@ def main():
     run_metrics["global_peak_ram_gb"] = round(tracker.global_peak_ram, 4)
     run_metrics["output_path"] = str(output_path)
 
-    if args.metrics_level >= 2:
+    if save_metrics:
         metrics_dir.mkdir(parents=True, exist_ok=True)
         metrics_path = metrics_dir / f"{run_slug}.json"
         metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")

@@ -10,9 +10,9 @@ import argparse
 import json
 import logging
 import os
-from pathlib import Path
 import time
 import warnings
+from pathlib import Path
 
 import torch
 from diffusers.models.transformers import LTX2ImageTransformer2DModel
@@ -32,6 +32,9 @@ DTYPE = torch.bfloat16
 
 MODEL_TAG = "base_img2img"
 MODEL_PATH = r"elismasilva/ltx2.3-image-base"
+SHOW_METRICS = True
+SAVE_METRICS = True
+SHOW_DENOISE_STEPS = True
 
 LOW_CPU_MEM_USAGE = True
 GROUP_OFFLOAD_CONFIG = {
@@ -93,6 +96,9 @@ def parse_args():
     parser.add_argument("--crisp-lora-adapter-name", default=CRISP_LORA_ADAPTER_NAME)
     parser.add_argument("--crisp-lora-scale", type=float, default=CRISP_LORA_SCALE)
     parser.add_argument("--output-dir", default="outputs/ltx_image_img2img")
+    parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=SHOW_METRICS)
+    parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
+    parser.add_argument("--show-denoise-steps", action=argparse.BooleanOptionalAction, default=SHOW_DENOISE_STEPS)
     return parser.parse_args()
 
 
@@ -202,8 +208,6 @@ def main():
     if args.width % 32 != 0 or args.height % 32 != 0:
         raise ValueError("Width and height must be divisible by 32.")
 
-    sdnq_enabled = False
-    sdnq_model_path = None
     transformer_src = MODEL_PATH
     transformer_kind = "bf16"
     pag_layers = [int(item.strip()) for item in args.pag_layers.split(",") if item.strip()]
@@ -265,7 +269,7 @@ def main():
         "steps": [],
     }
 
-    tracker = RunTracker(DEVICE, run_metrics, interval=0.1)
+    tracker = RunTracker(DEVICE, run_metrics, interval=0.1, show_metrics=args.show_metrics)
     record_event = tracker.record_event
     step_start = tracker.step_start
     step_end = tracker.step_end
@@ -349,7 +353,7 @@ def main():
         available_adapters = available_lora_adapters(pipe)
         active_adapters = [(name, scale) for name, scale in active_adapters if name in available_adapters]
         if active_adapters:
-            names, scales = zip(*active_adapters)
+            names, scales = zip(*active_adapters, strict=False)
             pipe.set_adapters(list(names), adapter_weights=list(scales))
             record_event("activate_loras", 0.0, adapters=dict(active_adapters), available_adapters=sorted(available_adapters))
 

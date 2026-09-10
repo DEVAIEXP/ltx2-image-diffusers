@@ -1,6 +1,8 @@
 """
-Modular LTX 2.3 distilled image runner using official Diffusers group offloading.
+Modular LTX 2.3 distilled image runner using diffusers-mm.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -13,7 +15,6 @@ os.environ.setdefault("HF_MODULES_CACHE", str((Path(__file__).parent / ".hf_modu
 
 import torch
 from diffusers import AutoencoderKLLTX2Video, FlowMatchEulerDiscreteScheduler
-from diffusers.hooks import apply_group_offloading
 from diffusers.loaders.lora_pipeline import LTX2LoraLoaderMixin
 from transformers import Gemma3ForConditionalGeneration, GemmaTokenizerFast
 
@@ -31,23 +32,29 @@ DEVICE = "cuda:0"
 OFFLOAD_DEVICE = "cpu"
 DTYPE = torch.bfloat16
 
-MODEL_TAG = "distilled_modular_diffusers_group_offload"
+MODEL_TAG = "distilled_modular_diffusers_mm"
 MODEL_PATH = r"elismasilva/ltx2.3-image-distilled-1.1"
 LOW_CPU_MEM_USAGE = True
 
-GROUP_OFFLOAD_CONFIG = {
-    "text_encoder_offload_type": "leaf_level",
-    "text_encoder_use_stream": True,
-    "text_encoder_record_stream": False,
-    "text_encoder_low_cpu_mem_usage": True,
-    "text_encoder_num_blocks_per_group": 1,
-    "transformer_offload_type": "leaf_level",
-    "transformer_use_stream": True,
-    "transformer_record_stream": False,
-    "transformer_low_cpu_mem_usage": True,
-    "transformer_num_blocks_per_group": 1,
-}
-
+DIFFUSERS_MM_STRATEGY = "auto"
+TEXT_ENCODER_MM_STRATEGY = "group_offload"
+GROUP_OFFLOAD_USE_STREAM = True
+GROUP_OFFLOAD_LOW_CPU_MEM = True
+BLOCK_PIN_COUNT = None
+BLOCK_PIN_AUTO_EVICT = True
+BLOCK_PIN_SPILL_AWARE = True
+BLOCK_PIN_SPILL_MARGIN_GB = 0.5
+BLOCK_PIN_WORKLOAD_PROBE = True
+BLOCK_PIN_CALL_WORKLOAD = True
+AUTO_BLOCK_PIN_WORKING_SET_GB = None
+AUTO_BLOCK_PIN_WORKING_SET_WINDOWS_GB = None
+AUTO_BLOCK_PIN_ALLOCATOR_INFLATION = None
+AUTO_BLOCK_PIN_ALLOCATOR_INFLATION_WINDOWS = None
+AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_GB = None
+AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_WINDOWS_GB = None
+MM_VRAM_RESERVE_GB = None
+MM_VRAM_RESERVE_WINDOWS_GB = None
+MM_VRAM_RESERVE_WINDOWS_LARGE_CARD_EXTRA_GB = None
 WIDTH = 1280
 HEIGHT = 704
 SEED = 43
@@ -110,6 +117,51 @@ def parse_args():
     parser.add_argument("--soft-lora-weight-name", default=SOFT_LORA_WEIGHT_NAME)
     parser.add_argument("--soft-lora-adapter-name", default=SOFT_LORA_ADAPTER_NAME)
     parser.add_argument("--soft-lora-scale", type=float, default=SOFT_LORA_SCALE)
+    parser.add_argument(
+        "--mm-strategy",
+        choices=["auto", "no_offload", "model_offload", "group_offload", "block_pin"],
+        default=DIFFUSERS_MM_STRATEGY,
+        help="diffusers-mm strategy for the transformer.",
+    )
+    parser.add_argument(
+        "--text-encoder-mm-strategy",
+        choices=["auto", "no_offload", "model_offload", "group_offload", "block_pin"],
+        default=TEXT_ENCODER_MM_STRATEGY,
+        help="diffusers-mm strategy for the text encoder.",
+    )
+    parser.add_argument("--mm-use-stream", action=argparse.BooleanOptionalAction, default=GROUP_OFFLOAD_USE_STREAM)
+    parser.add_argument("--mm-low-cpu-mem", action=argparse.BooleanOptionalAction, default=GROUP_OFFLOAD_LOW_CPU_MEM)
+    parser.add_argument("--block-pin-count", type=int, default=BLOCK_PIN_COUNT)
+    parser.add_argument("--block-pin-auto-evict", action=argparse.BooleanOptionalAction, default=BLOCK_PIN_AUTO_EVICT)
+    parser.add_argument("--block-pin-spill-aware", action=argparse.BooleanOptionalAction, default=BLOCK_PIN_SPILL_AWARE)
+    parser.add_argument("--block-pin-spill-margin-gb", type=float, default=BLOCK_PIN_SPILL_MARGIN_GB)
+    parser.add_argument("--block-pin-workload-probe", action=argparse.BooleanOptionalAction, default=BLOCK_PIN_WORKLOAD_PROBE)
+    parser.add_argument("--block-pin-call-workload", action=argparse.BooleanOptionalAction, default=BLOCK_PIN_CALL_WORKLOAD)
+    parser.add_argument("--auto-block-pin-working-set-gb", type=float, default=AUTO_BLOCK_PIN_WORKING_SET_GB)
+    parser.add_argument("--auto-block-pin-working-set-windows-gb", type=float, default=AUTO_BLOCK_PIN_WORKING_SET_WINDOWS_GB)
+    parser.add_argument("--auto-block-pin-allocator-inflation", type=float, default=AUTO_BLOCK_PIN_ALLOCATOR_INFLATION)
+    parser.add_argument(
+        "--auto-block-pin-allocator-inflation-windows",
+        type=float,
+        default=AUTO_BLOCK_PIN_ALLOCATOR_INFLATION_WINDOWS,
+    )
+    parser.add_argument(
+        "--auto-block-pin-allocator-pool-overhead-gb",
+        type=float,
+        default=AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_GB,
+    )
+    parser.add_argument(
+        "--auto-block-pin-allocator-pool-overhead-windows-gb",
+        type=float,
+        default=AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_WINDOWS_GB,
+    )
+    parser.add_argument("--mm-vram-reserve-gb", type=float, default=MM_VRAM_RESERVE_GB)
+    parser.add_argument("--mm-vram-reserve-windows-gb", type=float, default=MM_VRAM_RESERVE_WINDOWS_GB)
+    parser.add_argument(
+        "--mm-vram-reserve-windows-large-card-extra-gb",
+        type=float,
+        default=MM_VRAM_RESERVE_WINDOWS_LARGE_CARD_EXTRA_GB,
+    )
     return parser.parse_args()
 
 
@@ -136,19 +188,73 @@ def build_run_slug(seed):
     )
 
 
-def apply_model_group_offload(model, *, prefix: str):
-    offload_type = GROUP_OFFLOAD_CONFIG[f"{prefix}_offload_type"]
-    kwargs = {
-        "onload_device": torch.device(DEVICE),
-        "offload_device": torch.device(OFFLOAD_DEVICE),
-        "offload_type": offload_type,
-        "use_stream": GROUP_OFFLOAD_CONFIG[f"{prefix}_use_stream"],
-        "record_stream": GROUP_OFFLOAD_CONFIG[f"{prefix}_record_stream"],
-        "low_cpu_mem_usage": GROUP_OFFLOAD_CONFIG[f"{prefix}_low_cpu_mem_usage"],
-    }
-    if offload_type == "block_level":
-        kwargs["num_blocks_per_group"] = GROUP_OFFLOAD_CONFIG[f"{prefix}_num_blocks_per_group"]
-    apply_group_offloading(model, **kwargs)
+def load_diffusers_mm():
+    try:
+        from diffusers_mm import ModelManager, block_pin_activation_scale
+    except ImportError as exc:
+        raise RuntimeError("Install diffusers-mm first, for example: uv pip install diffusers-mm") from exc
+    return ModelManager, block_pin_activation_scale
+
+
+def make_diffusers_mm_manager(strategy: str):
+    ModelManager, _ = load_diffusers_mm()
+    manager = ModelManager(
+        strategy=strategy,
+        group_offload_use_stream=GROUP_OFFLOAD_USE_STREAM,
+        group_offload_low_cpu_mem=GROUP_OFFLOAD_LOW_CPU_MEM,
+        block_pin_auto_evict=BLOCK_PIN_AUTO_EVICT,
+        block_pin_spill_aware=BLOCK_PIN_SPILL_AWARE,
+        block_pin_spill_margin_gb=BLOCK_PIN_SPILL_MARGIN_GB,
+        block_pin_workload_probe=BLOCK_PIN_WORKLOAD_PROBE,
+        block_pin_call_workload=BLOCK_PIN_CALL_WORKLOAD,
+        auto_block_pin_working_set_gb=AUTO_BLOCK_PIN_WORKING_SET_GB,
+        auto_block_pin_working_set_windows_gb=AUTO_BLOCK_PIN_WORKING_SET_WINDOWS_GB,
+        auto_block_pin_allocator_inflation=AUTO_BLOCK_PIN_ALLOCATOR_INFLATION,
+        auto_block_pin_allocator_inflation_windows=AUTO_BLOCK_PIN_ALLOCATOR_INFLATION_WINDOWS,
+        auto_block_pin_allocator_pool_overhead_gb=AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_GB,
+        auto_block_pin_allocator_pool_overhead_windows_gb=AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_WINDOWS_GB,
+    )
+    if MM_VRAM_RESERVE_GB is not None:
+        manager.VRAM_RESERVE_GB = float(MM_VRAM_RESERVE_GB)
+    if MM_VRAM_RESERVE_WINDOWS_GB is not None:
+        manager.VRAM_RESERVE_WINDOWS_GB = float(MM_VRAM_RESERVE_WINDOWS_GB)
+    if MM_VRAM_RESERVE_WINDOWS_LARGE_CARD_EXTRA_GB is not None:
+        manager.VRAM_RESERVE_WINDOWS_LARGE_CARD_EXTRA_GB = float(MM_VRAM_RESERVE_WINDOWS_LARGE_CARD_EXTRA_GB)
+    return manager
+
+
+def apply_diffusers_mm(
+    components: dict[str, torch.nn.Module],
+    *,
+    strategy: str,
+    event_name: str,
+    record_event,
+    seq_len: int | None = None,
+    batch: int = 1,
+    activation_scale: float = 1.0,
+) -> tuple[object, dict[str, torch.nn.Module]]:
+    source = dict(components)
+    manager = make_diffusers_mm_manager(strategy)
+    if seq_len is not None:
+        manager.set_block_pin_workload(seq_len, batch=batch, activation_scale=activation_scale)
+    event_t0 = time.time()
+    registered_components = manager.register_components(source)
+    if BLOCK_PIN_COUNT is not None and "transformer" in source:
+        manager.set_block_pin_count("transformer", BLOCK_PIN_COUNT)
+    applied_strategy = manager.apply_offload_strategy(torch.device(DEVICE))
+    record_event(
+        event_name,
+        time.time() - event_t0,
+        requested_strategy=strategy,
+        applied_strategy=applied_strategy,
+        registered_components=registered_components,
+        group_offload_use_stream=GROUP_OFFLOAD_USE_STREAM,
+        group_offload_low_cpu_mem=GROUP_OFFLOAD_LOW_CPU_MEM,
+        block_pin_count=BLOCK_PIN_COUNT,
+    )
+    print(f"  [diffusers-mm] {event_name}: requested={strategy} applied={applied_strategy}", flush=True)
+    return manager, source
+
 
 
 def cleanup_runtime_state(record_event, event_name: str):
@@ -241,6 +347,13 @@ def main():
     global GENERATION_REPEATS, SHOW_METRICS, SAVE_METRICS, SHOW_DENOISE_STEPS
     global CRISP_LORA_ENABLED, CRISP_LORA_PATH, CRISP_LORA_WEIGHT_NAME, CRISP_LORA_ADAPTER_NAME, CRISP_LORA_SCALE
     global SOFT_LORA_ENABLED, SOFT_LORA_PATH, SOFT_LORA_WEIGHT_NAME, SOFT_LORA_ADAPTER_NAME, SOFT_LORA_SCALE
+    global DIFFUSERS_MM_STRATEGY, TEXT_ENCODER_MM_STRATEGY, GROUP_OFFLOAD_USE_STREAM, GROUP_OFFLOAD_LOW_CPU_MEM
+    global BLOCK_PIN_COUNT, BLOCK_PIN_AUTO_EVICT, BLOCK_PIN_SPILL_AWARE, BLOCK_PIN_SPILL_MARGIN_GB
+    global BLOCK_PIN_WORKLOAD_PROBE, BLOCK_PIN_CALL_WORKLOAD
+    global AUTO_BLOCK_PIN_WORKING_SET_GB, AUTO_BLOCK_PIN_WORKING_SET_WINDOWS_GB
+    global AUTO_BLOCK_PIN_ALLOCATOR_INFLATION, AUTO_BLOCK_PIN_ALLOCATOR_INFLATION_WINDOWS
+    global AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_GB, AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_WINDOWS_GB
+    global MM_VRAM_RESERVE_GB, MM_VRAM_RESERVE_WINDOWS_GB, MM_VRAM_RESERVE_WINDOWS_LARGE_CARD_EXTRA_GB
     global prompt, negative_prompt
 
     args = parse_args()
@@ -269,6 +382,25 @@ def main():
     SOFT_LORA_WEIGHT_NAME = args.soft_lora_weight_name
     SOFT_LORA_ADAPTER_NAME = args.soft_lora_adapter_name
     SOFT_LORA_SCALE = args.soft_lora_scale
+    DIFFUSERS_MM_STRATEGY = args.mm_strategy
+    TEXT_ENCODER_MM_STRATEGY = args.text_encoder_mm_strategy
+    GROUP_OFFLOAD_USE_STREAM = args.mm_use_stream
+    GROUP_OFFLOAD_LOW_CPU_MEM = args.mm_low_cpu_mem
+    BLOCK_PIN_COUNT = args.block_pin_count
+    BLOCK_PIN_AUTO_EVICT = args.block_pin_auto_evict
+    BLOCK_PIN_SPILL_AWARE = args.block_pin_spill_aware
+    BLOCK_PIN_SPILL_MARGIN_GB = args.block_pin_spill_margin_gb
+    BLOCK_PIN_WORKLOAD_PROBE = args.block_pin_workload_probe
+    BLOCK_PIN_CALL_WORKLOAD = args.block_pin_call_workload
+    AUTO_BLOCK_PIN_WORKING_SET_GB = args.auto_block_pin_working_set_gb
+    AUTO_BLOCK_PIN_WORKING_SET_WINDOWS_GB = args.auto_block_pin_working_set_windows_gb
+    AUTO_BLOCK_PIN_ALLOCATOR_INFLATION = args.auto_block_pin_allocator_inflation
+    AUTO_BLOCK_PIN_ALLOCATOR_INFLATION_WINDOWS = args.auto_block_pin_allocator_inflation_windows
+    AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_GB = args.auto_block_pin_allocator_pool_overhead_gb
+    AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_WINDOWS_GB = args.auto_block_pin_allocator_pool_overhead_windows_gb
+    MM_VRAM_RESERVE_GB = args.mm_vram_reserve_gb
+    MM_VRAM_RESERVE_WINDOWS_GB = args.mm_vram_reserve_windows_gb
+    MM_VRAM_RESERVE_WINDOWS_LARGE_CARD_EXTRA_GB = args.mm_vram_reserve_windows_large_card_extra_gb
     prompt = args.prompt
     negative_prompt = args.negative_prompt
 
@@ -303,8 +435,28 @@ def main():
         "lora_enabled": SOFT_LORA_ENABLED or CRISP_LORA_ENABLED,
         "lora_adapters": [],
         "dtype": str(DTYPE),
-        "offload_backend": "diffusers_group_offloading",
-        "group_offload_config": GROUP_OFFLOAD_CONFIG.copy(),
+        "offload_backend": "diffusers_mm",
+        "diffusers_mm_config": {
+            "transformer_strategy": DIFFUSERS_MM_STRATEGY,
+            "text_encoder_strategy": TEXT_ENCODER_MM_STRATEGY,
+            "group_offload_use_stream": GROUP_OFFLOAD_USE_STREAM,
+            "group_offload_low_cpu_mem": GROUP_OFFLOAD_LOW_CPU_MEM,
+            "block_pin_count": BLOCK_PIN_COUNT,
+            "block_pin_auto_evict": BLOCK_PIN_AUTO_EVICT,
+            "block_pin_spill_aware": BLOCK_PIN_SPILL_AWARE,
+            "block_pin_spill_margin_gb": BLOCK_PIN_SPILL_MARGIN_GB,
+            "block_pin_workload_probe": BLOCK_PIN_WORKLOAD_PROBE,
+            "block_pin_call_workload": BLOCK_PIN_CALL_WORKLOAD,
+            "auto_block_pin_working_set_gb": AUTO_BLOCK_PIN_WORKING_SET_GB,
+            "auto_block_pin_working_set_windows_gb": AUTO_BLOCK_PIN_WORKING_SET_WINDOWS_GB,
+            "auto_block_pin_allocator_inflation": AUTO_BLOCK_PIN_ALLOCATOR_INFLATION,
+            "auto_block_pin_allocator_inflation_windows": AUTO_BLOCK_PIN_ALLOCATOR_INFLATION_WINDOWS,
+            "auto_block_pin_allocator_pool_overhead_gb": AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_GB,
+            "auto_block_pin_allocator_pool_overhead_windows_gb": AUTO_BLOCK_PIN_ALLOCATOR_POOL_OVERHEAD_WINDOWS_GB,
+            "mm_vram_reserve_gb": MM_VRAM_RESERVE_GB,
+            "mm_vram_reserve_windows_gb": MM_VRAM_RESERVE_WINDOWS_GB,
+            "mm_vram_reserve_windows_large_card_extra_gb": MM_VRAM_RESERVE_WINDOWS_LARGE_CARD_EXTRA_GB,
+        },
         "events": [],
         "steps": [],
     }
@@ -315,9 +467,9 @@ def main():
     step_end = tracker.step_end
     denoise_progress_callback = make_denoise_progress_callback(tracker)
 
-    print("Using modular Diffusers group offload baseline", flush=True)
+    print("Using diffusers-mm modular comparison runner", flush=True)
     print(
-        f"  text_encoder=leaf group offload transformer=leaf group offload "
+        f"  text_encoder_strategy={TEXT_ENCODER_MM_STRATEGY} transformer_strategy={DIFFUSERS_MM_STRATEGY} "
         f"model_path={MODEL_PATH}",
         flush=True,
     )
@@ -334,14 +486,11 @@ def main():
     )
     record_event("load_text_encoder", time.time() - event_t0, source=MODEL_PATH)
 
-    event_t0 = time.time()
-    apply_model_group_offload(text_encoder, prefix="text_encoder")
-    record_event(
-        "setup_text_encoder_group_offload",
-        time.time() - event_t0,
-        offload_type=GROUP_OFFLOAD_CONFIG["text_encoder_offload_type"],
-        use_stream=GROUP_OFFLOAD_CONFIG["text_encoder_use_stream"],
-        record_stream=GROUP_OFFLOAD_CONFIG["text_encoder_record_stream"],
+    text_encoder_mm, text_encoder_source = apply_diffusers_mm(
+        {"text_encoder": text_encoder},
+        strategy=TEXT_ENCODER_MM_STRATEGY,
+        event_name="setup_text_encoder_diffusers_mm",
+        record_event=record_event,
     )
 
     event_t0 = time.time()
@@ -354,7 +503,7 @@ def main():
     record_event("build_prompt_modular_pipeline", time.time() - event_t0, model_path=MODEL_PATH)
 
     event_t0 = time.time()
-    with torch.inference_mode():
+    with torch.inference_mode(), text_encoder_mm.device_scope(device=DEVICE, dtype=DTYPE):
         prompt_state = prompt_pipe(
             prompt=prompt,
             negative_prompt=negative_prompt,
@@ -379,7 +528,8 @@ def main():
     if SHOW_METRICS:
         print(f"  prompt_embeds shape: {prompt_embeds.shape}")
 
-    del prompt_state, prompt_pipe, text_encoder, tokenizer
+    text_encoder_mm.unregister_components(text_encoder_source)
+    del prompt_state, prompt_pipe, text_encoder, tokenizer, text_encoder_mm, text_encoder_source
     cleanup_runtime_state(record_event, "cleanup_after_text_encoder")
     step_end("Pass 0: Encode prompts", t0)
 
@@ -426,6 +576,7 @@ def main():
     del connector_state, connector_pipe, connectors, prompt_embeds, prompt_attention_mask
     cleanup_runtime_state(record_event, "cleanup_after_connectors")
 
+
     transformer_load_kwargs = {
         "subfolder": "transformer",
         "torch_dtype": prompt_dtype,
@@ -468,15 +619,17 @@ def main():
             active_adapters.append(adapter)
     activate_loras(transformer, active_adapters, record_event)
 
-    event_t0 = time.time()
-    apply_model_group_offload(transformer, prefix="transformer")
-    record_event(
-        "setup_transformer_group_offload",
-        time.time() - event_t0,
-        offload_type=GROUP_OFFLOAD_CONFIG["transformer_offload_type"],
-        use_stream=GROUP_OFFLOAD_CONFIG["transformer_use_stream"],
-        record_stream=GROUP_OFFLOAD_CONFIG["transformer_record_stream"],
-        low_cpu_mem_usage=GROUP_OFFLOAD_CONFIG["transformer_low_cpu_mem_usage"],
+    latent_seq_len = max(1, (WIDTH // 32) * (HEIGHT // 32))
+    transformer_forward_batch = max(1, latent_batch_size * transformer_batch_multiplier)
+    lora_count = int(SOFT_LORA_ENABLED) + int(CRISP_LORA_ENABLED)
+    transformer_mm, transformer_source = apply_diffusers_mm(
+        {"transformer": transformer},
+        strategy=DIFFUSERS_MM_STRATEGY,
+        event_name="setup_transformer_diffusers_mm",
+        record_event=record_event,
+        seq_len=latent_seq_len,
+        batch=transformer_forward_batch,
+        activation_scale=load_diffusers_mm()[1](lora_count=lora_count),
     )
 
     event_t0 = time.time()
@@ -522,26 +675,27 @@ def main():
         denoise_progress_callback.step_times = []
         print(f"  Starting denoise loop{repeat_suffix}", flush=True)
         event_t0 = time.time()
-        denoise_state = denoise_pipe(
-            latents=prepare_state["latents"],
-            timesteps=prepare_state["timesteps"],
-            connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
-            connector_attention_mask=connector_attention_mask.to(device=DEVICE),
-            latent_height=prepare_state["latent_height"],
-            latent_width=prepare_state["latent_width"],
-            video_rotary_emb=prepare_state["video_rotary_emb"],
+        with transformer_mm.device_scope(device=DEVICE, dtype=DTYPE):
+            denoise_state = denoise_pipe(
+                latents=prepare_state["latents"],
+                timesteps=prepare_state["timesteps"],
+                connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
+                connector_attention_mask=connector_attention_mask.to(device=DEVICE),
+                latent_height=prepare_state["latent_height"],
+                latent_width=prepare_state["latent_width"],
+                video_rotary_emb=prepare_state["video_rotary_emb"],
             batch_size=latent_batch_size,
             transformer_batch_multiplier=transformer_batch_multiplier,
-            do_classifier_free_guidance=False,
-            do_perturbed_attention_guidance=do_perturbed_attention_guidance,
+                do_classifier_free_guidance=False,
+                do_perturbed_attention_guidance=do_perturbed_attention_guidance,
             guidance_scale=GUIDANCE_SCALE,
-            guidance_rescale=GUIDANCE_RESCALE,
-            pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
-            pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
-            callback_on_step_end=denoise_progress_callback,
-            callback_on_step_end_tensor_inputs=["latents"],
-            output="latents",
-        )
+                guidance_rescale=GUIDANCE_RESCALE,
+                pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
+                pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
+                callback_on_step_end=denoise_progress_callback,
+                callback_on_step_end_tensor_inputs=["latents"],
+                output="latents",
+            )
         record_event(
             f"denoise_modular_pipe_call{repeat_suffix}",
             time.time() - event_t0,
@@ -560,8 +714,9 @@ def main():
             print(f"  Image latent: {image_latent.shape}")
         del prepare_state, denoise_state
 
+    transformer_mm.unregister_components(transformer_source)
     del connector_prompt_embeds, connector_attention_mask
-    del prepare_pipe, denoise_pipe, transformer, scheduler
+    del prepare_pipe, denoise_pipe, transformer, scheduler, transformer_mm, transformer_source
     cleanup_runtime_state(record_event, "cleanup_before_vae_decode")
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
 
