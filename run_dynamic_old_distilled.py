@@ -10,11 +10,13 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("HF_MODULES_CACHE", str((Path(__file__).parent / ".hf_modules").resolve()))
 
 import torch
+from diffusers.models.transformers import LTX2ImageTransformer2DModel
 from diffusers.pipelines.ltx2.pipeline_ltx2_image import LTX2ImagePipeline
 from diffusers_dynamic_offloader import (
     DynamicOffloadSettings,
     enable_pipeline_offload,
     format_dynamic_offload_presets,
+    from_pretrained_with_dynamic_offload,
     is_wsl_environment,
     maybe_purge_windows_standby_cache,
     remove_dynamic_offload,
@@ -207,12 +209,36 @@ def main():
 
     t0 = tracker.step_start("Load Pipeline")
     event_t0 = time.time()
+    transformer_load = from_pretrained_with_dynamic_offload(
+        args.model_path,
+        model_loader=LTX2ImageTransformer2DModel,
+        dynamic_offload_config=settings.config if settings.enabled else None,
+        apply_dynamic=False,
+        subfolder="transformer",
+        torch_dtype=DTYPE,
+        device_map="cpu",
+    )
+    transformer = transformer_load.module
+    record_event(
+        "load_transformer_with_dynamic_offload",
+        time.time() - event_t0,
+        source=args.model_path,
+        device_map="cpu",
+        loader="LTX2ImageTransformer2DModel",
+    )
+
+    event_t0 = time.time()
     pipe = LTX2ImagePipeline.from_pretrained(
         args.model_path,
+        transformer=transformer,
         torch_dtype=DTYPE,
         low_cpu_mem_usage=True,
     )
-    record_event("load_pipeline", time.time() - event_t0, model_path=args.model_path)
+    record_event(
+        "load_pipeline_without_transformer",
+        time.time() - event_t0,
+        model_path=args.model_path,
+    )
 
     event_t0 = time.time()
     offload_results = enable_pipeline_offload(
