@@ -24,6 +24,7 @@ from diffusers_dynamic_offloader import (
     enable_offload,
     enable_pipeline_offload,
     format_dynamic_offload_presets,
+    from_pretrained_with_dynamic_offload,
     is_wsl_environment,
     maybe_purge_windows_standby_cache,
     remove_dynamic_offload,
@@ -259,12 +260,16 @@ def main():
 
     t0 = tracker.step_start(f"Pass 1: Generate at {args.width}x{args.height}")
     event_t0 = time.time()
-    transformer = LTX2ImageTransformer2DModel.from_pretrained(
+    transformer_load = from_pretrained_with_dynamic_offload(
         args.model_path,
+        model_loader=LTX2ImageTransformer2DModel,
+        dynamic_offload_config=settings.config if settings.enabled else None,
+        apply_dynamic=False,
         subfolder="transformer",
         torch_dtype=DTYPE,
         device_map="cpu",
     )
+    transformer = transformer_load.module
     record_event("load_transformer", time.time() - event_t0, source=args.model_path)
 
     event_t0 = time.time()
