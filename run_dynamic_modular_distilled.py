@@ -123,6 +123,19 @@ def parse_args():
     parser.add_argument("--fake-prompt", action=argparse.BooleanOptionalAction, default=FAKE_PROMPT_EMBEDS)
     parser.add_argument("--generation-repeats", type=int, default=GENERATION_REPEATS)
     parser.add_argument("--transformer-prepare-repeats", type=int, default=TRANSFORMER_PREPARE_REPEATS)
+    parser.add_argument("--ddo-profile", default=None, help="Named DDO denoise workload profile.")
+    parser.add_argument(
+        "--build-ddo-profile",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Calibrate the named DDO profile with a zero-resident denoise run.",
+    )
+    parser.add_argument(
+        "--ddo-profile-steps",
+        type=int,
+        default=2,
+        help="Denoise steps used only by --build-ddo-profile (default: 2).",
+    )
     parser.add_argument("--pre-vae-cleanup-repeats", type=int, default=None)
     parser.add_argument("--output-dir", default="outputs/ltx_image_modular")
     parser.add_argument("--metrics-level", type=int, choices=(0, 1, 2), default=METRICS_LEVEL)
@@ -238,6 +251,9 @@ def main():
 
     args = parse_args()
 
+    if args.build_ddo_profile and not args.ddo_profile:
+        raise SystemExit("--build-ddo-profile requires --ddo-profile NAME")
+
     RUNNING_ON_WSL = is_wsl_environment()
     if args.print_presets:
         print(format_dynamic_offload_presets(default_preset=args.preset, running_on_wsl=RUNNING_ON_WSL))
@@ -298,6 +314,11 @@ def main():
     HEIGHT = args.height
     SEED = args.seed
     NUM_INFERENCE_STEPS = args.steps
+    active_inference_steps = (
+        max(1, min(NUM_INFERENCE_STEPS, args.ddo_profile_steps))
+        if args.build_ddo_profile
+        else NUM_INFERENCE_STEPS
+    )
     GUIDANCE_SCALE = args.guidance_scale
     GUIDANCE_RESCALE = args.guidance_rescale
     DECODE_TIMESTEP = args.decode_timestep
@@ -327,6 +348,9 @@ def main():
         "height": HEIGHT,
         "seed": seed,
         "num_inference_steps": NUM_INFERENCE_STEPS,
+        "active_inference_steps": active_inference_steps,
+        "ddo_profile_name": args.ddo_profile,
+        "build_ddo_profile": args.build_ddo_profile,
         "generation_repeats": GENERATION_REPEATS,
         "transformer_prepare_repeats": TRANSFORMER_PREPARE_REPEATS,
         "guidance_scale": GUIDANCE_SCALE,
@@ -573,6 +597,8 @@ def main():
             record_event=record_event,
             dynamic_event_name=transformer_prepare_event_name("build_dynamic_offload_plan", repeat_index),
             group_event_name=transformer_prepare_event_name("setup_transformer_group_offload", repeat_index),
+            profile_name=args.ddo_profile or "",
+            build_profile=args.build_ddo_profile,
         )
         prepared_dynamic_offload_hook = transformer_offload.hook
         if transformer_offload.route == "dynamic_offload" and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan":
@@ -581,17 +607,18 @@ def main():
                 time.time() - event_t0,
                 reason=f"dynamic_offload_{DYNAMIC_OFFLOAD_EXECUTION_MODE}",
             )
-        return prepared_transformer, prepared_dynamic_offload_hook
+        return prepared_transformer, prepared_dynamic_offload_hook, transformer_offload
 
     transformer = None
     dynamic_offload_hook = None
+    transformer_offload = None
     for prepare_repeat_index in range(TRANSFORMER_PREPARE_REPEATS):
         if TRANSFORMER_PREPARE_REPEATS > 1:
             print(
                 f"  Transformer prepare repeat {prepare_repeat_index + 1}/{TRANSFORMER_PREPARE_REPEATS}",
                 flush=True,
             )
-        transformer, dynamic_offload_hook = load_and_prepare_transformer(prepare_repeat_index)
+        transformer, dynamic_offload_hook, transformer_offload = load_and_prepare_transformer(prepare_repeat_index)
         if prepare_repeat_index + 1 < TRANSFORMER_PREPARE_REPEATS:
             if dynamic_offload_enabled:
                 remove_dynamic_offload(transformer)
@@ -628,7 +655,7 @@ def main():
         prepare_state = prepare_pipe(
             width=WIDTH,
             height=HEIGHT,
-            num_inference_steps=NUM_INFERENCE_STEPS,
+            num_inference_steps=active_inference_steps,
             batch_size=latent_batch_size,
             transformer_batch_multiplier=transformer_batch_multiplier,
             generator=generator,
@@ -642,26 +669,27 @@ def main():
         denoise_progress_callback.step_times = []
         print(f"  Starting denoise loop{repeat_suffix}", flush=True)
         event_t0 = time.time()
-        denoise_state = denoise_pipe(
-            latents=prepare_state["latents"],
-            timesteps=prepare_state["timesteps"],
-            connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
-            connector_attention_mask=connector_attention_mask.to(device=DEVICE),
-            latent_height=prepare_state["latent_height"],
-            latent_width=prepare_state["latent_width"],
-            video_rotary_emb=prepare_state["video_rotary_emb"],
-            batch_size=latent_batch_size,
-            transformer_batch_multiplier=transformer_batch_multiplier,
-            do_classifier_free_guidance=False,
-            do_perturbed_attention_guidance=do_perturbed_attention_guidance,
-            guidance_scale=GUIDANCE_SCALE,
-            guidance_rescale=GUIDANCE_RESCALE,
-            pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
-            pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
-            callback_on_step_end=denoise_progress_callback,
-            callback_on_step_end_tensor_inputs=["latents"],
-            output="latents",
-        )
+        with transformer_offload.profile_run() as ddo_profile_report:
+            denoise_state = denoise_pipe(
+                latents=prepare_state["latents"],
+                timesteps=prepare_state["timesteps"],
+                connector_prompt_embeds=connector_prompt_embeds.to(device=DEVICE, dtype=DTYPE),
+                connector_attention_mask=connector_attention_mask.to(device=DEVICE),
+                latent_height=prepare_state["latent_height"],
+                latent_width=prepare_state["latent_width"],
+                video_rotary_emb=prepare_state["video_rotary_emb"],
+                batch_size=latent_batch_size,
+                transformer_batch_multiplier=transformer_batch_multiplier,
+                do_classifier_free_guidance=False,
+                do_perturbed_attention_guidance=do_perturbed_attention_guidance,
+                guidance_scale=GUIDANCE_SCALE,
+                guidance_rescale=GUIDANCE_RESCALE,
+                pag_scale=PAG_SCALE if PAG_ENABLED else 0.0,
+                pag_applied_layers=PAG_APPLIED_LAYERS if PAG_ENABLED else None,
+                callback_on_step_end=denoise_progress_callback,
+                callback_on_step_end_tensor_inputs=["latents"],
+                output="latents",
+            )
         record_event(
             f"denoise_modular_pipe_call{repeat_suffix}",
             time.time() - event_t0,
@@ -680,6 +708,8 @@ def main():
             print(f"  Image latent: {image_latent.shape}")
         del prepare_state, denoise_state
 
+    run_metrics["ddo_profile"] = ddo_profile_report
+
     if dynamic_offload_enabled and DYNAMIC_OFFLOAD_EXECUTION_MODE != "plan":
         run_metrics["dynamic_offload_runtime_summary"] = dynamic_offload_hook.state.as_dict()
         if DYNAMIC_OFFLOAD_SHOW_PROFILE:
@@ -693,6 +723,19 @@ def main():
     del prepare_pipe, denoise_pipe, transformer, scheduler
     cleanup_before_vae_decode(record_event)
     step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
+
+    if args.build_ddo_profile:
+        run_metrics["total_elapsed_sec"] = round(tracker.total_elapsed(), 4)
+        run_metrics["global_peak_vram_gb"] = round(tracker.global_peak_vram, 4)
+        run_metrics["global_peak_ram_gb"] = round(tracker.global_peak_ram, 4)
+        if SAVE_METRICS:
+            metrics_dir.mkdir(parents=True, exist_ok=True)
+            metrics_path = metrics_dir / f"{run_slug}_ddo_profile.json"
+            metrics_path.write_text(json.dumps(run_metrics, indent=2), encoding="utf-8")
+            print(f"  Metrics JSON: {metrics_path}")
+        print(f"  DDO profile calibration complete: {ddo_profile_report}")
+        return
+
     t0 = step_start("Pass 2: Decode VAE")
 
     event_t0 = time.time()

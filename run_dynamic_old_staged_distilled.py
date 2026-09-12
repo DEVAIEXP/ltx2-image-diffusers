@@ -78,6 +78,9 @@ def parse_args():
     parser.add_argument("--steps", type=int, default=NUM_INFERENCE_STEPS)
     parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
     parser.add_argument("--guidance-rescale", type=float, default=GUIDANCE_RESCALE)
+    parser.add_argument("--ddo-profile", default=None, help="Named DDO denoise workload profile.")
+    parser.add_argument("--build-ddo-profile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--ddo-profile-steps", type=int, default=2)
     parser.add_argument("--decode-timestep", type=float, default=DECODE_TIMESTEP)
     parser.add_argument("--decode-noise-scale", type=float, default=DECODE_NOISE_SCALE)
     parser.add_argument("--pag", action="store_true", default=PAG_ENABLED)
@@ -156,6 +159,9 @@ def print_routes(results: dict) -> None:
 
 def main():
     args = parse_args()
+    if args.build_ddo_profile and not args.ddo_profile:
+        raise SystemExit("--build-ddo-profile requires --ddo-profile NAME")
+    active_steps = max(1, min(args.steps, args.ddo_profile_steps)) if args.build_ddo_profile else args.steps
     show_metrics = args.show_metrics if args.show_metrics is not None else args.metrics_level >= 1
     save_metrics = args.save_metrics if args.save_metrics is not None else args.metrics_level >= 2
     running_on_wsl = is_wsl_environment()
@@ -187,6 +193,9 @@ def main():
         "height": args.height,
         "seed": seed,
         "num_inference_steps": args.steps,
+        "active_inference_steps": active_steps,
+        "ddo_profile_name": args.ddo_profile,
+        "build_ddo_profile": args.build_ddo_profile,
         "guidance_scale": args.guidance_scale,
         "guidance_rescale": args.guidance_rescale,
         "vae_decode_timestep": args.decode_timestep,
@@ -287,12 +296,24 @@ def main():
     denoise_results = enable_pipeline_offload(
         denoise_pipe,
         settings=settings,
-        components=("connectors", "transformer"),
+        components=("connectors",),
         execution_device=DEVICE,
         offload_device=OFFLOAD_DEVICE,
         low_cpu_mem_usage=True,
         record_event=record_event,
     )
+    transformer_result = enable_offload(
+        denoise_pipe.transformer,
+        settings=settings,
+        component="transformer",
+        execution_device=DEVICE,
+        offload_device=OFFLOAD_DEVICE,
+        low_cpu_mem_usage=True,
+        record_event=record_event,
+        profile_name=args.ddo_profile or "",
+        build_profile=args.build_ddo_profile,
+    )
+    denoise_results["transformer"] = transformer_result
     print_routes(denoise_results)
     record_event("setup_denoise_dynamic_offload", time.time() - event_t0)
     maybe_purge_windows_standby_cache(settings, "before_transformer", record_event=record_event)
@@ -302,14 +323,15 @@ def main():
     callback.last_time = callback.start_time
 
     event_t0 = time.time()
-    image_latent = denoise_pipe(
+    with transformer_result.profile_run() as ddo_profile_report:
+        image_latent = denoise_pipe(
         prompt_embeds=prompt_embeds.to(device=DEVICE, dtype=DTYPE),
         prompt_attention_mask=prompt_attention_mask.to(device=DEVICE),
         negative_prompt_embeds=None,
         negative_prompt_attention_mask=None,
         width=args.width,
         height=args.height,
-        num_inference_steps=args.steps,
+        num_inference_steps=active_steps,
         guidance_scale=args.guidance_scale,
         guidance_rescale=args.guidance_rescale,
         decode_timestep=args.decode_timestep,
@@ -321,8 +343,9 @@ def main():
         return_dict=False,
         callback_on_step_end=callback,
         callback_on_step_end_tensor_inputs=["latents"],
-    )[0]
+        )[0]
     record_event("denoise_pipe_call", time.time() - event_t0)
+    run_metrics["ddo_profile"] = ddo_profile_report
     run_metrics["denoise_step_times"] = callback.step_times
     print(f"  Image latent: {image_latent.shape}", flush=True)
     image_latent = image_latent.to(OFFLOAD_DEVICE)
@@ -334,6 +357,11 @@ def main():
     del denoise_pipe, transformer, prompt_embeds, prompt_attention_mask
     cleanup_runtime_state(record_event, "cleanup_before_vae_decode")
     tracker.step_end(f"Pass 1: Generate at {args.width}x{args.height}", t0)
+
+    if args.build_ddo_profile:
+        maybe_purge_windows_standby_cache(settings, "after_run", record_event=record_event)
+        print(f"  DDO profile calibration complete: {ddo_profile_report}")
+        return
 
     t0 = tracker.step_start("Pass 2: Decode VAE")
     event_t0 = time.time()

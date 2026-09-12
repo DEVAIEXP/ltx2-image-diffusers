@@ -172,6 +172,46 @@ python run_dynamic_old_distilled.py --preset one_shot_fast
 python run_dynamic_old_staged_distilled.py --preset one_shot_fast
 ```
 
+### DDO capacity profiles
+
+All `run_dynamic_*.py` runners support a named DDO profile for the denoising
+transformer. A profile calibrates a conservative resident-module budget from a
+real zero-resident denoise pass. Reusing it can improve throughput by keeping a
+measured safe amount of the transformer on dedicated VRAM while retaining room
+for activations.
+
+Create a profile with an explicit name and a short calibration pass. The
+following uses two denoise steps at the selected resolution:
+
+```powershell
+python run_dynamic_modular_distilled.py `
+  --width 1280 --height 704 `
+  --ddo-profile image-1280x704 `
+  --build-ddo-profile `
+  --ddo-profile-steps 2
+```
+
+Then run normally with the same name; do not pass `--build-ddo-profile`:
+
+```powershell
+python run_dynamic_modular_distilled.py `
+  --width 1280 --height 704 `
+  --ddo-profile image-1280x704
+```
+
+The name is chosen by the user. DDO also includes the transformer class in the
+stored identity, so a matching name used with another transformer class receives
+a separate profile. Use another name or recalibrate after changing a workload in
+a way that can alter VRAM demand, such as resolution, batch size, LoRAs, PAG,
+or the model checkpoint.
+
+Calibration runs with zero resident transformer modules, before VAE decoding.
+If it OOMs, the requested model and workload do not fit under that most
+conservative DDO calibration path. Reduce the resolution, batch/workload size,
+or memory-demanding options, then create a profile for that smaller workload.
+The profile reduces OOM risk for the workload it measured; it cannot guarantee
+that changed inputs or a larger workload will fit.
+
 Use `--print-presets` on the non-minimal dynamic runners to list the presets exposed by the installed DDO package. For SDNQ and other quantized backends, prefer the SDNQ runners or DDO's Diffusers-compatible presets, because DDO preserves backend-specific linear layers instead of replacing their quantized forward paths.
 
 ## Comparison Runners

@@ -71,6 +71,9 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
     parser.add_argument("--guidance-rescale", type=float, default=GUIDANCE_RESCALE)
+    parser.add_argument("--ddo-profile", default=None, help="Named DDO denoise workload profile.")
+    parser.add_argument("--build-ddo-profile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--ddo-profile-steps", type=int, default=2)
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR))
     parser.add_argument("--show-metrics", action=argparse.BooleanOptionalAction, default=SHOW_METRICS)
     parser.add_argument("--save-metrics", action=argparse.BooleanOptionalAction, default=SAVE_METRICS)
@@ -132,6 +135,8 @@ def main():
     global SHOW_METRICS, SAVE_METRICS, SHOW_DENOISE_STEPS
 
     args = parse_args()
+    if args.build_ddo_profile and not args.ddo_profile:
+        raise SystemExit("--build-ddo-profile requires --ddo-profile NAME")
     MODEL_PATH = args.model_path
     OUTPUT_DIR = Path(args.output_dir)
     DEVICE = args.device
@@ -139,6 +144,7 @@ def main():
     WIDTH = args.width
     HEIGHT = args.height
     STEPS = args.steps
+    active_steps = max(1, min(STEPS, args.ddo_profile_steps)) if args.build_ddo_profile else STEPS
     SEED = args.seed
     GUIDANCE_SCALE = args.guidance_scale
     GUIDANCE_RESCALE = args.guidance_rescale
@@ -272,12 +278,13 @@ def main():
         offload_device=OFFLOAD_DEVICE,
         low_cpu_mem_usage=True,
         record_event=record_event,
+        profile_name=args.ddo_profile or "",
+        build_profile=args.build_ddo_profile,
     )
     transformer = transformer_result.module
     print_offload_route("transformer", transformer_result)
     transformer_hook = transformer_result.hook
     transformer_route = transformer_result.route
-    del transformer_result
 
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(MODEL_PATH, subfolder="scheduler")
     prepare_pipe = LTX2ImagePrepareLatentsStep().init_pipeline()
@@ -288,7 +295,7 @@ def main():
     prepare_state = prepare_pipe(
         width=WIDTH,
         height=HEIGHT,
-        num_inference_steps=STEPS,
+        num_inference_steps=active_steps,
         batch_size=latent_batch_size,
         transformer_batch_multiplier=transformer_batch_multiplier,
         generator=generator,
@@ -299,7 +306,7 @@ def main():
     denoise_callback.start_time = time.perf_counter()
     denoise_callback.last_time = denoise_callback.start_time
     event_t0 = time.time()
-    with attention_backend(AttentionBackendName.NATIVE):
+    with transformer_result.profile_run() as ddo_profile_report, attention_backend(AttentionBackendName.NATIVE):
         denoise_state = denoise_pipe(
             latents=prepare_state["latents"],
             timesteps=prepare_state["timesteps"],
@@ -321,6 +328,7 @@ def main():
             output="latents",
     )
     record_event("denoise_modular_pipe_call", time.time() - event_t0)
+    run_metrics["ddo_profile"] = ddo_profile_report
     if transformer_hook is not None:
         transformer_hook.print_profile_summary()
 
@@ -333,9 +341,14 @@ def main():
         remove_dynamic_offload(transformer)
     transformer_hook = None
     del prepare_state, denoise_state, prepare_pipe, denoise_pipe, transformer, scheduler
+    del transformer_result
     del connector_prompt_embeds, connector_attention_mask
     cleanup(record_event, "cleanup_before_vae_decode")
     tracker.step_end(f"Pass 1: Generate at {WIDTH}x{HEIGHT}", t0)
+
+    if args.build_ddo_profile:
+        print(f"  DDO profile calibration complete: {ddo_profile_report}")
+        return
 
     t0 = tracker.step_start("Pass 2: Decode VAE")
     event_t0 = time.time()

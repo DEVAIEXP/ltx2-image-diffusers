@@ -1,6 +1,7 @@
 """Traditional LTX 2.3 distilled pipeline runner using diffusers-dynamic-offloader."""
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import time
@@ -14,6 +15,7 @@ from diffusers.models.transformers import LTX2ImageTransformer2DModel
 from diffusers.pipelines.ltx2.pipeline_ltx2_image import LTX2ImagePipeline
 from diffusers_dynamic_offloader import (
     DynamicOffloadSettings,
+    enable_offload,
     enable_pipeline_offload,
     format_dynamic_offload_presets,
     from_pretrained_with_dynamic_offload,
@@ -73,6 +75,9 @@ def parse_args():
     parser.add_argument("--steps", type=int, default=NUM_INFERENCE_STEPS)
     parser.add_argument("--guidance-scale", type=float, default=GUIDANCE_SCALE)
     parser.add_argument("--guidance-rescale", type=float, default=GUIDANCE_RESCALE)
+    parser.add_argument("--ddo-profile", default=None, help="Named DDO denoise workload profile.")
+    parser.add_argument("--build-ddo-profile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--ddo-profile-steps", type=int, default=2)
     parser.add_argument("--decode-timestep", type=float, default=DECODE_TIMESTEP)
     parser.add_argument("--decode-noise-scale", type=float, default=DECODE_NOISE_SCALE)
     parser.add_argument("--pag", action="store_true", default=PAG_ENABLED)
@@ -151,6 +156,9 @@ def print_routes(results: dict) -> None:
 
 def main():
     args = parse_args()
+    if args.build_ddo_profile and not args.ddo_profile:
+        raise SystemExit("--build-ddo-profile requires --ddo-profile NAME")
+    active_steps = max(1, min(args.steps, args.ddo_profile_steps)) if args.build_ddo_profile else args.steps
     show_metrics = args.show_metrics if args.show_metrics is not None else args.metrics_level >= 1
     save_metrics = args.save_metrics if args.save_metrics is not None else args.metrics_level >= 2
     running_on_wsl = is_wsl_environment()
@@ -184,6 +192,9 @@ def main():
         "height": args.height,
         "seed": seed,
         "num_inference_steps": args.steps,
+        "active_inference_steps": active_steps,
+        "ddo_profile_name": args.ddo_profile,
+        "build_ddo_profile": args.build_ddo_profile,
         "guidance_scale": args.guidance_scale,
         "guidance_rescale": args.guidance_rescale,
         "vae_decode_timestep": args.decode_timestep,
@@ -241,15 +252,44 @@ def main():
     )
 
     event_t0 = time.time()
-    offload_results = enable_pipeline_offload(
-        pipe,
-        settings=settings,
-        components=components,
-        execution_device=DEVICE,
-        offload_device=OFFLOAD_DEVICE,
-        low_cpu_mem_usage=True,
-        record_event=record_event,
-    )
+    transformer_result = None
+    if args.ddo_profile:
+        component_names = (
+            ("text_encoder", "text_encoder_2", "connectors", "unet", "vae")
+            if components is None
+            else tuple(name for name in components if name != "transformer")
+        )
+        offload_results = enable_pipeline_offload(
+            pipe,
+            settings=settings,
+            components=component_names,
+            execution_device=DEVICE,
+            offload_device=OFFLOAD_DEVICE,
+            low_cpu_mem_usage=True,
+            record_event=record_event,
+        )
+        transformer_result = enable_offload(
+            pipe.transformer,
+            settings=settings,
+            component="transformer",
+            execution_device=DEVICE,
+            offload_device=OFFLOAD_DEVICE,
+            low_cpu_mem_usage=True,
+            record_event=record_event,
+            profile_name=args.ddo_profile,
+            build_profile=args.build_ddo_profile,
+        )
+        offload_results["transformer"] = transformer_result
+    else:
+        offload_results = enable_pipeline_offload(
+            pipe,
+            settings=settings,
+            components=components,
+            execution_device=DEVICE,
+            offload_device=OFFLOAD_DEVICE,
+            low_cpu_mem_usage=True,
+            record_event=record_event,
+        )
     record_event("setup_pipeline_dynamic_offload", time.time() - event_t0, components="auto" if components is None else list(components))
     print_routes(offload_results)
     tracker.step_end("Load Pipeline", t0)
@@ -260,12 +300,14 @@ def main():
 
     t0 = tracker.step_start(f"Generate at {args.width}x{args.height}")
     event_t0 = time.time()
-    images = pipe(
+    profile_context = transformer_result.profile_run() if transformer_result is not None else nullcontext(None)
+    with profile_context as ddo_profile_report:
+        images = pipe(
         prompt=args.prompt,
         negative_prompt=args.negative_prompt,
         width=args.width,
         height=args.height,
-        num_inference_steps=args.steps,
+        num_inference_steps=active_steps,
         guidance_scale=args.guidance_scale,
         guidance_rescale=args.guidance_rescale,
         decode_timestep=args.decode_timestep,
@@ -273,15 +315,26 @@ def main():
         pag_scale=args.pag_scale if args.pag else 0.0,
         pag_applied_layers=[int(item.strip()) for item in args.pag_layers.split(",") if item.strip()] if args.pag else None,
         generator=generator,
-        output_type="pil",
+        output_type="latent" if args.build_ddo_profile else "pil",
         return_dict=False,
         callback_on_step_end=callback,
         callback_on_step_end_tensor_inputs=["latents"],
-    )[0]
+        )[0]
+    run_metrics["ddo_profile"] = ddo_profile_report
     image = images[0] if isinstance(images, list) else images
     record_event("pipeline_call", time.time() - event_t0)
     run_metrics["denoise_step_times"] = callback.step_times
     tracker.step_end(f"Generate at {args.width}x{args.height}", t0)
+
+    if args.build_ddo_profile:
+        for result in offload_results.values():
+            if result.route == "dynamic_offload":
+                remove_dynamic_offload(result.module)
+        del pipe
+        flush()
+        maybe_purge_windows_standby_cache(settings, "after_run", record_event=record_event)
+        print(f"  DDO profile calibration complete: {ddo_profile_report}")
+        return
 
     t0 = tracker.step_start("Save Image")
     output_dir.mkdir(parents=True, exist_ok=True)
