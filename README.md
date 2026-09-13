@@ -159,6 +159,7 @@ These scripts exercise `diffusers-dynamic-offloader` against the same LTX 2.3 di
 | --- | --- | --- | --- | --- |
 | `run_dynamic_minimal.py` | modular custom blocks | T2I | `auto` | Minimal integration example for host apps. |
 | `run_dynamic_modular_distilled.py` | modular custom blocks, staged | T2I | `auto` | Main DDO benchmark runner for the modular LTX distilled path. |
+| `run_dynamic_modular_sdnq_distilled.py` | modular custom blocks, staged | T2I | `auto`, SDNQ int4 | Experimental DDO SDNQ runner. Preserves SDNQ's native forward and supports int4/int8 plus named DDO profiles. |
 | `run_dynamic_old_distilled.py` | traditional Diffusers full pipeline | T2I | `auto` | Checks DDO on a regular pipeline object with component policies. |
 | `run_dynamic_old_staged_distilled.py` | traditional Diffusers components, staged | T2I | `auto` | Compares staged orchestration without Modular Diffusers blocks. |
 
@@ -168,6 +169,7 @@ Dynamic examples:
 python run_dynamic_minimal.py --preset auto
 python run_dynamic_modular_distilled.py --preset one_shot_fast
 python run_dynamic_modular_distilled.py --preset diffusers_offload_compat
+python run_dynamic_modular_sdnq_distilled.py --bits 4 --preset auto
 python run_dynamic_old_distilled.py --preset one_shot_fast
 python run_dynamic_old_staged_distilled.py --preset one_shot_fast
 ```
@@ -212,7 +214,7 @@ or memory-demanding options, then create a profile for that smaller workload.
 The profile reduces OOM risk for the workload it measured; it cannot guarantee
 that changed inputs or a larger workload will fit.
 
-Use `--print-presets` on the non-minimal dynamic runners to list the presets exposed by the installed DDO package. For SDNQ and other quantized backends, prefer the SDNQ runners or DDO's Diffusers-compatible presets, because DDO preserves backend-specific linear layers instead of replacing their quantized forward paths.
+Use `--print-presets` on the non-minimal dynamic runners to list the presets exposed by the installed DDO package. `run_dynamic_modular_sdnq_distilled.py` is an experimental dedicated SDNQ path for the tested image workload: it preserves SDNQ's backend-specific forward and can use its named profile. For other quantized backends, prefer the SDNQ runners or DDO's Diffusers-compatible presets rather than replacing backend-specific forward paths.
 
 ## Comparison Runners
 
